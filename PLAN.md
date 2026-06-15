@@ -1,5 +1,11 @@
 # Splitclicker — Design & Architecture Plan
 
+> **Status:** Go backend (`server/`) first pass is implemented and unit-tested but not
+> yet run end-to-end. The s&box client (`client/`) is scaffolded (auth, WS, controller,
+> Razor UI). **Next step: build out the s&box client** — in-editor startup scene wiring
+> `ClickController` + a `ScreenPanel` with the panels, `HttpAllowList`/`BaseUrl` config,
+> the s&box Services achievements/stats (§7.1), and play-testing against a live backend.
+
 ## Context
 
 **Splitclicker** is a new s&box game: a single global button that is *only clickable*

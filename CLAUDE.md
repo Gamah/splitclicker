@@ -4,8 +4,13 @@ This file is the authoritative context document for Claude sessions working on t
 Read it fully before making any changes. The detailed design lives in **[PLAN.md](PLAN.md)** —
 this file is the quick orientation; PLAN.md is the source of truth for architecture decisions.
 
-**Status:** greenfield / pre-implementation. The repo currently holds the design (`PLAN.md`)
-and license only. No code has been written yet.
+**Status:** backend first pass implemented in `server/` (engine state machine, WS hub,
+Facepunch auth, hourly board, Docker/Caddy) and unit-tested but not yet run end-to-end.
+The s&box client in `client/` is scaffolded (auth, WS, controller, Razor UI).
+**Next step: the s&box client** — build it out into a runnable game: create the in-editor
+startup scene (`client/scenes/main.scene`) wiring `ClickController` + a `ScreenPanel`
+hosting the panels, set `HttpAllowList`/`ApiClient.BaseUrl`, define the s&box Services
+achievements/stats, and play-test against a running backend (PLAN §7).
 
 ---
 
