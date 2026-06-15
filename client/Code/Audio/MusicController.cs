@@ -20,8 +20,22 @@ public sealed class MusicController : Component
 {
 	public static MusicController Instance { get; private set; }
 
-	// Fixed master volume (no in-game control).
+	// Fixed master volume (the only in-game control is mute, below).
 	const float Volume = 0.15f;
+
+	/// <summary>Player's persisted mute choice; mutes the track without stopping it.</summary>
+	public bool Muted => PlayerData.Load()?.MusicMuted ?? false;
+
+	/// <summary>Flip the persisted mute state. OnUpdate applies the new volume next frame.</summary>
+	public void ToggleMute()
+	{
+		var data = PlayerData.Load() ?? new PlayerData();
+		data.MusicMuted = !data.MusicMuted;
+		data.Save();
+	}
+
+	// Effective handle volume: silent when muted, otherwise the fixed master volume.
+	float CurrentVolume() => Muted ? 0f : Volume;
 
 	// ── Output / playback tuning (rotaliate's defaults; not exposed) ──
 	const int RenderThreads = 6;   // worker threads the pitched-voice synthesis fans out across
@@ -81,7 +95,7 @@ public sealed class MusicController : Component
 	protected override void OnUpdate()
 	{
 		if ( _handle != null )
-			_handle.Volume = Volume;
+			_handle.Volume = CurrentVolume();
 
 		// Keep the look-ahead buffer topped up. Generation runs on a worker thread
 		// (FillAhead), so this never blocks the frame.
@@ -252,7 +266,7 @@ public sealed class MusicController : Component
 			_handle = _stream.Play();
 			if ( _handle != null )
 			{
-				_handle.Volume = Volume;
+				_handle.Volume = CurrentVolume();
 				ConfigureFlat();
 			}
 			_sinceStart = 0;

@@ -22,6 +22,9 @@ public sealed class PlayerData
 	/// endless song sequence resumes where it left off (see Audio/MusicController).</summary>
 	public int MusicN { get; set; }
 
+	/// <summary>Whether the player has muted the background music (persisted choice).</summary>
+	public bool MusicMuted { get; set; }
+
 	const string FileName = "player.json";
 	static PlayerData _cache;
 

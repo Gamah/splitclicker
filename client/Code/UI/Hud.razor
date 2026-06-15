@@ -5,6 +5,7 @@
 @using Sandbox.UI
 @using Splitclicker.Api
 @using Splitclicker.Game
+@using Splitclicker.Audio
 @namespace Splitclicker.UI
 @inherits PanelComponent
 
@@ -45,6 +46,9 @@
 			}
 		}
 	</div>
+
+	@* ── mute toggle: bottom edge, just right of the session list ── *@
+	<div class="mute-btn @(IsMuted ? "muted" : "")" onclick="@ToggleMute">@MuteLabel()</div>
 
 	@* ── the one global button, dead-center, with the status HUD over it ── *@
 	@* StateClass also lands on .center so the HUD text can flip to black on the
@@ -184,6 +188,29 @@
 	}
 
 	.board.session { left: 14px; }
+
+	/* mute toggle: bottom edge, just right of the session list's column. */
+	.mute-btn {
+		position: absolute;
+		bottom: 18px;
+		left: 308px; /* 14 (session edge) + 280 (session width) + 14 (gap) */
+		pointer-events: all;
+		cursor: pointer;
+		flex-direction: row;
+		align-items: center;
+		justify-content: center;
+		background-color: rgba(7, 5, 26, 0.82);
+		border: 1.5px solid rgba(255, 255, 255, 0.12);
+		border-radius: 8px;
+		padding: 8px 14px;
+		font-size: 13px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: rgba(255, 255, 255, 0.78);
+	}
+
+	.mute-btn:hover { color: #ffffff; border-color: rgba(255, 255, 255, 0.3); }
+	.mute-btn.muted { color: #ffd166; }
 	.board.hourly { right: 308px; } /* 14 (edge) + 280 (hours-won) + 14 (gap) */
 	.board.hourswon { right: 14px; }
 	/* sessions-won pins to the free bottom-right corner (top:auto cancels the
@@ -260,7 +287,7 @@
 	.skin-img {
 		width: 100%;
 		height: 240px;
-		background-image: url( "ui/skin.png" );
+		background-image: url( "media/firstskintowin.png" );
 		background-repeat: no-repeat;
 		background-position: center;
 		background-size: contain;
@@ -586,6 +613,12 @@
 
 	void OnPress() => ClickController.Instance?.SendClick();
 
+	// ── music mute toggle ──
+	static bool IsMuted => MusicController.Instance?.Muted ?? false;
+	void ToggleMute() => MusicController.Instance?.ToggleMute();
+	// Label states the action a click performs.
+	static string MuteLabel() => IsMuted ? "UNMUTE MUSIC" : "MUTE MUSIC";
+
 	// Button/center state class drives the colour:
 	//   armed  → green (a valid click can score)
 	//   wait   → yellow-orange (arming)
@@ -628,5 +661,5 @@
 			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
-		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName() ) );
+		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), IsMuted ) );
 }
