@@ -43,12 +43,12 @@
           "AutoScale": true
         },
         {
-          "__type": "Splitclicker.UI.StatusPanel",
-          "__guid": "bbf94a90-6a46-40ac-bb18-e157c824f12f"
-        },
-        {
           "__type": "Splitclicker.UI.ClickButton",
           "__guid": "38b54bb3-06f8-4061-99fd-43bea05614cd"
+        },
+        {
+          "__type": "Splitclicker.UI.StatusPanel",
+          "__guid": "bbf94a90-6a46-40ac-bb18-e157c824f12f"
         },
         {
           "__type": "Splitclicker.UI.ThisGamePanel",

@@ -6,19 +6,23 @@
 @inherits PanelComponent
 
 @*
-	The one global button. The handler does nothing but enqueue the click send —
-	no allocation, no awaiting render — so input latency is minimal. Its enabled
-	state and scoring eligibility share one source: ClickController.CanClick.
+	The one global button: a centered colored circle. The handler does nothing but
+	enqueue the click send — no allocation, no awaiting render — so input latency is
+	minimal. Its enabled state and scoring eligibility share one source:
+	ClickController.CanClick. The state/round text and the "clicks sent" tally are the
+	StatusPanel HUD overlaid on top; here we render only the circle, so mashing never
+	re-renders the button.
 *@
 
 <root>
-	<div class="btn @StateClass()" onclick="@OnPress">
-		<div class="label">@Label()</div>
-	</div>
+	<div class="btn @StateClass()" onclick="@OnPress"></div>
 </root>
 
 <style>
 	root {
+		position: absolute;
+		top: 0;
+		left: 0;
 		width: 100%;
 		height: 100%;
 		flex-direction: column;
@@ -41,13 +45,6 @@
 		cursor: default;
 	}
 
-	.label {
-		font-size: 64px;
-		font-weight: bold;
-		color: rgba(255, 255, 255, 0.85);
-		letter-spacing: 3px;
-	}
-
 	/* green only while a valid click can actually score */
 	.btn.armed {
 		background-color: #06d6a0;
@@ -56,7 +53,6 @@
 		transform: scale(1.02);
 	}
 
-	.btn.armed .label { color: white; }
 	.btn.armed:active { transform: scale(0.98); }
 </style>
 
@@ -68,20 +64,6 @@
 	// Green ("armed") only while a valid click can score; red (base) otherwise.
 	string StateClass() => Armed ? "armed" : "";
 
-	string Label()
-	{
-		var c = ClickController.Instance;
-		if ( c == null ) return "…";
-		return c.Phase switch
-		{
-			GamePhase.Armed => "CLICK!",
-			GamePhase.Pending => "WAIT…",
-			GamePhase.Result => "ROUND OVER",
-			GamePhase.GameOver => "GAME OVER",
-			GamePhase.Disconnected => "OFFLINE",
-			_ => "…",
-		};
-	}
-
-	protected override int BuildHash() => HashCode.Combine( Armed, ClickController.Instance?.Phase ?? GamePhase.Connecting );
+	protected override int BuildHash() => HashCode.Combine(
+		Armed, ClickController.Instance?.Phase ?? GamePhase.Connecting );
 }

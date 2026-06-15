@@ -6,87 +6,98 @@
 @inherits PanelComponent
 
 @*
-	Top status strip: round counter, current phase, your score, and connection
-	state. Reads ClickController.Instance every frame.
+	The dead-center HUD, overlaid on top of the button circle: round counter, the
+	big current-state label, your score, the online count, and how many scoring
+	clicks exist this round. pointer-events:none so presses fall through to the
+	button beneath. Reads ClickController.Instance every frame.
 *@
 
 <root>
-	<div class="stack">
-		<div class="bar">
-			<div class="round">Round @C.Round / @C.Of</div>
-			<div class="phase @PhaseClass()">@PhaseText()</div>
-			<div class="score">You: @C.MyPoints</div>
-		</div>
+	<div class="hud">
+		<div class="round">Round @C.Round / @C.Of</div>
+		<div class="state @PhaseClass()">@PhaseText()</div>
 		<div class="meta">
+			<div class="score">You: @C.MyPoints</div>
+			<div class="sep">·</div>
 			<div class="players">@(C?.Players ?? 0) online</div>
 			<div class="sep">·</div>
-			<div class="clicks">@(C?.ClicksToWin ?? 0) clicks to win the round</div>
-			@if ( (C?.PenaltyMs ?? 0) > 0 )
-			{
-				<div class="sep">·</div>
-				<div class="penalty">throttled +@(C.PenaltyMs)ms</div>
-			}
+			<div class="clicks">@(C?.ClicksToWin ?? 0) clicks exist for this round</div>
 		</div>
+		@if ( (C?.PenaltyMs ?? 0) > 0 )
+		{
+			<div class="penalty">throttled +@(C.PenaltyMs)ms</div>
+		}
 	</div>
+	<div class="clicks-sent">clicks sent: @(C?.ClicksSent ?? 0)</div>
 </root>
 
 <style>
 	root {
+		position: absolute;
+		top: 0;
+		left: 0;
 		width: 100%;
 		height: 100%;
 		flex-direction: column;
-		align-items: center;        /* centered across the whole screen width */
-		justify-content: flex-start; /* pinned to the top */
+		align-items: center;     /* dead center of the whole screen */
+		justify-content: center;
 		pointer-events: none;
 	}
 
-	.stack {
+	.hud {
 		flex-direction: column;
 		align-items: center;
-		margin-top: 18px;
-		gap: 6px;
+		gap: 10px;
 	}
 
-	.bar {
-		flex-direction: row;
-		gap: 24px;
-		align-items: center;
-		background-color: rgba(7, 5, 26, 0.8);
-		border-radius: 8px;
-		padding: 8px 18px;
-	}
-
-	.meta {
-		flex-direction: row;
-		gap: 8px;
-		align-items: center;
-		background-color: rgba(7, 5, 26, 0.65);
-		border-radius: 6px;
-		padding: 4px 12px;
-		font-size: 13px;
-		color: rgba(255, 255, 255, 0.7);
-	}
-
-	.meta .sep { color: rgba(255, 255, 255, 0.3); }
-	.meta .penalty { color: #ffd166; font-weight: bold; }
-
-	.round, .score {
-		font-size: 16px;
-		color: rgba(255, 255, 255, 0.8);
+	.round {
+		font-size: 22px;
 		font-weight: bold;
-	}
-
-	.score { color: #06d6a0; }
-
-	.phase {
-		font-size: 16px;
-		font-weight: bold;
-		color: rgba(255, 255, 255, 0.55);
+		color: rgba(255, 255, 255, 0.85);
 		letter-spacing: 1px;
 	}
 
-	.phase.armed { color: #ff2e63; }
-	.phase.offline { color: #ffd166; }
+	.state {
+		font-size: 56px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.9);
+		letter-spacing: 3px;
+	}
+
+	.state.armed { color: #ffffff; }
+	.state.offline { color: #ffd166; }
+
+	.meta {
+		flex-direction: row;
+		gap: 10px;
+		align-items: center;
+		font-size: 18px;
+		color: rgba(255, 255, 255, 0.85);
+		font-weight: bold;
+	}
+
+	.meta .sep { color: rgba(255, 255, 255, 0.4); }
+	.meta .score { color: #06d6a0; }
+
+	.penalty {
+		font-size: 16px;
+		font-weight: bold;
+		color: #ffd166;
+	}
+
+	/* Directly under the button circle (its bottom edge sits at ~920px of the
+	   1080 reference), centered horizontally. */
+	.clicks-sent {
+		position: absolute;
+		top: 936px;
+		left: 0;
+		width: 100%;
+		justify-content: center;
+		font-size: 22px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.65);
+		letter-spacing: 1px;
+	}
 </style>
 
 @code {
@@ -94,12 +105,12 @@
 
 	string PhaseText() => C?.Phase switch
 	{
-		GamePhase.Armed => "● LIVE",
-		GamePhase.Pending => "arming…",
-		GamePhase.Result => "round over",
-		GamePhase.GameOver => "game over",
-		GamePhase.Disconnected => "reconnecting…",
-		GamePhase.Connecting => "connecting…",
+		GamePhase.Armed => "CLICK!",
+		GamePhase.Pending => "WAIT…",
+		GamePhase.Result => "ROUND OVER",
+		GamePhase.GameOver => "GAME OVER",
+		GamePhase.Disconnected => "RECONNECTING…",
+		GamePhase.Connecting => "CONNECTING…",
 		_ => "",
 	};
 
@@ -112,5 +123,5 @@
 
 	protected override int BuildHash() =>
 		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0, C?.MyPoints ?? 0,
-			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0 );
+			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 );
 }

@@ -47,6 +47,10 @@ public sealed class ClickController : Component
 	/// deterrent), 0 for honest clients. Surfaced so the player sees the throttle.</summary>
 	public int PenaltyMs { get; private set; }
 
+	/// <summary>Click frames actually sent to the API during the current/just-ended
+	/// CLICK! phase. Reset on each arm; shown under the button.</summary>
+	public int ClicksSent { get; private set; }
+
 	/// <summary>True only while a valid click can score — drives both the button's
 	/// enabled state and scoring eligibility from one source.</summary>
 	public bool CanClick => Phase == GamePhase.Armed && !string.IsNullOrEmpty( _nonce );
@@ -84,6 +88,7 @@ public sealed class ClickController : Component
 	{
 		if ( !CanClick ) return;
 		_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{_nonce}\"}}" );
+		ClicksSent++;
 	}
 
 	async Task ConnectFlow()
@@ -182,6 +187,7 @@ public sealed class ClickController : Component
 					Players = a.Players;
 					ClicksToWin = a.Clicks;
 					PenaltyMs = a.PenaltyMs;
+					ClicksSent = 0; // fresh CLICK! phase: start the sent tally over
 					_nonce = a.Nonce;
 					Phase = GamePhase.Armed;
 					break;
