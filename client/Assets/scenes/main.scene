@@ -1,0 +1,60 @@
+{
+  "__guid": "bb91c919-ff85-423c-9ddc-3eaa3d4939b2",
+  "GameObjects": [
+    {
+      "__guid": "c75c8c11-b6a7-4243-ab3d-f4b4c3bdcf70",
+      "Flags": 0,
+      "Name": "Camera",
+      "Enabled": true,
+      "Components": [
+        {
+          "__type": "Sandbox.CameraComponent",
+          "__guid": "9e56bdbf-d0b2-4096-9dab-10dd3057b400",
+          "BackgroundColor": "0.027451,0.019608,0.101961,1",
+          "ZNear": 1,
+          "ZFar": 10000,
+          "FieldOfView": 60,
+          "IsMainCamera": true
+        }
+      ]
+    },
+    {
+      "__guid": "89272cf3-e8c9-4fe0-87c2-8ff071a21df7",
+      "Flags": 0,
+      "Name": "GameController",
+      "Enabled": true,
+      "Components": [
+        {
+          "__type": "Splitclicker.Game.ClickController",
+          "__guid": "80f083b0-cb3b-4d73-9ed2-556d91871cb9"
+        }
+      ]
+    },
+    {
+      "__guid": "46c5ea65-72e7-4a19-9c21-5ddecfb4fdaf",
+      "Flags": 0,
+      "Name": "UI",
+      "Enabled": true,
+      "Components": [
+        {
+          "__type": "Sandbox.ScreenPanel",
+          "__guid": "a3f0d425-be6a-425a-aad9-91d58007619c",
+          "Scale": 1,
+          "AutoScale": true
+        },
+        {
+          "__type": "Splitclicker.UI.StatusPanel",
+          "__guid": "bbf94a90-6a46-40ac-bb18-e157c824f12f"
+        },
+        {
+          "__type": "Splitclicker.UI.ClickButton",
+          "__guid": "38b54bb3-06f8-4061-99fd-43bea05614cd"
+        },
+        {
+          "__type": "Splitclicker.UI.LeaderboardPanel",
+          "__guid": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+        }
+      ]
+    }
+  ]
+}
