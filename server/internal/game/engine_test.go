@@ -73,15 +73,13 @@ func TestRaceState(t *testing.T) {
 	})
 }
 
-func TestClampPenalty(t *testing.T) {
-	per := 10 * time.Millisecond
-	limit := 25 * time.Millisecond
-	got := time.Duration(0)
-	for i := 0; i < 10; i++ {
-		got = clampPenalty(got, per, limit)
-	}
-	if got != limit {
-		t.Fatalf("penalty should saturate at cap %v, got %v", limit, got)
+func TestIdlePenalty(t *testing.T) {
+	// The Nth idle click adds N×5ms, so totals run 5,15,30,50,75,105… ms.
+	want := []time.Duration{0, 5, 15, 30, 50, 75, 105}
+	for n, w := range want {
+		if got := idlePenalty(n); got != w*time.Millisecond {
+			t.Fatalf("idlePenalty(%d) = %v, want %v", n, got, w*time.Millisecond)
+		}
 	}
 }
 

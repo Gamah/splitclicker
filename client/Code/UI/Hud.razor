@@ -47,7 +47,9 @@
 	</div>
 
 	@* ── the one global button, dead-center, with the status HUD over it ── *@
-	<div class="center">
+	@* StateClass also lands on .center so the HUD text can flip to black on the
+	   yellow-orange WAIT background (and stay white everywhere else). *@
+	<div class="center @StateClass()">
 		<div class="btn @StateClass()" onclick="@OnPress"></div>
 
 		@* Each line below is a SINGLE interpolated expression on purpose: mixing
@@ -144,6 +146,13 @@
 		}
 	</div>
 
+	@* ── leader's "skin": bundled image pinned just left of the sessions-won board,
+	     captioned with the current sessions-won leader's name ── *@
+	<div class="skin-panel">
+		<div class="skin-img"></div>
+		<div class="skin-caption">@($"{SkinLeaderName()}'s Skin")</div>
+	</div>
+
 	@* ── transient "copied profile link" toast, top-center for ~a second ── *@
 	@if ( ToastVisible )
 	{
@@ -231,6 +240,40 @@
 	.board.sessionswon .pts { color: #4cc9f0; }
 	.board.sessionswon .row.me { background-color: rgba(76, 201, 240, 0.15); }
 
+	/* the leader's "skin": bundled image + caption, pinned just left of the
+	   sessions-won board (308 = 14 edge + 280 board + 14 gap), bottom-aligned. */
+	.skin-panel {
+		position: absolute;
+		bottom: 18px;
+		right: 308px;
+		width: 200px;
+		flex-direction: column;
+		align-items: center;
+		background-color: rgba(7, 5, 26, 0.82);
+		border: 1.5px solid rgba(255, 255, 255, 0.12);
+		border-radius: 10px;
+		padding: 10px;
+		gap: 6px;
+	}
+
+	/* the image scales to fit the panel width (contain keeps its aspect ratio). */
+	.skin-img {
+		width: 100%;
+		height: 240px;
+		background-image: url( "ui/skin.png" );
+		background-repeat: no-repeat;
+		background-position: center;
+		background-size: contain;
+	}
+
+	.skin-caption {
+		font-size: 15px;
+		font-weight: bold;
+		color: #4cc9f0;
+		justify-content: center;
+		text-align: center;
+	}
+
 	.board .empty {
 		justify-content: center;
 		font-size: 12px;
@@ -277,6 +320,23 @@
 	}
 
 	.btn.armed:active { transform: scale(0.98); }
+
+	/* WAIT (arming): yellow-orange. */
+	.btn.wait { background-color: #ff9f1c; }
+
+	/* ROUND OVER: start yellow-orange, then fade to black over 3s and hold there. */
+	.btn.result {
+		background-color: #000000;
+		animation-name: round-over-fade;
+		animation-duration: 3s;
+		animation-timing-function: ease-out;
+		animation-fill-mode: forwards;
+	}
+
+	@keyframes round-over-fade {
+		0% { background-color: #ff9f1c; }
+		100% { background-color: #000000; }
+	}
 
 	/* HUD overlaid dead-center on the button; clicks fall through to the button. */
 	.hud {
@@ -330,8 +390,19 @@
 	.penalty {
 		font-size: 16px;
 		font-weight: bold;
-		color: #ffd166;
+		color: #ffffff;
 	}
+
+	/* HUD text overlaid on the button is black on the yellow-orange WAIT background
+	   (for contrast) and white in every other state. These high-specificity rules
+	   win over the per-element colors above. (clicks-sent sits *below* the button on
+	   the dark page background, so it stays white — excluded here.) */
+	.center.wait .round,
+	.center.wait .state,
+	.center.wait .meta,
+	.center.wait .meta .sep,
+	.center.wait .arm,
+	.center.wait .penalty { color: #000000; }
 
 	/* Centered just under the circle: the button is 700px (350px radius) centered
 	   on screen, so 360px below screen-center sits 10px below its bottom edge. */
@@ -490,6 +561,16 @@
 	static string DisplayName( Standing s ) =>
 		!string.IsNullOrWhiteSpace( s.Username ) ? s.Username : "anonymous";
 
+	// The "current leader" for the skin caption: the sessions-won #1, falling back
+	// to the live session leader, then to a placeholder when nobody has scored.
+	string SkinLeaderName()
+	{
+		if ( _sessionsWon.Count > 0 ) return DisplayName( _sessionsWon[0] );
+		var session = SessionEntries;
+		if ( session.Count > 0 ) return DisplayName( session[0] );
+		return "Nobody";
+	}
+
 	// Wall-clock time left until the UTC hour ticks over (when the hourly board
 	// resets), as MM:SS — not a rolling 60-minute window.
 	static string ResetCountdown()
@@ -504,8 +585,22 @@
 
 	void OnPress() => ClickController.Instance?.SendClick();
 
-	// Green ("armed") only while a valid click can score; red (base) otherwise.
-	string StateClass() => Armed ? "armed" : "";
+	// Button/center state class drives the colour:
+	//   armed  → green (a valid click can score)
+	//   wait   → yellow-orange (arming)
+	//   result → yellow-orange fading to black over 3s
+	//   ""     → red base (connecting / disconnected / game over)
+	// Armed takes precedence so the green only shows while a click can actually score.
+	string StateClass()
+	{
+		if ( Armed ) return "armed";
+		return C?.Phase switch
+		{
+			GamePhase.Pending => "wait",
+			GamePhase.Result => "result",
+			_ => "",
+		};
+	}
 
 	string PhaseText() => C?.Phase switch
 	{
@@ -532,5 +627,5 @@
 			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
-		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible ) );
+		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName() ) );
 }

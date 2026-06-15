@@ -48,12 +48,6 @@ public sealed class ClickController : Component
 	/// updates live; the armed frame's authoritative value then overwrites it.</summary>
 	public int PenaltyMs { get; private set; }
 
-	/// <summary>Spam-penalty tunables from the server: ms added per idle click and
-	/// the per-round cap (0 = uncapped). Sent in hello/round_pending so the client
-	/// can mirror the escalating throttle without waiting for the armed frame.</summary>
-	public int PenaltyPerClickMs { get; private set; }
-	public int PenaltyCapMs { get; private set; }
-
 	/// <summary>Click frames actually sent to the API during the current/just-ended
 	/// CLICK! phase. Reset on each arm; shown under the button.</summary>
 	public int ClicksSent { get; private set; }
@@ -68,6 +62,9 @@ public sealed class ClickController : Component
 	public bool CanClick => Phase == GamePhase.Armed && !string.IsNullOrEmpty( _nonce );
 
 	static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+	// Idle clicks sent this round; drives the locally-counted throttle estimate.
+	int _idleClicks;
 
 	WsClient _ws;
 	string _nonce;
@@ -111,13 +108,17 @@ public sealed class ClickController : Component
 		{
 			_ = _ws.Send( "{\"t\":\"click\",\"nonce\":\"\"}" );
 			// Mirror the server's escalating idle-click penalty locally so the throttle
-			// climbs the instant the player mashes (min(cur + perClick, cap)); the
-			// armed frame's authoritative value overwrites this estimate.
-			int next = PenaltyMs + PenaltyPerClickMs;
-			if ( PenaltyCapMs > 0 && next > PenaltyCapMs ) next = PenaltyCapMs;
-			PenaltyMs = next;
+			// climbs the instant the player mashes; the armed frame's authoritative
+			// value overwrites this estimate.
+			_idleClicks++;
+			PenaltyMs = IdlePenaltyMs( _idleClicks );
 		}
 	}
+
+	// Mirror of the server's idle-click penalty (game.idlePenalty): the Nth click
+	// adds N×5ms, so totals run 5,15,30,50,75,105… ms.
+	const int PenaltyStepMs = 5;
+	static int IdlePenaltyMs( int n ) => n <= 0 ? 0 : PenaltyStepMs * n * ( n + 1 ) / 2;
 
 	async Task ConnectFlow()
 	{
@@ -197,8 +198,6 @@ public sealed class ClickController : Component
 					ClicksToWin = h.Game.Clicks;
 					ArmMinSec = h.Game.ArmMin;
 					ArmMaxSec = h.Game.ArmMax;
-					PenaltyPerClickMs = h.Game.PenaltyPerClickMs;
-					PenaltyCapMs = h.Game.PenaltyCapMs;
 					Phase = PhaseFrom( h.Game.Phase );
 					break;
 
@@ -208,9 +207,8 @@ public sealed class ClickController : Component
 					Of = p.Of;
 					Players = p.Players;
 					ClicksToWin = p.Clicks;
-					PenaltyPerClickMs = p.PenaltyPerClickMs;
-					PenaltyCapMs = p.PenaltyCapMs;
 					PenaltyMs = 0; // fresh round: throttle resets, then counts up as the player idle-clicks
+					_idleClicks = 0;
 					Phase = GamePhase.Pending;
 					_nonce = null;
 					break;

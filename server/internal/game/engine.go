@@ -72,16 +72,11 @@ type Standing struct {
 // PendingFrame announces a new round is arming. The arm time is secret, so this
 // carries no countdown. Players/Clicks tell the client how many people are
 // connected and how many scoring clicks (N) this round will take to fill.
-// PenaltyPerClickMs/PenaltyCapMs are the (static) spam-penalty tunables, sent so
-// the client can count its own idle-click throttle live this round — the server's
-// authoritative value still overwrites it in the armed frame.
 type PendingFrame struct {
-	Round             int
-	Of                int
-	Players           int
-	Clicks            int
-	PenaltyPerClickMs int
-	PenaltyCapMs      int
+	Round   int
+	Of      int
+	Players int
+	Clicks  int
 }
 
 // ArmedFrame goes live: the race is open. Penalties is keyed by SteamID — the
@@ -207,15 +202,13 @@ func (e *Engine) Submit(ev ClickEvent) {
 // Snapshot is the current phase/round (plus the live player count and the N a
 // round would take right now), for the hello frame. Safe from any goroutine.
 type Snapshot struct {
-	Phase             Phase
-	Round             int
-	Of                int
-	Players           int
-	Clicks            int
-	ArmMinSec         int // arming-window bounds (the per-round delay itself stays secret)
-	ArmMaxSec         int
-	PenaltyPerClickMs int // spam-penalty tunables, so a client can count its own throttle
-	PenaltyCapMs      int
+	Phase     Phase
+	Round     int
+	Of        int
+	Players   int
+	Clicks    int
+	ArmMinSec int // arming-window bounds (the per-round delay itself stays secret)
+	ArmMaxSec int
 }
 
 func (e *Engine) Snapshot() Snapshot {
@@ -230,8 +223,6 @@ func (e *Engine) Snapshot() Snapshot {
 		Phase: phase, Round: round, Of: e.cfg.RoundsPerGame,
 		Players: players, Clicks: e.clicksFor(players),
 		ArmMinSec: int(e.cfg.ArmMin / time.Second), ArmMaxSec: int(e.cfg.ArmMax / time.Second),
-		PenaltyPerClickMs: int(e.cfg.IdlePenaltyPerClick / time.Millisecond),
-		PenaltyCapMs:      int(e.cfg.IdlePenaltyCap / time.Millisecond),
 	}
 }
 
@@ -329,13 +320,10 @@ func (e *Engine) afterGame(final []Standing) {
 // delay (the spam deterrent), returned keyed by SteamID for the hub to apply.
 func (e *Engine) pending(ctx context.Context, round, of, players, n int, info map[string]playerInfo) map[string]time.Duration {
 	e.setPhase(PhasePending, round)
-	e.bc.Pending(PendingFrame{
-		Round: round, Of: of, Players: players, Clicks: n,
-		PenaltyPerClickMs: int(e.cfg.IdlePenaltyPerClick / time.Millisecond),
-		PenaltyCapMs:      int(e.cfg.IdlePenaltyCap / time.Millisecond),
-	})
+	e.bc.Pending(PendingFrame{Round: round, Of: of, Players: players, Clicks: n})
 
 	penalties := map[string]time.Duration{}
+	counts := map[string]int{} // idle clicks this round, per connection
 	timer := time.NewTimer(e.randArmDelay())
 	defer timer.Stop()
 	for {
@@ -344,7 +332,8 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 			return penalties
 		case ev := <-e.clicks:
 			recordInfo(info, ev)
-			penalties[ev.SteamID] = clampPenalty(penalties[ev.SteamID], e.cfg.IdlePenaltyPerClick, e.cfg.IdlePenaltyCap)
+			counts[ev.SteamID]++
+			penalties[ev.SteamID] = idlePenalty(counts[ev.SteamID])
 		case <-timer.C:
 			return penalties
 		}
@@ -493,12 +482,17 @@ func (rs *raceState) offer(ev ClickEvent) bool {
 	return true
 }
 
-func clampPenalty(cur, add, max time.Duration) time.Duration {
-	p := cur + add
-	if max > 0 && p > max {
-		p = max
+// idlePenaltyStep is the base escalation unit: the Nth idle click in a round adds
+// N×step, so the running penalty after n clicks is step × n(n+1)/2 — the
+// 5,15,30,50,75,105… pattern. Fixed (not env-configurable) by design.
+const idlePenaltyStep = 5 * time.Millisecond
+
+// idlePenalty is the accumulated arm-delay penalty after n idle clicks this round.
+func idlePenalty(n int) time.Duration {
+	if n <= 0 {
+		return 0
 	}
-	return p
+	return idlePenaltyStep * time.Duration(n*(n+1)/2)
 }
 
 func recordInfo(info map[string]playerInfo, ev ClickEvent) {

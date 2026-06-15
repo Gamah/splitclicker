@@ -13,12 +13,9 @@ type Config struct {
 	ClicksPerPlayer int           // N = ClicksPerPlayer × connected players (the scoring slots scale with the crowd)
 	MinClicks       int           // floor for N when few/no players are connected (1 = first-click-wins)
 	RoundsPerGame   int           // X: rounds before game_over
-	RaceMax        time.Duration // safety cap: close the race even if < N clicks land
-	ResultDisplay  time.Duration // how long the round leaderboard shows
-	Intermission   time.Duration // pause between games
-
-	IdlePenaltyPerClick time.Duration // arm-delay penalty added per idle click
-	IdlePenaltyCap      time.Duration // max accumulated penalty per round
+	RaceMax       time.Duration // safety cap: close the race even if < N clicks land
+	ResultDisplay time.Duration // how long the round leaderboard shows
+	Intermission  time.Duration // pause between games
 
 	BoardSize int // top-K standings included in result/game_over frames
 }
@@ -26,17 +23,15 @@ type Config struct {
 // DefaultConfig is the baseline tuning from PLAN.md §1.
 func DefaultConfig() Config {
 	return Config{
-		ArmMin:              10 * time.Second,
-		ArmMax:              120 * time.Second,
-		ClicksPerPlayer:     1,
-		MinClicks:           1,
-		RoundsPerGame:       10,
-		RaceMax:             5 * time.Second,
-		ResultDisplay:       4 * time.Second,
-		Intermission:        5 * time.Second,
-		IdlePenaltyPerClick: 10 * time.Millisecond,
-		IdlePenaltyCap:      200 * time.Millisecond,
-		BoardSize:           20,
+		ArmMin:          10 * time.Second,
+		ArmMax:          120 * time.Second,
+		ClicksPerPlayer: 1,
+		MinClicks:       1,
+		RoundsPerGame:   10,
+		RaceMax:         5 * time.Second,
+		ResultDisplay:   4 * time.Second,
+		Intermission:    5 * time.Second,
+		BoardSize:       20,
 	}
 }
 
@@ -52,8 +47,6 @@ func ConfigFromEnv() Config {
 	c.RaceMax = envDur("RACE_MAX_MS", c.RaceMax, time.Millisecond)
 	c.ResultDisplay = envDur("RESULT_DISPLAY_MS", c.ResultDisplay, time.Millisecond)
 	c.Intermission = envDur("INTERMISSION_MS", c.Intermission, time.Millisecond)
-	c.IdlePenaltyPerClick = envDur("IDLE_PENALTY_PER_CLICK_MS", c.IdlePenaltyPerClick, time.Millisecond)
-	c.IdlePenaltyCap = envDur("IDLE_PENALTY_CAP_MS", c.IdlePenaltyCap, time.Millisecond)
 	c.BoardSize = envInt("BOARD_SIZE", c.BoardSize)
 	return c
 }

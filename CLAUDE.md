@@ -135,9 +135,11 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   click before receiving `armed` — defeats blind flooding *and* is the prerequisite that makes
   the spam-penalty work.
 - **Spam deterrent = delayed arm.** Idle clicks (button dormant) are allowed but penalize that
-  connection: hold back its next `armed` frame `+10ms` per idle click (escalating, capped
-  ~150–200ms, reset each round). Mashing becomes self-defeating. Idle clicks still rate-limited
-  so this doesn't reintroduce idle traffic.
+  connection: hold back its next `armed` frame by an escalating delay — the Nth idle click adds
+  N×5ms, so the held penalty grows 5,15,30,50,75,105… ms (`step·N(N+1)/2`), reset each round.
+  Fixed formula (not env-configurable); mirrored client-side (`ClickController.IdlePenaltyMs`) for
+  a live estimate that the authoritative `armed` value overwrites. Mashing becomes self-defeating.
+  Idle clicks still rate-limited so this doesn't reintroduce idle traffic.
 - **Traffic minimization.** Persistent WS, never polling. Idle is silent. Cheap idle conns
   (epoll lib), infrequent/long heartbeats, one precomputed broadcast on arm, race closes the
   instant click N lands (losing clicks read-and-dropped), leaderboard pushed inside

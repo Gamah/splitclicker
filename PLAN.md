@@ -228,9 +228,12 @@ Rather than silently dropping clicks made while the button is dormant, *allow* t
 mashing self-defeating: a connection that clicks during the IDLE/pending phase has its next
 `armed` frame **held back** before it's written to that socket.
 
-- **Penalty**: `penaltyMs += 10` per accepted idle click this pending phase, **capped**
-  (~150–200ms), **reset to 0 at each round start**. (Flat 10ms is the simple version; the
-  escalating-capped form punishes heavy mashers more and forgives a single fat-finger.)
+- **Penalty**: escalating per accepted idle click this pending phase — the Nth click adds
+  N×5ms, so the accumulated `penaltyMs` runs 5,15,30,50,75,105… (`step·N(N+1)/2`), **reset to 0
+  at each round start**, no cap. Fixed formula (`game.idlePenalty`), mirrored on the client
+  (`ClickController.IdlePenaltyMs`) so the throttle counts up live; the authoritative `armed`
+  `penalty_ms` overwrites the estimate. (Steep-but-uncapped punishes heavy mashers hard while a
+  single fat-finger is only 5ms.)
 - **Mechanism**: on arm, write the (precomputed) `armed` frame immediately to connections
   with `penaltyMs == 0`; schedule the dirty ones at `armBroadcast + penaltyMs` (bucket by
   penalty value so it's a handful of timers, not one per connection). One marshal, a few

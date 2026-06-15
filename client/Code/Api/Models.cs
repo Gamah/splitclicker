@@ -36,9 +36,7 @@ public record HelloGame(
 	[property: JsonPropertyName( "players" )] int Players,
 	[property: JsonPropertyName( "clicks" )] int Clicks,
 	[property: JsonPropertyName( "arm_min" )] int ArmMin,
-	[property: JsonPropertyName( "arm_max" )] int ArmMax,
-	[property: JsonPropertyName( "penalty_per_click_ms" )] int PenaltyPerClickMs,
-	[property: JsonPropertyName( "penalty_cap_ms" )] int PenaltyCapMs
+	[property: JsonPropertyName( "arm_max" )] int ArmMax
 );
 
 public record HelloMsg(
@@ -50,9 +48,7 @@ public record PendingMsg(
 	[property: JsonPropertyName( "round" )] int Round,
 	[property: JsonPropertyName( "of" )] int Of,
 	[property: JsonPropertyName( "players" )] int Players,
-	[property: JsonPropertyName( "clicks" )] int Clicks,
-	[property: JsonPropertyName( "penalty_per_click_ms" )] int PenaltyPerClickMs,
-	[property: JsonPropertyName( "penalty_cap_ms" )] int PenaltyCapMs
+	[property: JsonPropertyName( "clicks" )] int Clicks
 );
 
 // nonce is a hex string (an unguessable 64-bit token); echo it back verbatim in

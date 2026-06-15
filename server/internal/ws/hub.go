@@ -134,10 +134,7 @@ func (h *Hub) PlayerCount() int {
 // --- game.Broadcaster ---
 
 func (h *Hub) Pending(p game.PendingFrame) {
-	msg := mustJSON(pendingWire{
-		T: "round_pending", Round: p.Round, Of: p.Of, Players: p.Players, Clicks: p.Clicks,
-		PenaltyPerClickMs: p.PenaltyPerClickMs, PenaltyCapMs: p.PenaltyCapMs,
-	})
+	msg := mustJSON(pendingWire{T: "round_pending", Round: p.Round, Of: p.Of, Players: p.Players, Clicks: p.Clicks})
 	for _, c := range h.clientList() {
 		c.trySend(msg)
 	}
@@ -201,7 +198,6 @@ func (h *Hub) hello(c *Client) {
 			Round: snap.Round, Of: snap.Of, Phase: snap.Phase.String(),
 			Players: snap.Players, Clicks: snap.Clicks,
 			ArmMin: snap.ArmMinSec, ArmMax: snap.ArmMaxSec,
-			PenaltyPerClickMs: snap.PenaltyPerClickMs, PenaltyCapMs: snap.PenaltyCapMs,
 		},
 	}))
 }
