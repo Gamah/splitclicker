@@ -40,10 +40,12 @@
 </root>
 
 <style>
-	/* Far-right column of the HUD row. */
+	/* Pinned hard against the right edge (the session board's mirror image). */
 	root {
+		position: absolute;
+		top: 0;
+		right: 0;
 		width: 300px;
-		flex-shrink: 0;
 		height: 100%;
 		align-items: flex-end;
 		justify-content: flex-start;

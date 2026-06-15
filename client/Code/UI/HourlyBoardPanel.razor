@@ -45,10 +45,13 @@
 </root>
 
 <style>
-	/* Right side of the HUD row, alongside the hours-won board. */
+	/* Pinned to the right edge, immediately left of the hours-won board (which is
+	   itself 300px wide against the edge), mirroring the session board on the left. */
 	root {
+		position: absolute;
+		top: 0;
+		right: 300px;
 		width: 300px;
-		flex-shrink: 0;
 		height: 100%;
 		align-items: flex-end;
 		justify-content: flex-start;

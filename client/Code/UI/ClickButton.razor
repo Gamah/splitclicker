@@ -6,11 +6,11 @@
 @inherits PanelComponent
 
 @*
-	The center column: the one global button (a colored circle) with the status HUD
-	overlaid dead-center on top of it, and the "clicks sent" tally beneath. This is a
-	single panel so the HUD can overlay the button (sibling ScreenPanel panels lay out
-	in a row, they don't stack). root flex-grows to fill the space between the side
-	boards. The press handler does nothing but enqueue the send — minimal input latency.
+	The one global button (a colored circle) dead-center on the screen, with the status
+	HUD overlaid centered on top of it and the "clicks sent" tally just beneath. root is
+	a full-screen absolute overlay (not a flex cell), so the button centers on the screen
+	rather than on the space between the side boards, and the HUD — also screen-centered —
+	lands exactly on it. The press handler only enqueues the send — minimal input latency.
 *@
 
 <root>
@@ -40,13 +40,19 @@
 </root>
 
 <style>
+	/* Full-screen overlay so the button is centered on the SCREEN, not on a flex
+	   cell wedged between the side boards. Transparent + pointer-events:none, so
+	   only the circle itself is interactive and the side panels show through. */
 	root {
-		flex-grow: 1; /* fill the space between the left/right boards */
-		height: 100%;
-		position: relative;
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
+		pointer-events: none;
 	}
 
 	/* Fixed square (the ScreenPanel auto-scales to a 1080-tall reference) so the
@@ -128,10 +134,13 @@
 		color: #ffd166;
 	}
 
-	/* Directly under the circle (bottom edge ~890px of the 1080 ref). */
+	/* Centered just under the circle: the button is 700px (350px radius) centered
+	   on screen, so 360px below screen-center sits 10px below its bottom edge —
+	   resolution-independent in the 1080-tall reference. */
 	.clicks-sent {
 		position: absolute;
-		top: 900px;
+		top: 50%;
+		margin-top: 360px;
 		left: 0;
 		right: 0;
 		justify-content: center;
