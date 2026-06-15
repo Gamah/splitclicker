@@ -28,6 +28,7 @@ import (
 
 type handler struct {
 	store    *store.Store
+	cache    *store.LeaderboardCache
 	hub      *ws.Hub
 	engine   *game.Engine
 	log      *zap.Logger
@@ -64,7 +65,7 @@ func checkOrigin(r *http.Request) bool {
 }
 
 // NewRouter builds the HTTP mux.
-func NewRouter(st *store.Store, hub *ws.Hub, engine *game.Engine, log *zap.Logger) *http.ServeMux {
+func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engine *game.Engine, log *zap.Logger) *http.ServeMux {
 	initOrigins()
 	mux := http.NewServeMux()
 
@@ -73,6 +74,7 @@ func NewRouter(st *store.Store, hub *ws.Hub, engine *game.Engine, log *zap.Logge
 
 	h := &handler{
 		store:   st,
+		cache:   cache,
 		hub:     hub,
 		engine:  engine,
 		log:     log,
@@ -166,58 +168,36 @@ func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/v1/leaderboard/hourly?limit=100 — top players for the current UTC hour.
+// All three boards are served from the in-memory LeaderboardCache (refreshed
+// per session, not per request), so these handlers never touch Postgres. The
+// cache holds at most store.CacheLimit rows; the limit param only narrows that.
+
+// GET /api/v1/leaderboard/hourly?limit=15 — top players for the current UTC hour.
 func (h *handler) hourlyLeaderboard(w http.ResponseWriter, r *http.Request) {
-	limit := queryInt(r, "limit", 100)
-	if limit > 200 {
-		limit = 200
-	}
-	if limit < 1 {
-		limit = 1
-	}
-	entries, err := h.store.HourlyLeaderboard(r.Context(), limit)
-	if err != nil {
-		h.log.Error("leaderboard query failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	writeJSON(w, http.StatusOK, entries)
+	writeJSON(w, http.StatusOK, h.cache.Hourly(boardLimit(r)))
 }
 
-// GET /api/v1/leaderboard/hours-won?limit=100 — career board of hours won.
+// GET /api/v1/leaderboard/hours-won?limit=15 — career board of hours won.
 func (h *handler) hoursWonLeaderboard(w http.ResponseWriter, r *http.Request) {
-	limit := queryInt(r, "limit", 100)
-	if limit > 200 {
-		limit = 200
-	}
-	if limit < 1 {
-		limit = 1
-	}
-	entries, err := h.store.HoursWonLeaderboard(r.Context(), limit)
-	if err != nil {
-		h.log.Error("hours-won query failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	writeJSON(w, http.StatusOK, entries)
+	writeJSON(w, http.StatusOK, h.cache.HoursWon(boardLimit(r)))
 }
 
-// GET /api/v1/leaderboard/sessions-won?limit=100 — career board of games won.
+// GET /api/v1/leaderboard/sessions-won?limit=15 — career board of games won.
 func (h *handler) sessionsWonLeaderboard(w http.ResponseWriter, r *http.Request) {
-	limit := queryInt(r, "limit", 100)
-	if limit > 200 {
-		limit = 200
+	writeJSON(w, http.StatusOK, h.cache.SessionsWon(boardLimit(r)))
+}
+
+// boardLimit reads the ?limit param, defaulting to (and capped at) the cache
+// size — there are never more than store.CacheLimit rows to serve.
+func boardLimit(r *http.Request) int {
+	limit := queryInt(r, "limit", store.CacheLimit)
+	if limit > store.CacheLimit {
+		limit = store.CacheLimit
 	}
 	if limit < 1 {
 		limit = 1
 	}
-	entries, err := h.store.SessionsWonLeaderboard(r.Context(), limit)
-	if err != nil {
-		h.log.Error("sessions-won query failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	writeJSON(w, http.StatusOK, entries)
+	return limit
 }
 
 // GET /ws?ticket=… — upgrade to the game socket. The ticket (single-use, minted

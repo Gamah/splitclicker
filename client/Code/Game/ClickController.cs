@@ -35,7 +35,6 @@ public sealed class ClickController : Component
 	public int Of { get; private set; }
 	public string Tag { get; private set; } = "";
 	public string Username { get; private set; } = "";
-	public int MyPoints { get; private set; }
 	public List<Standing> Standings { get; private set; } = new();
 	public List<Standing> Winners { get; private set; } = new();
 
@@ -235,7 +234,6 @@ public sealed class ClickController : Component
 					Standings = r.Standings ?? new();
 					Phase = GamePhase.Result;
 					_nonce = null;
-					UpdateMyPoints();
 					AchievementTracker.OnRoundResult( r.You.PointsDelta, r.You.RoundId );
 					break;
 
@@ -244,7 +242,6 @@ public sealed class ClickController : Component
 					Standings = g.Standings ?? new();
 					Phase = GamePhase.GameOver;
 					_nonce = null;
-					UpdateMyPoints();
 					AchievementTracker.OnGameOver( g.You.Placement, g.You.Won, g.You.GameId );
 					break;
 			}
@@ -252,19 +249,6 @@ public sealed class ClickController : Component
 		catch ( Exception e )
 		{
 			Log.Warning( $"[Splitclicker] bad ws frame: {e.Message}" );
-		}
-	}
-
-	void UpdateMyPoints()
-	{
-		MyPoints = 0;
-		foreach ( var s in Standings )
-		{
-			if ( s.Tag == Tag )
-			{
-				MyPoints = s.Points;
-				return;
-			}
 		}
 	}
 

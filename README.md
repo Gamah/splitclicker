@@ -69,15 +69,19 @@ in-editor — see `client/`'s code comments and PLAN §7.
 3. WS frames (JSON): client→ `click {nonce}`, `ping`; server→ `hello`,
    `round_pending`, `armed {nonce}`, `round_result` (with `you.points_delta`,
    `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`).
-4. `GET /api/v1/leaderboard/hourly?limit=100` — current UTC hour, top players.
-5. `GET /api/v1/leaderboard/hours-won?limit=100` — career board: hours won (the
+4. `GET /api/v1/leaderboard/hourly?limit=15` — current UTC hour, top players.
+5. `GET /api/v1/leaderboard/hours-won?limit=15` — career board: hours won (the
    top scorer of each completed clock-hour wins that hour).
-6. `GET /api/v1/leaderboard/sessions-won?limit=100` — career board: sessions
+6. `GET /api/v1/leaderboard/sessions-won?limit=15` — career board: sessions
    (games) won (the top scorer of each completed game wins that session).
 
-All boards (and the `standings` in `round_result`/`game_over`) sort by count
-descending and carry each player's public `steam_id` (SteamID64) so the client
-can copy the player's `steamcommunity.com/profiles/{id}` link on a name click.
+All three boards are served from an in-memory cache (top 15 rows; that is also
+the DB `LIMIT`), so a board read never touches Postgres. The cache is refreshed
+once at startup and once per game ("session") end — a deliberately simple trigger
+to revisit later (TTL or LISTEN/NOTIFY). All boards (and the `standings` in
+`round_result`/`game_over`) sort by count descending and carry each player's
+public `steam_id` (SteamID64) so the client can copy the player's
+`steamcommunity.com/profiles/{id}` link on a name click.
 
 ## Deployment / security note
 

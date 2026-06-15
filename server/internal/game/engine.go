@@ -167,7 +167,15 @@ type Engine struct {
 	mu    sync.RWMutex // guards phase/round (read by Snapshot)
 	phase Phase
 	round int
+
+	// gameEndHook, if set, runs after each game_over (post session-win write);
+	// used to refresh the leaderboard cache once per "session". Optional.
+	gameEndHook func(context.Context)
 }
+
+// SetGameEndHook registers a callback run after every game_over, once the
+// session win has been persisted. Call before Run; nil clears it.
+func (e *Engine) SetGameEndHook(fn func(context.Context)) { e.gameEndHook = fn }
 
 // New builds an Engine. store may be nil (scoring still works, just not
 // persisted). log may be nil (falls back to a no-op logger).
@@ -293,23 +301,27 @@ func (e *Engine) playGame(ctx context.Context) {
 		Won:        won,
 	})
 
-	// Credit the session win to the game's top scorer (if anyone scored), off the
-	// hot path so DB latency never delays the intermission.
-	if len(final) > 0 && e.store != nil {
-		e.creditSessionWin(final[0].SteamID)
-	}
+	// Post-game work runs off the hot path (we're entering intermission) in one
+	// goroutine so it's ordered: credit the session win first, then fire the
+	// game-end hook (the leaderboard-cache refresh) so the refresh observes it.
+	go e.afterGame(final)
 }
 
-// creditSessionWin records a game win for steamID on the persistent "sessions
-// won" board. Detached context so a shutdown right after game_over still records.
-func (e *Engine) creditSessionWin(steamID string) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := e.store.AddSessionWin(ctx, steamID); err != nil {
+// afterGame credits the session win to the game's top scorer (if anyone scored)
+// and then runs the optional game-end hook. Detached context so a shutdown right
+// after game_over still records and refreshes.
+func (e *Engine) afterGame(final []Standing) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if len(final) > 0 && e.store != nil {
+		if err := e.store.AddSessionWin(ctx, final[0].SteamID); err != nil {
 			e.log.Error("persist session win", zap.Error(err))
 		}
-	}()
+	}
+	if e.gameEndHook != nil {
+		e.gameEndHook(ctx)
+	}
 }
 
 // pending is the IDLE/arming phase: announce the round, then wait the secret

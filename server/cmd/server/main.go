@@ -70,18 +70,37 @@ func main() {
 
 	st := store.New(pool)
 
+	// The leaderboard boards are served from this in-memory cache so the API
+	// never hits Postgres per request. It's refreshed once per game ("session")
+	// via the engine's game-end hook below (and once now, before serving).
+	cache := store.NewLeaderboardCache(st)
+
 	// The hub and engine reference each other: build the hub first, give the
 	// engine the hub as its Broadcaster, then wire the engine back into the hub.
 	hub := ws.NewHub(log)
 	engine := game.New(game.ConfigFromEnv(), hub, st, log)
 	hub.SetEngine(engine)
+	engine.SetGameEndHook(func(ctx context.Context) {
+		if err := cache.Refresh(ctx); err != nil {
+			log.Error("refresh leaderboard cache", zap.Error(err))
+		}
+	})
+
+	// Populate the cache before serving so the first reads aren't empty.
+	{
+		ictx, icancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := cache.Refresh(ictx); err != nil {
+			log.Error("initial leaderboard cache refresh", zap.Error(err))
+		}
+		icancel()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go engine.Run(ctx)
 	go runHourlyFinalizer(ctx, st, log)
 
-	mux := api.NewRouter(st, hub, engine, log)
+	mux := api.NewRouter(st, cache, hub, engine, log)
 
 	port := os.Getenv("PORT")
 	if port == "" {

@@ -58,8 +58,6 @@
 			<div class="round">@($"Round {c?.Round ?? 0} / {c?.Of ?? 0}")</div>
 			<div class="state @PhaseClass()">@PhaseText()</div>
 			<div class="meta">
-				<div class="score">@($"You: {c?.MyPoints ?? 0}")</div>
-				<div class="sep">·</div>
 				<div class="players">@($"{c?.Players ?? 0} online")</div>
 				<div class="sep">·</div>
 				<div class="clicks">@($"{c?.ClicksToWin ?? 0} clicks exist for this round")</div>
@@ -321,7 +319,6 @@
 	}
 
 	.meta .sep { color: rgba(255, 255, 255, 0.4); }
-	.meta .score { color: #06d6a0; }
 
 	.arm {
 		font-size: 16px;
@@ -531,7 +528,7 @@
 	// Include the seconds-remaining so the countdown re-renders as it ticks, and
 	// ToastVisible so the copied-link toast appears and clears itself on time.
 	protected override int BuildHash() => HashCode.Combine(
-		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0, C?.MyPoints ?? 0,
+		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0,
 			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
