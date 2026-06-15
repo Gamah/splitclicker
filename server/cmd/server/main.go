@@ -12,10 +12,45 @@ import (
 	"github.com/gamah/splitclicker/internal/api"
 	"github.com/gamah/splitclicker/internal/db"
 	"github.com/gamah/splitclicker/internal/game"
+	"github.com/gamah/splitclicker/internal/runtimecfg"
 	"github.com/gamah/splitclicker/internal/store"
 	"github.com/gamah/splitclicker/internal/ws"
 	"go.uber.org/zap"
 )
+
+// gameConfig builds the engine tuning with precedence default < env < config.json
+// (data/config.json). The game tunables are read once here at startup, so editing
+// them in config.json takes effect on the next restart (the skin/countdown, by
+// contrast, are re-read per request and apply live).
+func gameConfig() game.Config {
+	c := game.ConfigFromEnv()
+	f := runtimecfg.Load()
+	setDurSec := func(p *int, d *time.Duration) {
+		if p != nil {
+			*d = time.Duration(*p) * time.Second
+		}
+	}
+	setDurMs := func(p *int, d *time.Duration) {
+		if p != nil {
+			*d = time.Duration(*p) * time.Millisecond
+		}
+	}
+	setInt := func(p *int, i *int) {
+		if p != nil {
+			*i = *p
+		}
+	}
+	setDurSec(f.ArmMinSec, &c.ArmMin)
+	setDurSec(f.ArmMaxSec, &c.ArmMax)
+	setInt(f.ClicksPerPlayer, &c.ClicksPerPlayer)
+	setInt(f.MinClicks, &c.MinClicks)
+	setInt(f.RoundsPerGame, &c.RoundsPerGame)
+	setDurMs(f.RaceMaxMs, &c.RaceMax)
+	setDurMs(f.ResultDisplayMs, &c.ResultDisplay)
+	setDurMs(f.IntermissionMs, &c.Intermission)
+	setInt(f.BoardSize, &c.BoardSize)
+	return c
+}
 
 // version is injected at build time via -ldflags "-X main.version=<git-hash>".
 var version = "dev"
@@ -78,7 +113,7 @@ func main() {
 	// The hub and engine reference each other: build the hub first, give the
 	// engine the hub as its Broadcaster, then wire the engine back into the hub.
 	hub := ws.NewHub(log)
-	engine := game.New(game.ConfigFromEnv(), hub, st, log)
+	engine := game.New(gameConfig(), hub, st, log)
 	hub.SetEngine(engine)
 	engine.SetGameEndHook(func(ctx context.Context) {
 		if err := cache.Refresh(ctx); err != nil {

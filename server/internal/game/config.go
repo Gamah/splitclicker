@@ -20,14 +20,14 @@ type Config struct {
 	BoardSize int // top-K standings included in result/game_over frames
 }
 
-// DefaultConfig is the baseline tuning from PLAN.md §1.
+// DefaultConfig is the baseline tuning (overridable via data/config.json, then env).
 func DefaultConfig() Config {
 	return Config{
-		ArmMin:          10 * time.Second,
-		ArmMax:          120 * time.Second,
-		ClicksPerPlayer: 1,
-		MinClicks:       1,
-		RoundsPerGame:   10,
+		ArmMin:          2 * time.Second,
+		ArmMax:          6 * time.Second,
+		ClicksPerPlayer: 15,
+		MinClicks:       50,
+		RoundsPerGame:   5,
 		RaceMax:         5 * time.Second,
 		ResultDisplay:   4 * time.Second,
 		Intermission:    5 * time.Second,
