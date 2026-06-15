@@ -20,6 +20,39 @@ import (
 // version is injected at build time via -ldflags "-X main.version=<git-hash>".
 var version = "dev"
 
+// runHourlyFinalizer credits the winner of each completed UTC clock-hour to the
+// "hours won" board. It runs once at startup (catching up any hours missed while
+// the process was down) and again just after every hour boundary. FinalizeDueHours
+// is idempotent, so the small post-boundary delay and the startup pass can't
+// double-count.
+func runHourlyFinalizer(ctx context.Context, st *store.Store, log *zap.Logger) {
+	finalize := func() {
+		fctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		n, err := st.FinalizeDueHours(fctx, time.Now())
+		if err != nil {
+			log.Error("finalize hours", zap.Error(err))
+		} else if n > 0 {
+			log.Info("finalized hourly winners", zap.Int("hours", n))
+		}
+	}
+
+	finalize() // catch up on boundaries crossed while we were down
+	for {
+		now := time.Now().UTC()
+		// Wake a touch after the next hour boundary so the just-ended hour is closed.
+		next := now.Truncate(time.Hour).Add(time.Hour + 5*time.Second)
+		timer := time.NewTimer(time.Until(next))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			finalize()
+		}
+	}
+}
+
 func main() {
 	log, _ := zap.NewProduction()
 	defer log.Sync()
@@ -46,6 +79,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go engine.Run(ctx)
+	go runHourlyFinalizer(ctx, st, log)
 
 	mux := api.NewRouter(st, hub, engine, log)
 

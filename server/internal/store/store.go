@@ -135,6 +135,116 @@ func (s *Store) HourlyLeaderboard(ctx context.Context, limit int) ([]Leaderboard
 	return out, rows.Err()
 }
 
+// HoursWonLeaderboard returns up to limit players by career hours won, highest
+// first. Points carries the hours count (reusing the entry shape).
+func (s *Store) HoursWonLeaderboard(ctx context.Context, limit int) ([]LeaderboardEntry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT w.steam_id, p.username, p.display_name, w.hours
+		FROM hourly_wins w
+		LEFT JOIN players p ON p.steam_id = w.steam_id
+		ORDER BY w.hours DESC, w.steam_id ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []LeaderboardEntry{}
+	for rows.Next() {
+		var steamID string
+		var name, disp *string
+		var hours int
+		if err := rows.Scan(&steamID, &name, &disp, &hours); err != nil {
+			return nil, err
+		}
+		p := playerOf(steamID, name, disp)
+		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: hours})
+	}
+	return out, rows.Err()
+}
+
+// FinalizeDueHours credits an hourly win to the top scorer of every completed
+// clock-hour (strictly before the current UTC hour) not yet finalized. It is
+// idempotent — the finalized_hours ledger guards against double-counting across
+// restarts — so it is safe to call on startup and on every hour boundary.
+// Returns the number of hours newly finalized.
+func (s *Store) FinalizeDueHours(ctx context.Context, now time.Time) (int, error) {
+	current := now.UTC().Truncate(time.Hour)
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT hs.hour_bucket
+		FROM hourly_scores hs
+		WHERE hs.hour_bucket < $1
+		  AND NOT EXISTS (SELECT 1 FROM finalized_hours f WHERE f.hour_bucket = hs.hour_bucket)
+		ORDER BY hs.hour_bucket
+	`, current)
+	if err != nil {
+		return 0, err
+	}
+	var buckets []time.Time
+	for rows.Next() {
+		var b time.Time
+		if err := rows.Scan(&b); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		buckets = append(buckets, b)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	n := 0
+	for _, b := range buckets {
+		if err := s.finalizeHour(ctx, b); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// finalizeHour credits the winner of one completed hour in a single transaction:
+// pick the top scorer (most points, steam_id asc tiebreak), bump their hours_won,
+// and stamp the ledger. The ledger insert is the idempotency point.
+func (s *Store) finalizeHour(ctx context.Context, bucket time.Time) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var winner string
+	err = tx.QueryRow(ctx, `
+		SELECT steam_id FROM hourly_scores
+		WHERE hour_bucket = $1
+		ORDER BY points DESC, steam_id ASC
+		LIMIT 1
+	`, bucket).Scan(&winner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No scores for the hour: nothing to award, but still mark it done.
+		if _, err := tx.Exec(ctx, `INSERT INTO finalized_hours (hour_bucket) VALUES ($1) ON CONFLICT DO NOTHING`, bucket); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO hourly_wins (steam_id, hours) VALUES ($1, 1)
+		ON CONFLICT (steam_id) DO UPDATE SET hours = hourly_wins.hours + 1
+	`, winner); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO finalized_hours (hour_bucket) VALUES ($1) ON CONFLICT DO NOTHING`, bucket); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // playerOf resolves a player. The tag is keyed on the claimed username only (so
 // it stays stable as the Steam display name changes); Name() handles the
 // public-display fallback to the Steam name.

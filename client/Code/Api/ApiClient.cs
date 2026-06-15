@@ -92,18 +92,26 @@ public static class ApiClient
 	}
 
 	/// <summary>Current UTC-hour leaderboard (top `limit`). Empty list on failure.</summary>
-	public static async Task<List<Standing>> GetHourlyLeaderboard( int limit = 100 )
+	public static Task<List<Standing>> GetHourlyLeaderboard( int limit = 100 ) =>
+		GetLeaderboard( "hourly", limit );
+
+	/// <summary>Career "hours won" leaderboard (top `limit`). Empty list on failure.
+	/// Each Standing's Points is the hours-won count.</summary>
+	public static Task<List<Standing>> GetHoursWonLeaderboard( int limit = 100 ) =>
+		GetLeaderboard( "hours-won", limit );
+
+	static async Task<List<Standing>> GetLeaderboard( string board, int limit )
 	{
 		try
 		{
-			var resp = await Http.RequestAsync( BaseUrl + $"/api/v1/leaderboard/hourly?limit={limit}", "GET", null );
+			var resp = await Http.RequestAsync( BaseUrl + $"/api/v1/leaderboard/{board}?limit={limit}", "GET", null );
 			if ( !resp.IsSuccessStatusCode ) return new List<Standing>();
 			return JsonSerializer.Deserialize<List<Standing>>( await resp.Content.ReadAsStringAsync(), JsonOpts )
 				?? new List<Standing>();
 		}
 		catch ( Exception e )
 		{
-			Log.Warning( $"[Splitclicker] leaderboard fetch failed: {e.Message}" );
+			Log.Warning( $"[Splitclicker] {board} leaderboard fetch failed: {e.Message}" );
 			return new List<Standing>();
 		}
 	}

@@ -27,9 +27,9 @@ internal/
   session/         public player tag + username validation
   game/            authoritative state machine (arm RNG, nonce race, scoring,
                    spam penalty) — transport/DB-agnostic behind interfaces
-  store/           Postgres-backed hourly board + players (pgx)
+  store/           Postgres-backed hourly board + hours-won + players (pgx)
   ws/              WebSocket hub (gorilla); implements game.Broadcaster
-  api/             REST: /auth, /leaderboard/hourly, /health, + /ws upgrade
+  api/             REST: /auth, /leaderboard/{hourly,hours-won}, /health, + /ws upgrade
   db/              pgx pool + goose migrations
 migrations/        goose SQL
 docker/            Dockerfile, compose (app + postgres); app listens on 6969
@@ -60,14 +60,18 @@ in-editor — see `client/`'s code comments and PLAN §7.
 
 ## Contract (HTTP / WebSocket)
 
-1. `POST /api/v1/auth` `{steam_id, token, username?}` — client mints `token` with
-   `Sandbox.Services.Auth.GetToken("splitclicker")`; server validates against
-   Facepunch (fail-closed), upserts the player, returns `{tag, username, ticket, ttl_ms}`.
+1. `POST /api/v1/auth` `{steam_id, token, username?, display_name?}` — client mints
+   `token` with `Sandbox.Services.Auth.GetToken("splitclicker")` and reports its Steam
+   `display_name`; server validates against Facepunch (fail-closed), upserts the player,
+   returns `{tag, username, ticket, ttl_ms}` (`username` resolves to the claimed handle,
+   else the Steam name).
 2. `GET /ws?ticket=…` — upgrade with the single-use ticket (SteamID never on the URL).
 3. WS frames (JSON): client→ `click {nonce}`, `ping`; server→ `hello`,
    `round_pending`, `armed {nonce}`, `round_result` (with `you.points_delta`,
    `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`).
 4. `GET /api/v1/leaderboard/hourly?limit=100` — current UTC hour, top players.
+5. `GET /api/v1/leaderboard/hours-won?limit=100` — career board: hours won (the
+   top scorer of each completed clock-hour wins that hour).
 
 ## Deployment / security note
 

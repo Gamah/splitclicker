@@ -87,6 +87,7 @@ func NewRouter(st *store.Store, hub *ws.Hub, engine *game.Engine, log *zap.Logge
 	mux.HandleFunc("GET /health", h.health)
 	mux.HandleFunc("POST /api/v1/auth", rl.wrap(h.auth))
 	mux.HandleFunc("GET /api/v1/leaderboard/hourly", h.hourlyLeaderboard)
+	mux.HandleFunc("GET /api/v1/leaderboard/hours-won", h.hoursWonLeaderboard)
 	mux.HandleFunc("GET /ws", h.wsConnect)
 
 	return mux
@@ -176,6 +177,24 @@ func (h *handler) hourlyLeaderboard(w http.ResponseWriter, r *http.Request) {
 	entries, err := h.store.HourlyLeaderboard(r.Context(), limit)
 	if err != nil {
 		h.log.Error("leaderboard query failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// GET /api/v1/leaderboard/hours-won?limit=100 — career board of hours won.
+func (h *handler) hoursWonLeaderboard(w http.ResponseWriter, r *http.Request) {
+	limit := queryInt(r, "limit", 100)
+	if limit > 200 {
+		limit = 200
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	entries, err := h.store.HoursWonLeaderboard(r.Context(), limit)
+	if err != nil {
+		h.log.Error("hours-won query failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}

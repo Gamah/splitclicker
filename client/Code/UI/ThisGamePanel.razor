@@ -8,15 +8,14 @@
 @inherits PanelComponent
 
 @*
-	The "this game" board: a persistent copy of the top-clickers list, but scoped to
-	the current game's cumulative standings (pushed inside round_result/game_over —
-	never fetched). Mirrors HourlyBoardPanel on the opposite corner so players can
-	see the live game race and the persistent hourly competition side by side.
+	The "session" board: the current game's cumulative standings, shown constantly
+	on the left (pushed inside round_result/game_over — never fetched, and never a
+	round-over-only pop-up). The between-round/final standings live here now.
 *@
 
 <root>
 	<div class="board">
-		<div class="title">THIS GAME · TOP CLICKERS</div>
+		<div class="title">SESSION · TOP CLICKERS</div>
 		<div class="divider"></div>
 		@if ( Entries.Count == 0 )
 		{
@@ -41,7 +40,7 @@
 	root {
 		width: 100%;
 		height: 100%;
-		align-items: flex-end;
+		align-items: flex-start;
 		justify-content: flex-start;
 		pointer-events: none;
 	}
@@ -50,7 +49,7 @@
 		flex-direction: column;
 		width: 260px;
 		margin-top: 18px;
-		margin-right: 18px;
+		margin-left: 18px;
 		background-color: rgba(7, 5, 26, 0.82);
 		border: 1.5px solid rgba(255, 255, 255, 0.12);
 		border-radius: 10px;

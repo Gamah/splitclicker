@@ -21,14 +21,17 @@
 	root {
 		width: 100%;
 		height: 100%;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
 	}
 
+	/* Fixed square (the ScreenPanel auto-scales to a 1080-tall reference) so the
+	   button is a true circle, centered on screen, at ~70% of the screen height. */
 	.btn {
-		width: 75%;
-		height: 75%;
-		border-radius: 32px;
+		width: 760px;
+		height: 760px;
+		border-radius: 50%;
 		align-items: center;
 		justify-content: center;
 		background-color: #e63946; /* red: not clickable */
