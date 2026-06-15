@@ -13,10 +13,12 @@ public record AuthResponse(
 );
 
 // GET /api/v1/config response: server-driven bits the client needs at startup.
-// WinnerLockTime is RFC3339 (the countdown target); SkinUrl is the server path
-// the current "skin to win" image is served from (made absolute against BaseUrl).
+// WinnerLockMs is the countdown target as Unix epoch milliseconds (0 = unset) —
+// a plain number so no date parsing is needed (the s&box sandbox doesn't
+// whitelist System.Globalization). SkinUrl is the server path the current
+// "skin to win" image is served from (made absolute against BaseUrl).
 public record ConfigResponse(
-	[property: JsonPropertyName( "winner_lock_time" )] string WinnerLockTime,
+	[property: JsonPropertyName( "winner_lock_ms" )] long WinnerLockMs,
 	[property: JsonPropertyName( "skin_url" )] string SkinUrl
 );
 

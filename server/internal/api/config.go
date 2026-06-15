@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // The "skin to win" image and the winner-lock countdown are both server-driven so
@@ -31,11 +32,16 @@ func skinFile() string {
 	return filepath.Base(f)
 }
 
-// winnerLockTime is when the current winner is locked in (RFC3339, set via
-// WINNER_LOCK_TIME). Passed through verbatim; the client parses and counts down
-// to it, and once past prompts Gamah for a new skin.
-func winnerLockTime() string {
-	return os.Getenv("WINNER_LOCK_TIME")
+// winnerLockMs is when the current winner is locked in, as Unix epoch
+// milliseconds (0 = unset/unparseable). Parsed from WINNER_LOCK_TIME (RFC3339).
+// Sent as a plain number so the s&box client needs no date parsing — its sandbox
+// doesn't whitelist System.Globalization, so it counts down with integer math.
+func winnerLockMs() int64 {
+	t, err := time.Parse(time.RFC3339, os.Getenv("WINNER_LOCK_TIME"))
+	if err != nil {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 // GET /api/v1/config — the small bit of public config the client needs at
@@ -43,8 +49,8 @@ func winnerLockTime() string {
 // current skin image.
 func (h *handler) config(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"winner_lock_time": winnerLockTime(),
-		"skin_url":         "/api/v1/skin",
+		"winner_lock_ms": winnerLockMs(),
+		"skin_url":       "/api/v1/skin",
 	})
 }
 
