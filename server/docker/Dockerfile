@@ -20,6 +20,11 @@ RUN apk add --no-cache ca-certificates
 COPY --from=builder /bin/splitclicker /splitclicker
 # goose reads migrations from the filesystem at startup, so ship them alongside.
 COPY --from=builder /src/migrations /migrations
+# Host-editable runtime dir: skin images + config.json (timestamp/skin selection),
+# served off disk at GET /api/v1/skin and /api/v1/config. Baked in as a baseline;
+# the host bind-mounts its own ./data over /data to edit these live (see compose).
+COPY --from=builder /src/data /data
+ENV RUNTIME_DIR=/data
 
 EXPOSE 6969
 ENTRYPOINT ["/splitclicker"]

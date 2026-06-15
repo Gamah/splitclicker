@@ -3,3 +3,14 @@
 obj/
 bin/
 *.user
+
+# Generated when the project is opened in the s&box editor / an IDE
+.vs/
+.vscode/
+ProjectSettings/
+Code/Properties/
+Code/splitclicker.csproj
+splitclicker.slnx
+# Compiled scene artifacts (the source .scene is tracked)
+*.scene_c
+*.scene_d

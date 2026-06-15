@@ -1,0 +1,16 @@
+{
+  "_comment": "Host-editable runtime config. Copy to config.json (same dir) and edit. skin_image (a file in ./media) and winner_lock_time (RFC3339; empty hides the countdown) apply LIVE — re-read every request. The game tunables below are read at startup, so 'docker compose restart app' to apply them.",
+
+  "skin_image": "skin2win.png",
+  "winner_lock_time": "2026-06-16T07:00:00Z",
+
+  "arm_min_sec": 2,
+  "arm_max_sec": 6,
+  "clicks_per_player": 15,
+  "min_clicks": 50,
+  "rounds_per_game": 5,
+  "race_max_ms": 5000,
+  "result_display_ms": 4000,
+  "intermission_ms": 5000,
+  "board_size": 20
+}

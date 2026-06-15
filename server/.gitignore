@@ -1,3 +1,7 @@
 /bin/
 *.test
 .env
+
+# Host-editable runtime config (live skin/timestamp). Ship config.json.example;
+# the host copies it to config.json and edits that.
+/data/config.json
