@@ -51,6 +51,11 @@ public sealed class ClickController : Component
 	/// CLICK! phase. Reset on each arm; shown under the button.</summary>
 	public int ClicksSent { get; private set; }
 
+	/// <summary>The arming-window bounds (seconds) from the server config; the
+	/// per-round delay itself stays secret. Shown while the round is arming.</summary>
+	public int ArmMinSec { get; private set; }
+	public int ArmMaxSec { get; private set; }
+
 	/// <summary>True only while a valid click can score — drives both the button's
 	/// enabled state and scoring eligibility from one source.</summary>
 	public bool CanClick => Phase == GamePhase.Armed && !string.IsNullOrEmpty( _nonce );
@@ -167,6 +172,8 @@ public sealed class ClickController : Component
 					Of = h.Game.Of;
 					Players = h.Game.Players;
 					ClicksToWin = h.Game.Clicks;
+					ArmMinSec = h.Game.ArmMin;
+					ArmMaxSec = h.Game.ArmMax;
 					Phase = PhaseFrom( h.Game.Phase );
 					break;
 

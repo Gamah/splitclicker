@@ -193,11 +193,13 @@ func (e *Engine) Submit(ev ClickEvent) {
 // Snapshot is the current phase/round (plus the live player count and the N a
 // round would take right now), for the hello frame. Safe from any goroutine.
 type Snapshot struct {
-	Phase   Phase
-	Round   int
-	Of      int
-	Players int
-	Clicks  int
+	Phase     Phase
+	Round     int
+	Of        int
+	Players   int
+	Clicks    int
+	ArmMinSec int // arming-window bounds (the per-round delay itself stays secret)
+	ArmMaxSec int
 }
 
 func (e *Engine) Snapshot() Snapshot {
@@ -208,7 +210,11 @@ func (e *Engine) Snapshot() Snapshot {
 	if e.bc != nil {
 		players = e.bc.PlayerCount()
 	}
-	return Snapshot{Phase: phase, Round: round, Of: e.cfg.RoundsPerGame, Players: players, Clicks: e.clicksFor(players)}
+	return Snapshot{
+		Phase: phase, Round: round, Of: e.cfg.RoundsPerGame,
+		Players: players, Clicks: e.clicksFor(players),
+		ArmMinSec: int(e.cfg.ArmMin / time.Second), ArmMaxSec: int(e.cfg.ArmMax / time.Second),
+	}
 }
 
 // clicksFor is the per-round N: the scoring slots scale with the connected

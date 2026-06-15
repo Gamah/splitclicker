@@ -23,6 +23,10 @@
 			<div class="sep">·</div>
 			<div class="clicks">@(C?.ClicksToWin ?? 0) clicks exist for this round</div>
 		</div>
+		@if ( C?.Phase == GamePhase.Pending && (C?.ArmMaxSec ?? 0) > 0 )
+		{
+			<div class="arm">arms in @(C.ArmMinSec)–@(C.ArmMaxSec)s</div>
+		}
 		@if ( (C?.PenaltyMs ?? 0) > 0 )
 		{
 			<div class="penalty">throttled +@(C.PenaltyMs)ms</div>
@@ -79,6 +83,13 @@
 	.meta .sep { color: rgba(255, 255, 255, 0.4); }
 	.meta .score { color: #06d6a0; }
 
+	.arm {
+		font-size: 16px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.6);
+		letter-spacing: 1px;
+	}
+
 	.penalty {
 		font-size: 16px;
 		font-weight: bold;
@@ -122,6 +133,7 @@
 	};
 
 	protected override int BuildHash() =>
-		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0, C?.MyPoints ?? 0,
-			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 );
+		HashCode.Combine( HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0, C?.MyPoints ?? 0,
+			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
+			C?.ArmMaxSec ?? 0 );
 }

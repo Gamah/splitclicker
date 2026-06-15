@@ -194,7 +194,11 @@ func (h *Hub) hello(c *Client) {
 	c.trySend(mustJSON(helloWire{
 		T:    "hello",
 		You:  helloYou{Tag: c.Tag, Username: c.Username},
-		Game: helloGame{Round: snap.Round, Of: snap.Of, Phase: snap.Phase.String(), Players: snap.Players, Clicks: snap.Clicks},
+		Game: helloGame{
+			Round: snap.Round, Of: snap.Of, Phase: snap.Phase.String(),
+			Players: snap.Players, Clicks: snap.Clicks,
+			ArmMin: snap.ArmMinSec, ArmMax: snap.ArmMaxSec,
+		},
 	}))
 }
 

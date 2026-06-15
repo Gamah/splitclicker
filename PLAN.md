@@ -390,7 +390,9 @@ Client → server:
 - `ping` — keepalive (infrequent; see §3.5(b)).
 
 Server → client:
-- `{"t":"hello","you":{tag,username},"game":{round,of,phase,players,clicks}}`
+- `{"t":"hello","you":{tag,username},"game":{round,of,phase,players,clicks,arm_min,arm_max}}`
+  — `arm_min`/`arm_max` are the arming-window bounds in seconds (the per-round delay itself
+  stays secret); the client shows the window while a round is arming.
 - `{"t":"round_pending","round":k,"of":X,"players":P,"clicks":N}`
 - `{"t":"armed","round":k,"seq":s,"players":P,"clicks":N,"penalty_ms":m}` — go live now.
   `penalty_ms` is this connection's own delayed-arm penalty (§5.1), surfaced so a masher can

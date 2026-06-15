@@ -32,7 +32,9 @@ public record HelloGame(
 	[property: JsonPropertyName( "of" )] int Of,
 	[property: JsonPropertyName( "phase" )] string Phase,
 	[property: JsonPropertyName( "players" )] int Players,
-	[property: JsonPropertyName( "clicks" )] int Clicks
+	[property: JsonPropertyName( "clicks" )] int Clicks,
+	[property: JsonPropertyName( "arm_min" )] int ArmMin,
+	[property: JsonPropertyName( "arm_max" )] int ArmMax
 );
 
 public record HelloMsg(

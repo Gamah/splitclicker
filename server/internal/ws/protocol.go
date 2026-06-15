@@ -19,6 +19,8 @@ type helloGame struct {
 	Phase   string `json:"phase"`
 	Players int    `json:"players"`
 	Clicks  int    `json:"clicks"`
+	ArmMin  int    `json:"arm_min"` // arming-window bounds, seconds (the delay itself is secret)
+	ArmMax  int    `json:"arm_max"`
 }
 
 type helloWire struct {
