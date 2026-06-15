@@ -50,16 +50,25 @@ func TestRaceState(t *testing.T) {
 		}
 	})
 
-	t.Run("one score per player per arm (dedupe)", func(t *testing.T) {
+	t.Run("a single player can take multiple slots in one arm", func(t *testing.T) {
 		rs := newRaceState(nonce, 3)
 		if !rs.offer(click("a", nonce)) {
 			t.Fatal("a first click should score")
 		}
-		if rs.offer(click("a", nonce)) {
-			t.Fatal("a second click in same arm must be deduped")
+		if !rs.offer(click("a", nonce)) {
+			t.Fatal("a second click in same arm should also score")
 		}
-		if len(rs.scored) != 1 {
-			t.Fatalf("expected 1 score, got %d", len(rs.scored))
+		if !rs.offer(click("a", nonce)) {
+			t.Fatal("a third click should fill the race")
+		}
+		if !rs.full() {
+			t.Fatal("race should be full at N=3")
+		}
+		if rs.offer(click("a", nonce)) {
+			t.Fatal("a fourth click after N must not score")
+		}
+		if len(rs.scored) != 3 {
+			t.Fatalf("expected 3 scores, got %d", len(rs.scored))
 		}
 	})
 }

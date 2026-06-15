@@ -304,8 +304,15 @@ raceLoop:
 		e.persist(deltas)
 	}
 
-	winners := make([]Standing, 0, len(rs.scored))
+	// One entry per scoring player in first-arrival order; a masher who took
+	// several slots still shows once, with their cumulative game points.
+	winners := make([]Standing, 0, len(deltas))
+	seen := make(map[string]bool, len(deltas))
 	for _, ev := range rs.scored {
+		if seen[ev.SteamID] {
+			continue
+		}
+		seen[ev.SteamID] = true
 		pi := info[ev.SteamID]
 		winners = append(winners, Standing{Tag: pi.tag, Username: pi.username, Points: scores[ev.SteamID], steamID: ev.SteamID})
 	}
@@ -371,27 +378,28 @@ func (e *Engine) randArmDelay() time.Duration {
 
 // --- pure helpers (unit-tested directly) ---
 
-// raceState accepts the first N valid, non-duplicate clicks for one arm. It is
-// the whole scoring rule in one place: nonce gating (anti-pre-fire), one score
-// per player per arm (dedupe), and the hard N cutoff.
+// raceState accepts the first N valid clicks for one arm. It is the whole
+// scoring rule in one place: nonce gating (anti-pre-fire) and the hard N cutoff.
+// The window stays open until N clicks are consumed (or RaceMax), and a single
+// player may take multiple slots — repeated clicks from the same player each
+// score, so a fast clicker is rewarded for mashing inside the live window.
 type raceState struct {
-	nonce   uint64
-	n       int
-	deduped map[string]bool
-	scored  []ClickEvent
+	nonce  uint64
+	n      int
+	scored []ClickEvent
 }
 
 func newRaceState(nonce uint64, n int) *raceState {
 	if n < 1 {
 		n = 1
 	}
-	return &raceState{nonce: nonce, n: n, deduped: map[string]bool{}}
+	return &raceState{nonce: nonce, n: n}
 }
 
 func (rs *raceState) full() bool { return len(rs.scored) >= rs.n }
 
-// offer reports whether ev scored. A wrong/zero nonce (pre-fire or stale), a
-// duplicate player, or a full race all score nothing.
+// offer reports whether ev scored. A wrong/zero nonce (pre-fire or stale) or a
+// full race scores nothing; otherwise the click takes the next of the N slots.
 func (rs *raceState) offer(ev ClickEvent) bool {
 	if rs.full() {
 		return false
@@ -399,10 +407,6 @@ func (rs *raceState) offer(ev ClickEvent) bool {
 	if ev.Nonce != rs.nonce {
 		return false
 	}
-	if rs.deduped[ev.SteamID] {
-		return false
-	}
-	rs.deduped[ev.SteamID] = true
 	rs.scored = append(rs.scored, ev)
 	return true
 }

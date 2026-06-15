@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Sandbox;
 
@@ -9,12 +10,20 @@ namespace Splitclicker.Ws;
 //
 // Heartbeat is long (the backend uses protocol-level ping/pong on its own
 // cadence); idle costs nothing, which is the whole point of staying connected.
+//
+// Sends are serialized: the underlying ClientWebSocket allows only one
+// outstanding Send at a time and throws if a second starts before the first
+// completes. The click path is fire-and-forget by design (no awaiting on the
+// hot path), so a fast clicker would otherwise overlap sends and have all but
+// the first thrown away. A 1-permit semaphore funnels every frame (clicks +
+// ping) through one at a time, in call order, so every click reaches the wire.
 public sealed class WsClient : Component
 {
 	public Action<string> OnMessage { get; set; }
 	public Action OnDone { get; set; }
 
 	WebSocket _socket;
+	readonly SemaphoreSlim _sendGate = new( 1, 1 );
 	TimeSince _lastPing;
 	const float PingInterval = 60f;
 
@@ -37,10 +46,27 @@ public sealed class WsClient : Component
 		_lastPing = 0;
 	}
 
+	// Send serializes through _sendGate so overlapping fire-and-forget calls
+	// (rapid clicks) are delivered one after another instead of throwing on a
+	// concurrent ClientWebSocket.Send. Order is preserved: the gate hands out
+	// its single permit in the order WaitAsync was called.
 	public async Task Send( string message )
 	{
-		if ( _socket != null && _connected )
-			await _socket.Send( message );
+		if ( _socket == null || !_connected ) return;
+		await _sendGate.WaitAsync();
+		try
+		{
+			if ( _socket != null && _connected )
+				await _socket.Send( message );
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[Splitclicker] ws send failed: {e.Message}" );
+		}
+		finally
+		{
+			_sendGate.Release();
+		}
 	}
 
 	public void Disconnect()
@@ -55,7 +81,7 @@ public sealed class WsClient : Component
 		if ( !_connected || _socket == null ) return;
 		if ( _lastPing > PingInterval )
 		{
-			_ = _socket.Send( "{\"t\":\"ping\"}" );
+			_ = Send( "{\"t\":\"ping\"}" );
 			_lastPing = 0;
 		}
 	}

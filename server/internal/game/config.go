@@ -10,7 +10,7 @@ import (
 type Config struct {
 	ArmMin         time.Duration // shortest arming delay
 	ArmMax         time.Duration // longest arming delay
-	ClicksPerRound int           // N: scoring clicks per arm (1 = first-click-wins)
+	ClicksPerRound int           // N: scoring clicks per arm the window consumes before closing (1 = first-click-wins)
 	RoundsPerGame  int           // X: rounds before game_over
 	RaceMax        time.Duration // safety cap: close the race even if < N clicks land
 	ResultDisplay  time.Duration // how long the round leaderboard shows
@@ -27,7 +27,7 @@ func DefaultConfig() Config {
 	return Config{
 		ArmMin:              10 * time.Second,
 		ArmMax:              120 * time.Second,
-		ClicksPerRound:      1,
+		ClicksPerRound:      25,
 		RoundsPerGame:       10,
 		RaceMax:             5 * time.Second,
 		ResultDisplay:       4 * time.Second,
