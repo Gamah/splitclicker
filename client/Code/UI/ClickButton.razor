@@ -26,36 +26,35 @@
 	}
 
 	.btn {
-		width: 320px;
-		height: 320px;
-		border-radius: 320px;
+		width: 75%;
+		height: 75%;
+		border-radius: 32px;
 		align-items: center;
 		justify-content: center;
-		background-color: #2a2a3a;
-		border: 6px solid rgba(255, 255, 255, 0.12);
+		background-color: #e63946; /* red: not clickable */
+		border: 8px solid rgba(255, 255, 255, 0.14);
 		transition: all 0.08s ease-out;
 		pointer-events: all;
 		cursor: default;
 	}
 
 	.label {
-		font-size: 40px;
+		font-size: 64px;
 		font-weight: bold;
-		color: rgba(255, 255, 255, 0.5);
-		letter-spacing: 2px;
+		color: rgba(255, 255, 255, 0.85);
+		letter-spacing: 3px;
 	}
 
+	/* green only while a valid click can actually score */
 	.btn.armed {
-		background-color: #ff2e63;
-		border-color: #ffd166;
+		background-color: #06d6a0;
+		border-color: #ffffff;
 		cursor: pointer;
-		transform: scale(1.06);
+		transform: scale(1.02);
 	}
 
 	.btn.armed .label { color: white; }
-	.btn.armed:active { transform: scale(0.97); }
-
-	.btn.pending { background-color: #1d1d2b; }
+	.btn.armed:active { transform: scale(0.98); }
 </style>
 
 @code {
@@ -63,12 +62,8 @@
 
 	bool Armed => ClickController.Instance?.CanClick ?? false;
 
-	string StateClass()
-	{
-		var p = ClickController.Instance?.Phase ?? GamePhase.Connecting;
-		if ( Armed ) return "armed";
-		return p == GamePhase.Pending ? "pending" : "";
-	}
+	// Green ("armed") only while a valid click can score; red (base) otherwise.
+	string StateClass() => Armed ? "armed" : "";
 
 	string Label()
 	{

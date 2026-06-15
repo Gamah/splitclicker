@@ -23,6 +23,7 @@
 <root>
 	<div class="board">
 		<div class="title">HOURLY · TOP CLICKERS</div>
+		<div class="reset">resets in @ResetCountdown()</div>
 		<div class="divider"></div>
 		@if ( _entries.Count == 0 )
 		{
@@ -69,6 +70,12 @@
 		font-weight: bold;
 		color: rgba(255, 255, 255, 0.85);
 		letter-spacing: 1px;
+		justify-content: center;
+	}
+
+	.reset {
+		font-size: 11px;
+		color: rgba(255, 255, 255, 0.5);
 		justify-content: center;
 		margin-bottom: 4px;
 	}
@@ -152,9 +159,22 @@
 		return !string.IsNullOrEmpty( tag ) && s.Tag == tag;
 	}
 
+	// Show the player's name (claimed username or Steam display name, resolved
+	// server-side), never the opaque hex tag.
 	static string DisplayName( Standing s ) =>
-		!string.IsNullOrWhiteSpace( s.Username ) ? s.Username
-			: ( string.IsNullOrWhiteSpace( s.Tag ) ? "anonymous" : s.Tag );
+		!string.IsNullOrWhiteSpace( s.Username ) ? s.Username : "anonymous";
 
-	protected override int BuildHash() => HashCode.Combine( _entries.Count, _loaded, ClickController.Instance?.Tag );
+	// Wall-clock time left until the UTC hour ticks over (when the board resets),
+	// as MM:SS — not a rolling 60-minute window.
+	static string ResetCountdown()
+	{
+		var now = DateTime.UtcNow;
+		var nextHour = now.Date.AddHours( now.Hour + 1 );
+		var left = nextHour - now;
+		return $"{(int)left.TotalMinutes:D2}:{left.Seconds:D2}";
+	}
+
+	// Include the seconds-remaining so the countdown re-renders as it ticks.
+	protected override int BuildHash() => HashCode.Combine(
+		_entries.Count, _loaded, ClickController.Instance?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds );
 }

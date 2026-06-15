@@ -122,17 +122,18 @@ func newCaptureBC() *captureBC {
 	}
 }
 
-func (b *captureBC) Pending(PendingFrame)    {}
-func (b *captureBC) Armed(a ArmedFrame)      { b.armed <- a }
-func (b *captureBC) Result(r ResultFrame)    { b.result <- r }
+func (b *captureBC) Pending(PendingFrame)     {}
+func (b *captureBC) Armed(a ArmedFrame)       { b.armed <- a }
+func (b *captureBC) Result(r ResultFrame)     { b.result <- r }
 func (b *captureBC) GameOver(g GameOverFrame) { b.gameOver <- g }
+func (b *captureBC) PlayerCount() int         { return 1 }
 
 // TestEngineLoopScores runs the real timed loop with tiny delays: one round,
 // N=1, fire a valid click on arm, assert it scores and the game ends.
 func TestEngineLoopScores(t *testing.T) {
 	cfg := Config{
 		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
-		ClicksPerRound: 1, RoundsPerGame: 1,
+		MinClicks: 1, RoundsPerGame: 1,
 		RaceMax: 2 * time.Second, ResultDisplay: 5 * time.Millisecond,
 		Intermission: 5 * time.Millisecond, BoardSize: 20,
 	}

@@ -61,9 +61,12 @@ Per global game instance the server cycles:
   resets hourly. This is the "most clicks" board the user described. Persisted to Postgres.
 
 ### Tunables (all server-side config / env)
-`armMinSec=10`, `armMaxSec=120`, `clicksPerRound N=25`, `roundsPerGame X` (e.g. 10),
-`raceMaxMs`, `resultDisplayMs`, `intermissionMs`, leaderboard reset cadence (default hourly).
-N=1 gives pure first-click-wins; N>1 gives multiple winners per arm.
+`armMinSec=10`, `armMaxSec=120`, `clicksPerPlayer` × `connectedPlayers` = **N** (floored at
+`minClicks`), `roundsPerGame X` (e.g. 10), `raceMaxMs`, `resultDisplayMs`, `intermissionMs`,
+leaderboard reset cadence (default hourly). N scales with the crowd: `clicksPerPlayer=1`,
+`minClicks=1` ⇒ N == connected players (`minClicks=1` & one player gives pure
+first-click-wins; more players give multiple winners per arm). Player count and N are pushed
+to clients (in `hello`/`round_pending`/`armed`) so the UI can show "P online · N to win".
 
 ---
 
@@ -387,9 +390,11 @@ Client → server:
 - `ping` — keepalive (infrequent; see §3.5(b)).
 
 Server → client:
-- `{"t":"hello","you":{tag,username},"game":{round,of,phase}}`
-- `{"t":"round_pending","round":k,"of":X}`
-- `{"t":"armed","round":k,"seq":s}` — go live now.
+- `{"t":"hello","you":{tag,username},"game":{round,of,phase,players,clicks}}`
+- `{"t":"round_pending","round":k,"of":X,"players":P,"clicks":N}`
+- `{"t":"armed","round":k,"seq":s,"players":P,"clicks":N,"penalty_ms":m}` — go live now.
+  `penalty_ms` is this connection's own delayed-arm penalty (§5.1), surfaced so a masher can
+  see the throttle; 0 for honest clients.
 - `{"t":"round_result","round":k,"winners":[…],"standings":[…],"you":{"points_delta":d,"round_id":"…"}}`
   — `you.points_delta` + a unique `round_id` let the client drive the `points` stat exactly
   once (§7.1).

@@ -104,8 +104,7 @@
 	string Title() => C?.Phase == GamePhase.GameOver ? "FINAL STANDINGS" : "STANDINGS";
 
 	static string DisplayName( Standing s ) =>
-		!string.IsNullOrWhiteSpace( s.Username ) ? s.Username
-			: ( string.IsNullOrWhiteSpace( s.Tag ) ? "anonymous" : s.Tag );
+		!string.IsNullOrWhiteSpace( s.Username ) ? s.Username : "anonymous";
 
 	protected override int BuildHash() =>
 		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Standings?.Count ?? 0, C?.MyPoints ?? 0 );

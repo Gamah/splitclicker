@@ -8,10 +8,11 @@ import (
 
 // Config holds the game tunables. All are server-side; see ConfigFromEnv.
 type Config struct {
-	ArmMin         time.Duration // shortest arming delay
-	ArmMax         time.Duration // longest arming delay
-	ClicksPerRound int           // N: scoring clicks per arm the window consumes before closing (1 = first-click-wins)
-	RoundsPerGame  int           // X: rounds before game_over
+	ArmMin          time.Duration // shortest arming delay
+	ArmMax          time.Duration // longest arming delay
+	ClicksPerPlayer int           // N = ClicksPerPlayer × connected players (the scoring slots scale with the crowd)
+	MinClicks       int           // floor for N when few/no players are connected (1 = first-click-wins)
+	RoundsPerGame   int           // X: rounds before game_over
 	RaceMax        time.Duration // safety cap: close the race even if < N clicks land
 	ResultDisplay  time.Duration // how long the round leaderboard shows
 	Intermission   time.Duration // pause between games
@@ -27,7 +28,8 @@ func DefaultConfig() Config {
 	return Config{
 		ArmMin:              10 * time.Second,
 		ArmMax:              120 * time.Second,
-		ClicksPerRound:      25,
+		ClicksPerPlayer:     1,
+		MinClicks:           1,
 		RoundsPerGame:       10,
 		RaceMax:             5 * time.Second,
 		ResultDisplay:       4 * time.Second,
@@ -44,7 +46,8 @@ func ConfigFromEnv() Config {
 	c := DefaultConfig()
 	c.ArmMin = envDur("ARM_MIN_SEC", c.ArmMin, time.Second)
 	c.ArmMax = envDur("ARM_MAX_SEC", c.ArmMax, time.Second)
-	c.ClicksPerRound = envInt("CLICKS_PER_ROUND", c.ClicksPerRound)
+	c.ClicksPerPlayer = envInt("CLICKS_PER_PLAYER", c.ClicksPerPlayer)
+	c.MinClicks = envInt("MIN_CLICKS", c.MinClicks)
 	c.RoundsPerGame = envInt("ROUNDS_PER_GAME", c.RoundsPerGame)
 	c.RaceMax = envDur("RACE_MAX_MS", c.RaceMax, time.Millisecond)
 	c.ResultDisplay = envDur("RESULT_DISPLAY_MS", c.ResultDisplay, time.Millisecond)

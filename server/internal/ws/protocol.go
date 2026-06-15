@@ -14,9 +14,11 @@ type helloYou struct {
 }
 
 type helloGame struct {
-	Round int    `json:"round"`
-	Of    int    `json:"of"`
-	Phase string `json:"phase"`
+	Round   int    `json:"round"`
+	Of      int    `json:"of"`
+	Phase   string `json:"phase"`
+	Players int    `json:"players"`
+	Clicks  int    `json:"clicks"`
 }
 
 type helloWire struct {
@@ -26,16 +28,23 @@ type helloWire struct {
 }
 
 type pendingWire struct {
-	T     string `json:"t"`
-	Round int    `json:"round"`
-	Of    int    `json:"of"`
+	T       string `json:"t"`
+	Round   int    `json:"round"`
+	Of      int    `json:"of"`
+	Players int    `json:"players"`
+	Clicks  int    `json:"clicks"`
 }
 
+// penalty_ms is this connection's own arm-delay penalty (the spam deterrent),
+// surfaced so a masher can see they're being throttled. 0 for honest clients.
 type armedWire struct {
-	T     string `json:"t"`
-	Round int    `json:"round"`
-	Seq   int    `json:"seq"`
-	Nonce string `json:"nonce"`
+	T         string `json:"t"`
+	Round     int    `json:"round"`
+	Seq       int    `json:"seq"`
+	Nonce     string `json:"nonce"`
+	Players   int    `json:"players"`
+	Clicks    int    `json:"clicks"`
+	PenaltyMs int    `json:"penalty_ms"`
 }
 
 // youResult lets the client drive its `points` achievement stat exactly once:

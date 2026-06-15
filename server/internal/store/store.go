@@ -38,45 +38,63 @@ func (s *Store) AddHourlyPoints(ctx context.Context, bucket time.Time, deltas []
 	return s.pool.SendBatch(ctx, batch).Close()
 }
 
-// Player is a resolved player record. Tag is the public id; SteamID stays server-side.
+// Player is a resolved player record. Tag is the public id; SteamID stays
+// server-side. Username is the claimed handle (may be ""); DisplayName is the
+// Steam name reported by the client (may be "").
 type Player struct {
-	SteamID  string
-	Username string
-	Tag      string
+	SteamID     string
+	Username    string
+	DisplayName string
+	Tag         string
+}
+
+// Name is the public display string: the claimed username, falling back to the
+// Steam display name. Empty only when the player has neither.
+func (p Player) Name() string {
+	if p.Username != "" {
+		return p.Username
+	}
+	return p.DisplayName
 }
 
 // UpsertPlayer creates or updates the player keyed by steam_id. An empty
-// username leaves any existing name untouched. Returns the resolved player.
-func (s *Store) UpsertPlayer(ctx context.Context, steamID, username string) (Player, error) {
-	var u *string
+// username or displayName leaves any existing value untouched. Returns the
+// resolved player.
+func (s *Store) UpsertPlayer(ctx context.Context, steamID, username, displayName string) (Player, error) {
+	var u, d *string
 	if username != "" {
 		u = &username
 	}
-	var name *string
+	if displayName != "" {
+		d = &displayName
+	}
+	var name, disp *string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO players (steam_id, username)
-		VALUES ($1, $2)
+		INSERT INTO players (steam_id, username, display_name)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (steam_id)
-		DO UPDATE SET username = COALESCE(EXCLUDED.username, players.username), updated_at = NOW()
-		RETURNING username
-	`, steamID, u).Scan(&name)
+		DO UPDATE SET username = COALESCE(EXCLUDED.username, players.username),
+		             display_name = COALESCE(EXCLUDED.display_name, players.display_name),
+		             updated_at = NOW()
+		RETURNING username, display_name
+	`, steamID, u, d).Scan(&name, &disp)
 	if err != nil {
 		return Player{}, err
 	}
-	return playerOf(steamID, name), nil
+	return playerOf(steamID, name, disp), nil
 }
 
 // GetPlayer looks up a player by steam_id; ok is false when none exists.
 func (s *Store) GetPlayer(ctx context.Context, steamID string) (p Player, ok bool, err error) {
-	var name *string
-	err = s.pool.QueryRow(ctx, `SELECT username FROM players WHERE steam_id=$1`, steamID).Scan(&name)
+	var name, disp *string
+	err = s.pool.QueryRow(ctx, `SELECT username, display_name FROM players WHERE steam_id=$1`, steamID).Scan(&name, &disp)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Player{}, false, nil
 	}
 	if err != nil {
 		return Player{}, false, err
 	}
-	return playerOf(steamID, name), true, nil
+	return playerOf(steamID, name, disp), true, nil
 }
 
 // LeaderboardEntry is one row of the hourly board (public fields only).
@@ -91,7 +109,7 @@ type LeaderboardEntry struct {
 func (s *Store) HourlyLeaderboard(ctx context.Context, limit int) ([]LeaderboardEntry, error) {
 	bucket := time.Now().UTC().Truncate(time.Hour)
 	rows, err := s.pool.Query(ctx, `
-		SELECT hs.steam_id, p.username, hs.points
+		SELECT hs.steam_id, p.username, p.display_name, hs.points
 		FROM hourly_scores hs
 		LEFT JOIN players p ON p.steam_id = hs.steam_id
 		WHERE hs.hour_bucket = $1
@@ -106,20 +124,23 @@ func (s *Store) HourlyLeaderboard(ctx context.Context, limit int) ([]Leaderboard
 	out := []LeaderboardEntry{}
 	for rows.Next() {
 		var steamID string
-		var name *string
+		var name, disp *string
 		var pts int
-		if err := rows.Scan(&steamID, &name, &pts); err != nil {
+		if err := rows.Scan(&steamID, &name, &disp, &pts); err != nil {
 			return nil, err
 		}
-		uname := deref(name)
-		out = append(out, LeaderboardEntry{Tag: session.PlayerTag(steamID, uname), Username: uname, Points: pts})
+		p := playerOf(steamID, name, disp)
+		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: pts})
 	}
 	return out, rows.Err()
 }
 
-func playerOf(steamID string, name *string) Player {
+// playerOf resolves a player. The tag is keyed on the claimed username only (so
+// it stays stable as the Steam display name changes); Name() handles the
+// public-display fallback to the Steam name.
+func playerOf(steamID string, name, disp *string) Player {
 	uname := deref(name)
-	return Player{SteamID: steamID, Username: uname, Tag: session.PlayerTag(steamID, uname)}
+	return Player{SteamID: steamID, Username: uname, DisplayName: deref(disp), Tag: session.PlayerTag(steamID, uname)}
 }
 
 func deref(s *string) string {

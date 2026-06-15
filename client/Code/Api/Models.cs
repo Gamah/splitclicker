@@ -30,7 +30,9 @@ public record HelloYou(
 public record HelloGame(
 	[property: JsonPropertyName( "round" )] int Round,
 	[property: JsonPropertyName( "of" )] int Of,
-	[property: JsonPropertyName( "phase" )] string Phase
+	[property: JsonPropertyName( "phase" )] string Phase,
+	[property: JsonPropertyName( "players" )] int Players,
+	[property: JsonPropertyName( "clicks" )] int Clicks
 );
 
 public record HelloMsg(
@@ -40,15 +42,21 @@ public record HelloMsg(
 
 public record PendingMsg(
 	[property: JsonPropertyName( "round" )] int Round,
-	[property: JsonPropertyName( "of" )] int Of
+	[property: JsonPropertyName( "of" )] int Of,
+	[property: JsonPropertyName( "players" )] int Players,
+	[property: JsonPropertyName( "clicks" )] int Clicks
 );
 
 // nonce is a hex string (an unguessable 64-bit token); echo it back verbatim in
-// the click frame — never parse/reformat it.
+// the click frame — never parse/reformat it. penalty_ms is this connection's own
+// arm-delay penalty (0 for honest clients), surfaced so a masher sees the throttle.
 public record ArmedMsg(
 	[property: JsonPropertyName( "round" )] int Round,
 	[property: JsonPropertyName( "seq" )] int Seq,
-	[property: JsonPropertyName( "nonce" )] string Nonce
+	[property: JsonPropertyName( "nonce" )] string Nonce,
+	[property: JsonPropertyName( "players" )] int Players,
+	[property: JsonPropertyName( "clicks" )] int Clicks,
+	[property: JsonPropertyName( "penalty_ms" )] int PenaltyMs
 );
 
 public record YouResult(

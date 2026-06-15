@@ -11,10 +11,22 @@
 *@
 
 <root>
-	<div class="bar">
-		<div class="round">Round @C.Round / @C.Of</div>
-		<div class="phase @PhaseClass()">@PhaseText()</div>
-		<div class="score">You: @C.MyPoints</div>
+	<div class="stack">
+		<div class="bar">
+			<div class="round">Round @C.Round / @C.Of</div>
+			<div class="phase @PhaseClass()">@PhaseText()</div>
+			<div class="score">You: @C.MyPoints</div>
+		</div>
+		<div class="meta">
+			<div class="players">@(C?.Players ?? 0) online</div>
+			<div class="sep">·</div>
+			<div class="clicks">@(C?.ClicksToWin ?? 0) clicks to win the round</div>
+			@if ( (C?.PenaltyMs ?? 0) > 0 )
+			{
+				<div class="sep">·</div>
+				<div class="penalty">throttled +@(C.PenaltyMs)ms</div>
+			}
+		</div>
 	</div>
 </root>
 
@@ -27,15 +39,35 @@
 		pointer-events: none;
 	}
 
+	.stack {
+		flex-direction: column;
+		align-items: center;
+		margin-top: 18px;
+		gap: 6px;
+	}
+
 	.bar {
 		flex-direction: row;
-		margin-top: 18px;
 		gap: 24px;
 		align-items: center;
 		background-color: rgba(7, 5, 26, 0.8);
 		border-radius: 8px;
 		padding: 8px 18px;
 	}
+
+	.meta {
+		flex-direction: row;
+		gap: 8px;
+		align-items: center;
+		background-color: rgba(7, 5, 26, 0.65);
+		border-radius: 6px;
+		padding: 4px 12px;
+		font-size: 13px;
+		color: rgba(255, 255, 255, 0.7);
+	}
+
+	.meta .sep { color: rgba(255, 255, 255, 0.3); }
+	.meta .penalty { color: #ffd166; font-weight: bold; }
 
 	.round, .score {
 		font-size: 16px;
@@ -78,5 +110,6 @@
 	};
 
 	protected override int BuildHash() =>
-		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0, C?.MyPoints ?? 0 );
+		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0, C?.MyPoints ?? 0,
+			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0 );
 }

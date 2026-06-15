@@ -22,7 +22,8 @@ services:
       # Game tunables (optional — omit to use defaults from internal/game/config.go)
       ARM_MIN_SEC: "${ARM_MIN_SEC:-10}"
       ARM_MAX_SEC: "${ARM_MAX_SEC:-120}"
-      CLICKS_PER_ROUND: "${CLICKS_PER_ROUND:-1}"
+      CLICKS_PER_PLAYER: "${CLICKS_PER_PLAYER:-1}"
+      MIN_CLICKS: "${MIN_CLICKS:-1}"
       ROUNDS_PER_GAME: "${ROUNDS_PER_GAME:-10}"
     depends_on:
       postgres:

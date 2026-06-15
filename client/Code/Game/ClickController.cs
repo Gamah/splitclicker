@@ -39,6 +39,14 @@ public sealed class ClickController : Component
 	public List<Standing> Standings { get; private set; } = new();
 	public List<Standing> Winners { get; private set; } = new();
 
+	/// <summary>Connected players (open server connections) and the scoring slots
+	/// this round (N = a multiple of the player count). Shown pre-click.</summary>
+	public int Players { get; private set; }
+	public int ClicksToWin { get; private set; }
+	/// <summary>This connection's current arm-delay penalty in ms (the spam
+	/// deterrent), 0 for honest clients. Surfaced so the player sees the throttle.</summary>
+	public int PenaltyMs { get; private set; }
+
 	/// <summary>True only while a valid click can score — drives both the button's
 	/// enabled state and scoring eligibility from one source.</summary>
 	public bool CanClick => Phase == GamePhase.Armed && !string.IsNullOrEmpty( _nonce );
@@ -152,6 +160,8 @@ public sealed class ClickController : Component
 					Username = h.You.Username;
 					Round = h.Game.Round;
 					Of = h.Game.Of;
+					Players = h.Game.Players;
+					ClicksToWin = h.Game.Clicks;
 					Phase = PhaseFrom( h.Game.Phase );
 					break;
 
@@ -159,6 +169,9 @@ public sealed class ClickController : Component
 					var p = Deser<PendingMsg>( json );
 					Round = p.Round;
 					Of = p.Of;
+					Players = p.Players;
+					ClicksToWin = p.Clicks;
+					PenaltyMs = 0; // fresh round: throttle is recomputed and re-revealed on arm
 					Phase = GamePhase.Pending;
 					_nonce = null;
 					break;
@@ -166,6 +179,9 @@ public sealed class ClickController : Component
 				case "armed":
 					var a = Deser<ArmedMsg>( json );
 					Round = a.Round;
+					Players = a.Players;
+					ClicksToWin = a.Clicks;
+					PenaltyMs = a.PenaltyMs;
 					_nonce = a.Nonce;
 					Phase = GamePhase.Armed;
 					break;

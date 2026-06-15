@@ -35,6 +35,14 @@ public static class ApiClient
 		return id != 0 ? id.ToString() : null;
 	}
 
+	/// <summary>Local Steam display name, or null if unavailable. Reported at auth
+	/// so the board can show a real name instead of the opaque hex tag.</summary>
+	static string LocalSteamName()
+	{
+		var name = Connection.Local?.DisplayName;
+		return string.IsNullOrWhiteSpace( name ) ? null : name;
+	}
+
 	/// <summary>Facepunch token proving Steam ownership. Returns null (never throws)
 	/// when none can be minted (web/non-Steam) so the caller fails cleanly.</summary>
 	static async Task<string> AuthToken()
@@ -63,6 +71,8 @@ public static class ApiClient
 
 		var body = new Dictionary<string, string> { ["steam_id"] = steamId, ["token"] = token };
 		if ( !string.IsNullOrEmpty( username ) ) body["username"] = username;
+		var steamName = LocalSteamName();
+		if ( steamName != null ) body["display_name"] = steamName;
 
 		try
 		{

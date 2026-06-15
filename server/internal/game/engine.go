@@ -72,19 +72,25 @@ func (s Standing) SteamID() string { return s.steamID }
 // --- broadcaster (implemented by the ws hub) ---
 
 // PendingFrame announces a new round is arming. The arm time is secret, so this
-// carries no countdown.
+// carries no countdown. Players/Clicks tell the client how many people are
+// connected and how many scoring clicks (N) this round will take to fill.
 type PendingFrame struct {
-	Round int
-	Of    int
+	Round   int
+	Of      int
+	Players int
+	Clicks  int
 }
 
 // ArmedFrame goes live: the race is open. Penalties is keyed by SteamID — the
 // hub holds back that connection's copy of the armed frame by the given delay
-// (the spam deterrent). Nonce must be echoed by a scoring click.
+// (the spam deterrent) and echoes that same delay back so the player can see
+// they're being throttled. Nonce must be echoed by a scoring click.
 type ArmedFrame struct {
 	Round     int
 	Seq       int
 	Nonce     uint64
+	Players   int
+	Clicks    int
 	Penalties map[string]time.Duration
 }
 
@@ -110,12 +116,14 @@ type GameOverFrame struct {
 }
 
 // Broadcaster is how the engine reaches connected clients. All methods are
-// called from the engine's single Run goroutine.
+// called from the engine's single Run goroutine, except PlayerCount which must
+// be safe from any goroutine (the engine reads it to size each round's race).
 type Broadcaster interface {
 	Pending(PendingFrame)
 	Armed(ArmedFrame)
 	Result(ResultFrame)
 	GameOver(GameOverFrame)
+	PlayerCount() int
 }
 
 // --- store (the persistent hourly board) ---
@@ -182,17 +190,38 @@ func (e *Engine) Submit(ev ClickEvent) {
 	}
 }
 
-// Snapshot is the current phase/round, for the hello frame. Safe from any goroutine.
+// Snapshot is the current phase/round (plus the live player count and the N a
+// round would take right now), for the hello frame. Safe from any goroutine.
 type Snapshot struct {
-	Phase Phase
-	Round int
-	Of    int
+	Phase   Phase
+	Round   int
+	Of      int
+	Players int
+	Clicks  int
 }
 
 func (e *Engine) Snapshot() Snapshot {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return Snapshot{Phase: e.phase, Round: e.round, Of: e.cfg.RoundsPerGame}
+	phase, round := e.phase, e.round
+	e.mu.RUnlock()
+	players := 0
+	if e.bc != nil {
+		players = e.bc.PlayerCount()
+	}
+	return Snapshot{Phase: phase, Round: round, Of: e.cfg.RoundsPerGame, Players: players, Clicks: e.clicksFor(players)}
+}
+
+// clicksFor is the per-round N: the scoring slots scale with the connected
+// crowd (ClicksPerPlayer each), floored so a near-empty server still races.
+func (e *Engine) clicksFor(players int) int {
+	n := e.cfg.ClicksPerPlayer * players
+	if n < e.cfg.MinClicks {
+		n = e.cfg.MinClicks
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 func (e *Engine) setPhase(p Phase, round int) {
@@ -221,11 +250,14 @@ func (e *Engine) playGame(ctx context.Context) {
 	x := e.cfg.RoundsPerGame
 
 	for round := 1; round <= x && ctx.Err() == nil; round++ {
-		penalties := e.pending(ctx, round, x, info)
+		// Size the round to the crowd at arm time: N scales with connected players.
+		players := e.bc.PlayerCount()
+		n := e.clicksFor(players)
+		penalties := e.pending(ctx, round, x, players, n, info)
 		if ctx.Err() != nil {
 			return
 		}
-		e.race(ctx, round, x, penalties, scores, info)
+		e.race(ctx, round, x, players, n, penalties, scores, info)
 	}
 	if ctx.Err() != nil {
 		return
@@ -249,9 +281,9 @@ func (e *Engine) playGame(ctx context.Context) {
 // pending is the IDLE/arming phase: announce the round, then wait the secret
 // delay. Clicks during this phase score nothing but accrue a per-connection arm
 // delay (the spam deterrent), returned keyed by SteamID for the hub to apply.
-func (e *Engine) pending(ctx context.Context, round, of int, info map[string]playerInfo) map[string]time.Duration {
+func (e *Engine) pending(ctx context.Context, round, of, players, n int, info map[string]playerInfo) map[string]time.Duration {
 	e.setPhase(PhasePending, round)
-	e.bc.Pending(PendingFrame{Round: round, Of: of})
+	e.bc.Pending(PendingFrame{Round: round, Of: of, Players: players, Clicks: n})
 
 	penalties := map[string]time.Duration{}
 	timer := time.NewTimer(e.randArmDelay())
@@ -271,12 +303,12 @@ func (e *Engine) pending(ctx context.Context, round, of int, info map[string]pla
 
 // race is the ARMED phase: arm with a fresh nonce, accept the first N valid
 // clicks (by arrival), then publish the result. Closes the instant click N lands.
-func (e *Engine) race(ctx context.Context, round, of int, penalties map[string]time.Duration, scores map[string]int, info map[string]playerInfo) {
+func (e *Engine) race(ctx context.Context, round, of, players, n int, penalties map[string]time.Duration, scores map[string]int, info map[string]playerInfo) {
 	nonce := newNonce()
 	e.setPhase(PhaseArmed, round)
-	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: nonce, Penalties: penalties})
+	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: nonce, Players: players, Clicks: n, Penalties: penalties})
 
-	rs := newRaceState(nonce, e.cfg.ClicksPerRound)
+	rs := newRaceState(nonce, n)
 	timer := time.NewTimer(e.cfg.RaceMax)
 	defer timer.Stop()
 

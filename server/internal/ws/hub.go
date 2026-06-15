@@ -122,25 +122,39 @@ func (h *Hub) clientList() []*Client {
 	return out
 }
 
+// PlayerCount is the number of open client connections. Implements
+// game.Broadcaster so the engine can size each round's N to the crowd.
+func (h *Hub) PlayerCount() int {
+	h.mu.RLock()
+	n := len(h.clients)
+	h.mu.RUnlock()
+	return n
+}
+
 // --- game.Broadcaster ---
 
 func (h *Hub) Pending(p game.PendingFrame) {
-	msg := mustJSON(pendingWire{T: "round_pending", Round: p.Round, Of: p.Of})
+	msg := mustJSON(pendingWire{T: "round_pending", Round: p.Round, Of: p.Of, Players: p.Players, Clicks: p.Clicks})
 	for _, c := range h.clientList() {
 		c.trySend(msg)
 	}
 }
 
-// Armed fans out the single precomputed armed frame. Penalised connections get
-// theirs after a delay (the spam deterrent) — one marshal, staggered writes.
+// Armed fans out the armed frame. The unpenalised majority share one precomputed
+// frame; penalised connections get theirs after a delay (the spam deterrent)
+// with their own penalty_ms echoed in, so they can see they're being throttled.
 func (h *Hub) Armed(a game.ArmedFrame) {
-	msg := mustJSON(armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Nonce: strconv.FormatUint(a.Nonce, 16)})
+	base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Nonce: strconv.FormatUint(a.Nonce, 16), Players: a.Players, Clicks: a.Clicks}
+	clean := mustJSON(base)
 	for _, c := range h.clientList() {
 		if d := a.Penalties[c.SteamID]; d > 0 {
+			w := base
+			w.PenaltyMs = int(d.Milliseconds())
+			msg := mustJSON(w)
 			cc := c
 			time.AfterFunc(d, func() { cc.trySend(msg) })
 		} else {
-			c.trySend(msg)
+			c.trySend(clean)
 		}
 	}
 }
@@ -180,7 +194,7 @@ func (h *Hub) hello(c *Client) {
 	c.trySend(mustJSON(helloWire{
 		T:    "hello",
 		You:  helloYou{Tag: c.Tag, Username: c.Username},
-		Game: helloGame{Round: snap.Round, Of: snap.Of, Phase: snap.Phase.String()},
+		Game: helloGame{Round: snap.Round, Of: snap.Of, Phase: snap.Phase.String(), Players: snap.Players, Clicks: snap.Clicks},
 	}))
 }
 

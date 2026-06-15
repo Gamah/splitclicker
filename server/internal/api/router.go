@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/gamah/splitclicker/internal/game"
 	"github.com/gamah/splitclicker/internal/session"
@@ -106,9 +107,10 @@ var steamIDRe = regexp.MustCompile(`^[0-9]{1,20}$`)
 // only identity step — there is no Steam OpenID web sign-in.
 func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		SteamID  string `json:"steam_id"`
-		Token    string `json:"token"`
-		Username string `json:"username"`
+		SteamID     string `json:"steam_id"`
+		Token       string `json:"token"`
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -124,6 +126,10 @@ func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The Steam display name is cosmetic (not unique, not a claimable handle), so
+	// it isn't validated like a username — just sanitized so junk can't poison the
+	// board.
+	displayName := sanitizeDisplayName(body.DisplayName)
 
 	ok, err := steam.ValidateToken(r.Context(), body.SteamID, body.Token)
 	if err != nil {
@@ -134,7 +140,7 @@ func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	player, err := h.store.UpsertPlayer(r.Context(), body.SteamID, body.Username)
+	player, err := h.store.UpsertPlayer(r.Context(), body.SteamID, body.Username, displayName)
 	if err != nil {
 		if isUniqueViolation(err) { // username already taken by another account
 			writeError(w, http.StatusConflict, "username is already taken")
@@ -145,11 +151,14 @@ func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Name() is the claimed username if set, else the Steam display name — the
+	// string the client shows for this player everywhere (never the hex tag).
+	name := player.Name()
 	ticket := randToken()
-	h.tickets.Put(ticket, identity{SteamID: player.SteamID, Tag: player.Tag, Username: player.Username}, wsTicketTTL)
+	h.tickets.Put(ticket, identity{SteamID: player.SteamID, Tag: player.Tag, Username: name}, wsTicketTTL)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tag":      player.Tag,
-		"username": player.Username,
+		"username": name,
 		"ticket":   ticket,
 		"ttl_ms":   wsTicketTTL.Milliseconds(),
 	})
@@ -222,6 +231,24 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// sanitizeDisplayName trims a client-reported Steam name, strips control
+// characters, and caps the length. It is cosmetic only — uniqueness/charset
+// rules apply to claimed usernames, not to this.
+func sanitizeDisplayName(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	const maxRunes = 32
+	if r := []rune(s); len(r) > maxRunes {
+		s = string(r[:maxRunes])
+	}
+	return s
 }
 
 func queryInt(r *http.Request, key string, def int) int {
