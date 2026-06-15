@@ -32,7 +32,8 @@ internal/
   api/             REST: /auth, /leaderboard/hourly, /health, + /ws upgrade
   db/              pgx pool + goose migrations
 migrations/        goose SQL
-docker/            Dockerfile, compose (app + postgres), Caddyfile (TLS/WSS)
+docker/            Dockerfile, compose (app + postgres); app listens on 6969
+                   for an external Caddy to terminate TLS/WSS in front of
 ```
 
 Run it (from `server/`):

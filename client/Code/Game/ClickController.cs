@@ -25,6 +25,11 @@ public sealed class ClickController : Component
 {
 	public static ClickController Instance { get; private set; }
 
+	/// <summary>Backend root, editable in the scene inspector. Leave blank to use
+	/// the baked-in production URL (<see cref="ApiClient.ProdUrl"/>); set it to e.g.
+	/// http://localhost:8080 for a local play-test. Applied to ApiClient at startup.</summary>
+	[Property] public string BackendUrl { get; set; } = "";
+
 	public GamePhase Phase { get; private set; } = GamePhase.Connecting;
 	public int Round { get; private set; }
 	public int Of { get; private set; }
@@ -49,6 +54,8 @@ public sealed class ClickController : Component
 	protected override void OnAwake()
 	{
 		Instance = this;
+		if ( !string.IsNullOrWhiteSpace( BackendUrl ) )
+			ApiClient.BaseUrl = BackendUrl.TrimEnd( '/' );
 		_ws = GameObject.Components.GetOrCreate<WsClient>();
 		_ws.OnMessage = OnMessage;
 		_ws.OnDone = OnDisconnected;

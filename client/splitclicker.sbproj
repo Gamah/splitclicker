@@ -21,7 +21,11 @@
     "PerMapRanking": false,
     "LeaderboardType": "None",
     "CsProjName": "",
-    "HttpAllowList": null,
+    "HttpAllowList": [
+      "fart.notadomain.lol",
+      "localhost",
+      "127.0.0.1"
+    ],
     "StartupScene": "scenes/main.scene"
   }
 }

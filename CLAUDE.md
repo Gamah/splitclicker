@@ -116,7 +116,7 @@ server/                # Go backend (module github.com/gamah/splitclicker)
     api/               # REST: /auth, /leaderboard/hourly, /health, + /ws upgrade
     db/                # pgx pool + goose migrations (filesystem)
   migrations/          # goose SQL files
-  docker/              # Dockerfile + compose + Caddyfile
+  docker/              # Dockerfile + compose (app on 6969; external Caddy fronts it)
 client/                # s&box game (splitclicker.sbproj + Code/)
 PLAN.md                # full design & architecture (source of truth)
 ```

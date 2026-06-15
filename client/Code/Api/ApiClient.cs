@@ -11,7 +11,7 @@ namespace Splitclicker.Api;
 // call — Auth — proves identity and returns a single-use WebSocket ticket.
 public static class ApiClient
 {
-	public const string ProdUrl = "https://splitclicker.example.com";
+	public const string ProdUrl = "https://fart.notadomain.lol";
 
 	/// <summary>Backend root. Mutable so a dev build can point at localhost.</summary>
 	public static string BaseUrl { get; set; } = ProdUrl;
