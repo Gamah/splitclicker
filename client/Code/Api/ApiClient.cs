@@ -91,6 +91,32 @@ public static class ApiClient
 		}
 	}
 
+	/// <summary>Absolute URL for a server-relative path (e.g. "/api/v1/skin")
+	/// returned by config. Pass-through if already absolute; null in/out.</summary>
+	public static string AbsoluteUrl( string path )
+	{
+		if ( string.IsNullOrEmpty( path ) ) return null;
+		if ( path.StartsWith( "http" ) ) return path;
+		return BaseUrl.TrimEnd( '/' ) + "/" + path.TrimStart( '/' );
+	}
+
+	/// <summary>Server-driven startup config (winner-lock time + skin image URL).
+	/// Returns null on failure; the caller falls back to sensible defaults.</summary>
+	public static async Task<ConfigResponse> GetConfig()
+	{
+		try
+		{
+			var resp = await Http.RequestAsync( BaseUrl + "/api/v1/config", "GET", null );
+			if ( !resp.IsSuccessStatusCode ) return null;
+			return JsonSerializer.Deserialize<ConfigResponse>( await resp.Content.ReadAsStringAsync(), JsonOpts );
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[Splitclicker] config fetch failed: {e.Message}" );
+			return null;
+		}
+	}
+
 	/// <summary>Current UTC-hour leaderboard (top `limit`). Empty list on failure.</summary>
 	public static Task<List<Standing>> GetHourlyLeaderboard( int limit = 100 ) =>
 		GetLeaderboard( "hourly", limit );

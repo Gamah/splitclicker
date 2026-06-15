@@ -12,6 +12,14 @@ public record AuthResponse(
 	[property: JsonPropertyName( "ttl_ms" )] long TtlMs
 );
 
+// GET /api/v1/config response: server-driven bits the client needs at startup.
+// WinnerLockTime is RFC3339 (the countdown target); SkinUrl is the server path
+// the current "skin to win" image is served from (made absolute against BaseUrl).
+public record ConfigResponse(
+	[property: JsonPropertyName( "winner_lock_time" )] string WinnerLockTime,
+	[property: JsonPropertyName( "skin_url" )] string SkinUrl
+);
+
 // One row of a leaderboard (GET /api/v1/leaderboard/*) and of the standings
 // embedded in round_result / game_over. SteamId is the public SteamID64, used to
 // open/copy the player's steamcommunity.com profile.

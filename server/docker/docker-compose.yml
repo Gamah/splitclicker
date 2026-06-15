@@ -19,6 +19,9 @@ services:
       DATABASE_URL: "postgres://splitclicker@postgres:5432/splitclicker?sslmode=disable"
       PORT: "6969"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      # Skin-to-win image (served at /api/v1/skin) and the winner-lock countdown.
+      SKIN_IMAGE: "${SKIN_IMAGE:-skin2win.png}"
+      WINNER_LOCK_TIME: "${WINNER_LOCK_TIME:-}"
       # Game tunables (optional — omit to use defaults from internal/game/config.go)
       ARM_MIN_SEC: "${ARM_MIN_SEC:-10}"
       ARM_MAX_SEC: "${ARM_MAX_SEC:-120}"

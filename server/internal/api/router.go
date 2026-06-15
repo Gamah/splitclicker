@@ -87,6 +87,8 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	}
 
 	mux.HandleFunc("GET /health", h.health)
+	mux.HandleFunc("GET /api/v1/config", h.config)
+	mux.HandleFunc("GET /api/v1/skin", h.skin)
 	mux.HandleFunc("POST /api/v1/auth", rl.wrap(h.auth))
 	mux.HandleFunc("GET /api/v1/leaderboard/hourly", h.hourlyLeaderboard)
 	mux.HandleFunc("GET /api/v1/leaderboard/hours-won", h.hoursWonLeaderboard)

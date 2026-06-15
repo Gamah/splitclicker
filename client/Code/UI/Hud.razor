@@ -150,10 +150,23 @@
 		}
 	</div>
 
-	@* ── leader's "skin": bundled image pinned just left of the sessions-won board,
-	     captioned with the current sessions-won leader's name ── *@
+	@* ── leader's "skin": image served by the backend (selectable server-side),
+	     pinned just left of the sessions-won board, captioned with the current
+	     sessions-won leader's name. Above it, a countdown to when the winner is
+	     locked in; once that passes, a prompt for Gamah to set a new skin. ── *@
 	<div class="skin-panel">
-		<div class="skin-img"></div>
+		@if ( WinnerLockPassed() )
+		{
+			<div class="skin-locked">Gamah will set a new skin to win when he sees this</div>
+		}
+		else
+		{
+			<div class="skin-countdown">
+				<div class="cd-label">Time until winner is locked in</div>
+				<div class="cd-time">@WinnerCountdown()</div>
+			</div>
+		}
+		<div class="skin-img" style="background-image: url( @_skinUrl );"></div>
 		<div class="skin-caption">@($"{SkinLeaderName()}'s Skin")</div>
 	</div>
 
@@ -283,11 +296,44 @@
 		gap: 6px;
 	}
 
-	/* the image scales to fit the panel width (contain keeps its aspect ratio). */
+	/* countdown to the winner-lock time, sitting above the image. */
+	.skin-countdown {
+		flex-direction: column;
+		align-items: center;
+		gap: 1px;
+	}
+
+	.skin-countdown .cd-label {
+		font-size: 12px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.6);
+		text-align: center;
+		justify-content: center;
+		letter-spacing: 0.5px;
+	}
+
+	.skin-countdown .cd-time {
+		font-size: 22px;
+		font-weight: bold;
+		color: #ffd166;
+		justify-content: center;
+		letter-spacing: 1px;
+	}
+
+	/* shown in place of the countdown once the winner-lock time has passed. */
+	.skin-locked {
+		font-size: 13px;
+		font-weight: bold;
+		color: #ff9f1c;
+		text-align: center;
+		justify-content: center;
+	}
+
+	/* the image (served by the backend) scales to fit the panel width
+	   (contain keeps its aspect ratio); the url is bound inline from config. */
 	.skin-img {
 		width: 100%;
 		height: 240px;
-		background-image: url( "media/firstskintowin.png" );
 		background-repeat: no-repeat;
 		background-position: center;
 		background-size: contain;
@@ -490,6 +536,13 @@
 
 	GamePhase _lastPhase = GamePhase.Connecting;
 
+	// ── server-driven skin + winner-lock countdown (GET /api/v1/config) ──
+	// _winnerLock is the UTC instant the winner locks in; _skinUrl is the absolute
+	// URL the backend serves the current "skin to win" image from. Both come from
+	// config so they retune without a client rebuild.
+	DateTime? _winnerLock;
+	string _skinUrl = "";
+
 	// ── "copied profile link" toast: shown for ToastDuration after a name click ──
 	const float ToastDuration = 1.2f;
 	string _toast = "";
@@ -498,9 +551,26 @@
 
 	protected override void OnTreeFirstBuilt()
 	{
+		_ = LoadConfig();
 		_ = RefreshHourly();
 		_ = RefreshHoursWon();
 		_ = RefreshSessionsWon();
+	}
+
+	// Fetch the winner-lock time + skin image URL once on startup. On failure the
+	// countdown simply doesn't show and the image stays blank — no hard dependency.
+	async Task LoadConfig()
+	{
+		var cfg = await ApiClient.GetConfig();
+		if ( cfg == null ) return;
+		_skinUrl = ApiClient.AbsoluteUrl( cfg.SkinUrl ) ?? "";
+		if ( DateTime.TryParse( cfg.WinnerLockTime, null,
+			System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal,
+			out var t ) )
+		{
+			_winnerLock = t;
+		}
+		StateHasChanged();
 	}
 
 	protected override void OnUpdate()
@@ -609,6 +679,19 @@
 		return $"{(int)left.TotalMinutes:D2}:{left.Seconds:D2}";
 	}
 
+	// True once the winner-lock instant has passed (config loaded and now ≥ it).
+	bool WinnerLockPassed() => _winnerLock.HasValue && DateTime.UtcNow >= _winnerLock.Value;
+
+	// Time left until the winner locks in, as HH:MM:SS (clamped at zero). Empty
+	// until config has loaded a target time.
+	string WinnerCountdown()
+	{
+		if ( !_winnerLock.HasValue ) return "—";
+		var left = _winnerLock.Value - DateTime.UtcNow;
+		if ( left < TimeSpan.Zero ) left = TimeSpan.Zero;
+		return $"{(int)left.TotalHours:D2}:{left.Minutes:D2}:{left.Seconds:D2}";
+	}
+
 	bool Armed => C?.CanClick ?? false;
 
 	void OnPress() => ClickController.Instance?.SendClick();
@@ -661,5 +744,6 @@
 			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
-		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), IsMuted ) );
+		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), IsMuted,
+			_skinUrl, _winnerLock?.Ticks ?? 0, WinnerLockPassed() ) );
 }
