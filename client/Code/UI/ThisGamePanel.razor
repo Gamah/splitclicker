@@ -37,11 +37,10 @@
 </root>
 
 <style>
+	/* Left column of the HUD row: fixed width so the center button gets the rest. */
 	root {
-		position: absolute;
-		top: 0;
-		left: 0;
-		width: 100%;
+		width: 300px;
+		flex-shrink: 0;
 		height: 100%;
 		align-items: flex-start;
 		justify-content: flex-start;
@@ -50,9 +49,9 @@
 
 	.board {
 		flex-direction: column;
-		width: 260px;
+		width: 280px;
 		margin-top: 18px;
-		margin-left: 0; /* flush to the left edge of the screen */
+		margin-left: 14px;
 		background-color: rgba(7, 5, 26, 0.82);
 		border: 1.5px solid rgba(255, 255, 255, 0.12);
 		border-radius: 10px;

@@ -40,11 +40,10 @@
 </root>
 
 <style>
+	/* Far-right column of the HUD row. */
 	root {
-		position: absolute;
-		top: 0;
-		left: 0;
-		width: 100%;
+		width: 300px;
+		flex-shrink: 0;
 		height: 100%;
 		align-items: flex-end;
 		justify-content: flex-start;
@@ -53,9 +52,9 @@
 
 	.board {
 		flex-direction: column;
-		width: 260px;
+		width: 280px;
 		margin-top: 18px;
-		margin-right: 0; /* flush to the right edge */
+		margin-right: 14px;
 		background-color: rgba(7, 5, 26, 0.82);
 		border: 1.5px solid rgba(255, 255, 255, 0.12);
 		border-radius: 10px;

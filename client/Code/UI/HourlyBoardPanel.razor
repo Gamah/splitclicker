@@ -45,22 +45,21 @@
 </root>
 
 <style>
+	/* Right side of the HUD row, alongside the hours-won board. */
 	root {
-		position: absolute;
-		top: 0;
-		left: 0;
-		width: 100%;
+		width: 300px;
+		flex-shrink: 0;
 		height: 100%;
-		align-items: flex-start;
-		justify-content: flex-end; /* bottom-left: session board owns the top-left */
+		align-items: flex-end;
+		justify-content: flex-start;
 		pointer-events: none;
 	}
 
 	.board {
 		flex-direction: column;
-		width: 260px;
-		margin-bottom: 18px;
-		margin-left: 0; /* flush to the left edge, below the session board */
+		width: 280px;
+		margin-top: 18px;
+		margin-right: 0;
 		background-color: rgba(7, 5, 26, 0.82);
 		border: 1.5px solid rgba(255, 255, 255, 0.12);
 		border-radius: 10px;

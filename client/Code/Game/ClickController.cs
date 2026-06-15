@@ -87,13 +87,23 @@ public sealed class ClickController : Component
 			_ = ConnectFlow();
 	}
 
-	// SendClick is the hot path: do nothing but fire the nonce frame. An honest
-	// client only clicks while armed, so it never incurs the idle-spam penalty.
+	// SendClick is the hot path. While armed, fire the nonce frame (it scores) and
+	// count it. While the button is dormant (Pending), send an idle click with no
+	// nonce: it scores nothing but earns the escalating arm-delay penalty — sent so
+	// the player actually sees the throttle they're inflicting on themselves. Other
+	// phases send nothing.
 	public void SendClick()
 	{
-		if ( !CanClick ) return;
-		_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{_nonce}\"}}" );
-		ClicksSent++;
+		if ( _ws == null || !_ws.Connected ) return;
+		if ( Phase == GamePhase.Armed && !string.IsNullOrEmpty( _nonce ) )
+		{
+			_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{_nonce}\"}}" );
+			ClicksSent++;
+		}
+		else if ( Phase == GamePhase.Pending )
+		{
+			_ = _ws.Send( "{\"t\":\"click\",\"nonce\":\"\"}" );
+		}
 	}
 
 	async Task ConnectFlow()

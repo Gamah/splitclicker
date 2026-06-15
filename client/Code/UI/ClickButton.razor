@@ -6,38 +6,55 @@
 @inherits PanelComponent
 
 @*
-	The one global button: a centered colored circle. The handler does nothing but
-	enqueue the click send — no allocation, no awaiting render — so input latency is
-	minimal. Its enabled state and scoring eligibility share one source:
-	ClickController.CanClick. The state/round text and the "clicks sent" tally are the
-	StatusPanel HUD overlaid on top; here we render only the circle, so mashing never
-	re-renders the button.
+	The center column: the one global button (a colored circle) with the status HUD
+	overlaid dead-center on top of it, and the "clicks sent" tally beneath. This is a
+	single panel so the HUD can overlay the button (sibling ScreenPanel panels lay out
+	in a row, they don't stack). root flex-grows to fill the space between the side
+	boards. The press handler does nothing but enqueue the send — minimal input latency.
 *@
 
 <root>
 	<div class="btn @StateClass()" onclick="@OnPress"></div>
+
+	<div class="hud">
+		<div class="round">Round @(C?.Round ?? 0) / @(C?.Of ?? 0)</div>
+		<div class="state @PhaseClass()">@PhaseText()</div>
+		<div class="meta">
+			<div class="score">You: @(C?.MyPoints ?? 0)</div>
+			<div class="sep">·</div>
+			<div class="players">@(C?.Players ?? 0) online</div>
+			<div class="sep">·</div>
+			<div class="clicks">@(C?.ClicksToWin ?? 0) clicks exist for this round</div>
+		</div>
+		@if ( C?.Phase == GamePhase.Pending && (C?.ArmMaxSec ?? 0) > 0 )
+		{
+			<div class="arm">arms in @(C.ArmMinSec)–@(C.ArmMaxSec)s</div>
+		}
+		@if ( (C?.PenaltyMs ?? 0) > 0 )
+		{
+			<div class="penalty">throttled +@(C.PenaltyMs)ms</div>
+		}
+	</div>
+
+	<div class="clicks-sent">clicks sent: @(C?.ClicksSent ?? 0)</div>
 </root>
 
 <style>
 	root {
-		position: absolute;
-		top: 0;
-		left: 0;
-		width: 100%;
+		flex-grow: 1; /* fill the space between the left/right boards */
 		height: 100%;
+		position: relative;
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
 	}
 
 	/* Fixed square (the ScreenPanel auto-scales to a 1080-tall reference) so the
-	   button is a true circle, centered on screen, at ~70% of the screen height. */
+	   button is a true circle, centered, at ~70% of screen height. */
 	.btn {
-		width: 760px;
-		height: 760px;
+		width: 700px;
+		height: 700px;
 		border-radius: 50%;
-		align-items: center;
-		justify-content: center;
 		background-color: #e63946; /* red: not clickable */
 		border: 8px solid rgba(255, 255, 255, 0.14);
 		transition: all 0.08s ease-out;
@@ -54,9 +71,81 @@
 	}
 
 	.btn.armed:active { transform: scale(0.98); }
+
+	/* HUD overlaid dead-center on the button; clicks fall through to the button. */
+	.hud {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 10px;
+		pointer-events: none;
+	}
+
+	.round {
+		font-size: 22px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.85);
+		letter-spacing: 1px;
+	}
+
+	.state {
+		font-size: 54px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.9);
+		letter-spacing: 3px;
+	}
+
+	.state.armed { color: #ffffff; }
+	.state.offline { color: #ffd166; }
+
+	.meta {
+		flex-direction: row;
+		gap: 10px;
+		align-items: center;
+		font-size: 18px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.85);
+	}
+
+	.meta .sep { color: rgba(255, 255, 255, 0.4); }
+	.meta .score { color: #06d6a0; }
+
+	.arm {
+		font-size: 16px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.6);
+		letter-spacing: 1px;
+	}
+
+	.penalty {
+		font-size: 16px;
+		font-weight: bold;
+		color: #ffd166;
+	}
+
+	/* Directly under the circle (bottom edge ~890px of the 1080 ref). */
+	.clicks-sent {
+		position: absolute;
+		top: 900px;
+		left: 0;
+		right: 0;
+		justify-content: center;
+		font-size: 22px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.65);
+		letter-spacing: 1px;
+		pointer-events: none;
+	}
 </style>
 
 @code {
+	ClickController C => ClickController.Instance;
+
 	void OnPress() => ClickController.Instance?.SendClick();
 
 	bool Armed => ClickController.Instance?.CanClick ?? false;
@@ -64,6 +153,26 @@
 	// Green ("armed") only while a valid click can score; red (base) otherwise.
 	string StateClass() => Armed ? "armed" : "";
 
+	string PhaseText() => C?.Phase switch
+	{
+		GamePhase.Armed => "CLICK!",
+		GamePhase.Pending => "WAIT…",
+		GamePhase.Result => "ROUND OVER",
+		GamePhase.GameOver => "GAME OVER",
+		GamePhase.Disconnected => "RECONNECTING…",
+		GamePhase.Connecting => "CONNECTING…",
+		_ => "",
+	};
+
+	string PhaseClass() => C?.Phase switch
+	{
+		GamePhase.Armed => "armed",
+		GamePhase.Disconnected => "offline",
+		_ => "",
+	};
+
 	protected override int BuildHash() => HashCode.Combine(
-		Armed, ClickController.Instance?.Phase ?? GamePhase.Connecting );
+		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0, C?.MyPoints ?? 0,
+			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
+		C?.ArmMaxSec ?? 0 );
 }
