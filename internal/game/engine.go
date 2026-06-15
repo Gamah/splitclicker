@@ -1,0 +1,468 @@
+// Package game is the authoritative round/game state machine: it arms the global
+// button after a random delay, races the first N clicks worldwide, scores them,
+// and drives the leaderboard. It owns all game state in a single goroutine
+// (Run), so the hot path needs no locks: clicks arrive on a channel and are
+// serialized by arrival order — the server's wire-arrival order is truth.
+//
+// The state machine knows nothing about WebSockets or SQL. Transport is a
+// Broadcaster (the ws hub) and persistence is a Store (the hourly board); both
+// are interfaces so the engine stays unit-testable and the broadcast stays
+// swappable (the documented horizontal-fan-out escape hatch).
+package game
+
+import (
+	"context"
+	cryptorand "crypto/rand"
+	"encoding/binary"
+	"fmt"
+	"math/rand"
+	"sort"
+	"sync"
+	"time"
+
+	"go.uber.org/zap"
+)
+
+// Phase is the current point in the round cycle.
+type Phase int
+
+const (
+	PhaseIntermission Phase = iota // between games
+	PhasePending                   // arming: waiting out the secret delay
+	PhaseArmed                     // live: the race is open
+	PhaseResult                    // showing the round leaderboard
+)
+
+func (p Phase) String() string {
+	switch p {
+	case PhasePending:
+		return "pending"
+	case PhaseArmed:
+		return "armed"
+	case PhaseResult:
+		return "result"
+	default:
+		return "intermission"
+	}
+}
+
+// ClickEvent is one click as the hub read it off the wire. At is stamped on read,
+// before any locking, so ordering reflects true arrival. Nonce must echo the
+// current arm's nonce to score (anti-pre-fire); 0 means "no/!valid nonce".
+type ClickEvent struct {
+	SteamID  string
+	Tag      string
+	Username string
+	Nonce    uint64
+	At       time.Time
+}
+
+// Standing is one player's position on a board. steamID is unexported — it keys
+// per-player deltas/placements but is never marshalled into a public frame.
+type Standing struct {
+	Tag      string `json:"tag"`
+	Username string `json:"username"`
+	Points   int    `json:"points"`
+	steamID  string
+}
+
+// SteamID exposes the (private) account id to same-package transport code.
+func (s Standing) SteamID() string { return s.steamID }
+
+// --- broadcaster (implemented by the ws hub) ---
+
+// PendingFrame announces a new round is arming. The arm time is secret, so this
+// carries no countdown.
+type PendingFrame struct {
+	Round int
+	Of    int
+}
+
+// ArmedFrame goes live: the race is open. Penalties is keyed by SteamID — the
+// hub holds back that connection's copy of the armed frame by the given delay
+// (the spam deterrent). Nonce must be echoed by a scoring click.
+type ArmedFrame struct {
+	Round     int
+	Seq       int
+	Nonce     uint64
+	Penalties map[string]time.Duration
+}
+
+// ResultFrame is the post-round leaderboard. Deltas is per-SteamID points scored
+// this round; the hub merges each connection's own delta + RoundID into its copy
+// so the client can drive its `points` achievement stat exactly once.
+type ResultFrame struct {
+	Round     int
+	Of        int
+	Winners   []Standing
+	Standings []Standing
+	RoundID   string
+	Deltas    map[string]int
+}
+
+// GameOverFrame is the final standings. Placements/Won are per-SteamID, merged
+// per connection by the hub (drives placement/win achievements); GameID dedupes.
+type GameOverFrame struct {
+	Standings  []Standing
+	GameID     string
+	Placements map[string]int
+	Won        map[string]bool
+}
+
+// Broadcaster is how the engine reaches connected clients. All methods are
+// called from the engine's single Run goroutine.
+type Broadcaster interface {
+	Pending(PendingFrame)
+	Armed(ArmedFrame)
+	Result(ResultFrame)
+	GameOver(GameOverFrame)
+}
+
+// --- store (the persistent hourly board) ---
+
+// HourlyDelta is a points increment for one player.
+type HourlyDelta struct {
+	SteamID string
+	Points  int
+}
+
+// Store persists scoring. bucket is the UTC clock-hour the points belong to.
+type Store interface {
+	AddHourlyPoints(ctx context.Context, bucket time.Time, deltas []HourlyDelta) error
+}
+
+// --- engine ---
+
+type playerInfo struct {
+	tag      string
+	username string
+}
+
+// Engine drives the global game. Construct with New, then call Run.
+type Engine struct {
+	cfg   Config
+	bc    Broadcaster
+	store Store
+	log   *zap.Logger
+
+	clicks chan ClickEvent
+
+	rngMu sync.Mutex
+	rng   *rand.Rand
+
+	mu    sync.RWMutex // guards phase/round (read by Snapshot)
+	phase Phase
+	round int
+}
+
+// New builds an Engine. store may be nil (scoring still works, just not
+// persisted). log may be nil (falls back to a no-op logger).
+func New(cfg Config, bc Broadcaster, store Store, log *zap.Logger) *Engine {
+	if log == nil {
+		log = zap.NewNop()
+	}
+	return &Engine{
+		cfg:    cfg,
+		bc:     bc,
+		store:  store,
+		log:    log,
+		clicks: make(chan ClickEvent, 4096),
+		rng:    rand.New(rand.NewSource(seedFromCrypto())),
+		phase:  PhaseIntermission,
+	}
+}
+
+// Submit hands a click to the engine. Non-blocking: if the buffer is full (a
+// pathological in-rush) the click is dropped rather than blocking the hub's read
+// goroutine. Safe to call from any goroutine.
+func (e *Engine) Submit(ev ClickEvent) {
+	select {
+	case e.clicks <- ev:
+	default:
+	}
+}
+
+// Snapshot is the current phase/round, for the hello frame. Safe from any goroutine.
+type Snapshot struct {
+	Phase Phase
+	Round int
+	Of    int
+}
+
+func (e *Engine) Snapshot() Snapshot {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return Snapshot{Phase: e.phase, Round: e.round, Of: e.cfg.RoundsPerGame}
+}
+
+func (e *Engine) setPhase(p Phase, round int) {
+	e.mu.Lock()
+	e.phase = p
+	e.round = round
+	e.mu.Unlock()
+}
+
+// Run drives games until ctx is cancelled. Blocks; call in its own goroutine.
+func (e *Engine) Run(ctx context.Context) {
+	for ctx.Err() == nil {
+		e.playGame(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		e.setPhase(PhaseIntermission, 0)
+		e.drain(ctx, e.cfg.Intermission)
+	}
+}
+
+func (e *Engine) playGame(ctx context.Context) {
+	gameID := newID()
+	scores := map[string]int{}      // cumulative game points by SteamID
+	info := map[string]playerInfo{} // latest display info by SteamID
+	x := e.cfg.RoundsPerGame
+
+	for round := 1; round <= x && ctx.Err() == nil; round++ {
+		penalties := e.pending(ctx, round, x, info)
+		if ctx.Err() != nil {
+			return
+		}
+		e.race(ctx, round, x, penalties, scores, info)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+
+	final := standingsOf(scores, info)
+	placements := make(map[string]int, len(final))
+	won := make(map[string]bool, len(final))
+	for i, s := range final {
+		placements[s.steamID] = i + 1
+		won[s.steamID] = i == 0 // placement 1 == win
+	}
+	e.bc.GameOver(GameOverFrame{
+		Standings:  topK(final, e.cfg.BoardSize),
+		GameID:     gameID,
+		Placements: placements,
+		Won:        won,
+	})
+}
+
+// pending is the IDLE/arming phase: announce the round, then wait the secret
+// delay. Clicks during this phase score nothing but accrue a per-connection arm
+// delay (the spam deterrent), returned keyed by SteamID for the hub to apply.
+func (e *Engine) pending(ctx context.Context, round, of int, info map[string]playerInfo) map[string]time.Duration {
+	e.setPhase(PhasePending, round)
+	e.bc.Pending(PendingFrame{Round: round, Of: of})
+
+	penalties := map[string]time.Duration{}
+	timer := time.NewTimer(e.randArmDelay())
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return penalties
+		case ev := <-e.clicks:
+			recordInfo(info, ev)
+			penalties[ev.SteamID] = clampPenalty(penalties[ev.SteamID], e.cfg.IdlePenaltyPerClick, e.cfg.IdlePenaltyCap)
+		case <-timer.C:
+			return penalties
+		}
+	}
+}
+
+// race is the ARMED phase: arm with a fresh nonce, accept the first N valid
+// clicks (by arrival), then publish the result. Closes the instant click N lands.
+func (e *Engine) race(ctx context.Context, round, of int, penalties map[string]time.Duration, scores map[string]int, info map[string]playerInfo) {
+	nonce := newNonce()
+	e.setPhase(PhaseArmed, round)
+	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: nonce, Penalties: penalties})
+
+	rs := newRaceState(nonce, e.cfg.ClicksPerRound)
+	timer := time.NewTimer(e.cfg.RaceMax)
+	defer timer.Stop()
+
+raceLoop:
+	for !rs.full() {
+		select {
+		case <-ctx.Done():
+			return
+		case ev := <-e.clicks:
+			recordInfo(info, ev)
+			rs.offer(ev)
+		case <-timer.C:
+			break raceLoop // safety: fewer than N clicks arrived
+		}
+	}
+
+	e.setPhase(PhaseResult, round)
+
+	deltas := map[string]int{}
+	for _, ev := range rs.scored {
+		deltas[ev.SteamID]++
+		scores[ev.SteamID]++
+	}
+	if len(deltas) > 0 && e.store != nil {
+		e.persist(deltas)
+	}
+
+	winners := make([]Standing, 0, len(rs.scored))
+	for _, ev := range rs.scored {
+		pi := info[ev.SteamID]
+		winners = append(winners, Standing{Tag: pi.tag, Username: pi.username, Points: scores[ev.SteamID], steamID: ev.SteamID})
+	}
+	e.bc.Result(ResultFrame{
+		Round:     round,
+		Of:        of,
+		Winners:   winners,
+		Standings: topK(standingsOf(scores, info), e.cfg.BoardSize),
+		RoundID:   newID(),
+		Deltas:    deltas,
+	})
+
+	e.drain(ctx, e.cfg.ResultDisplay)
+}
+
+// persist writes the round's points to the hourly board off the hot path, so DB
+// latency never delays the next round. A detached context lets a shutdown
+// mid-round still record points.
+func (e *Engine) persist(deltas map[string]int) {
+	bucket := time.Now().UTC().Truncate(time.Hour)
+	ds := make([]HourlyDelta, 0, len(deltas))
+	for sid, pts := range deltas {
+		ds = append(ds, HourlyDelta{SteamID: sid, Points: pts})
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := e.store.AddHourlyPoints(ctx, bucket, ds); err != nil {
+			e.log.Error("persist hourly points", zap.Error(err))
+		}
+	}()
+}
+
+// drain sleeps for d while discarding any clicks, so the channel never backs up
+// during result/intermission (those clicks score nothing). Returns early on ctx.
+func (e *Engine) drain(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.clicks:
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+func (e *Engine) randArmDelay() time.Duration {
+	min, max := e.cfg.ArmMin, e.cfg.ArmMax
+	if max <= min {
+		return min
+	}
+	e.rngMu.Lock()
+	n := e.rng.Int63n(int64(max-min) + 1)
+	e.rngMu.Unlock()
+	return min + time.Duration(n)
+}
+
+// --- pure helpers (unit-tested directly) ---
+
+// raceState accepts the first N valid, non-duplicate clicks for one arm. It is
+// the whole scoring rule in one place: nonce gating (anti-pre-fire), one score
+// per player per arm (dedupe), and the hard N cutoff.
+type raceState struct {
+	nonce   uint64
+	n       int
+	deduped map[string]bool
+	scored  []ClickEvent
+}
+
+func newRaceState(nonce uint64, n int) *raceState {
+	if n < 1 {
+		n = 1
+	}
+	return &raceState{nonce: nonce, n: n, deduped: map[string]bool{}}
+}
+
+func (rs *raceState) full() bool { return len(rs.scored) >= rs.n }
+
+// offer reports whether ev scored. A wrong/zero nonce (pre-fire or stale), a
+// duplicate player, or a full race all score nothing.
+func (rs *raceState) offer(ev ClickEvent) bool {
+	if rs.full() {
+		return false
+	}
+	if ev.Nonce != rs.nonce {
+		return false
+	}
+	if rs.deduped[ev.SteamID] {
+		return false
+	}
+	rs.deduped[ev.SteamID] = true
+	rs.scored = append(rs.scored, ev)
+	return true
+}
+
+func clampPenalty(cur, add, max time.Duration) time.Duration {
+	p := cur + add
+	if max > 0 && p > max {
+		p = max
+	}
+	return p
+}
+
+func recordInfo(info map[string]playerInfo, ev ClickEvent) {
+	info[ev.SteamID] = playerInfo{tag: ev.Tag, username: ev.Username}
+}
+
+// standingsOf builds the full board sorted by points desc, SteamID asc as a
+// stable tiebreak (so placements are deterministic).
+func standingsOf(scores map[string]int, info map[string]playerInfo) []Standing {
+	out := make([]Standing, 0, len(scores))
+	for sid, pts := range scores {
+		pi := info[sid]
+		out = append(out, Standing{Tag: pi.tag, Username: pi.username, Points: pts, steamID: sid})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Points != out[j].Points {
+			return out[i].Points > out[j].Points
+		}
+		return out[i].steamID < out[j].steamID
+	})
+	return out
+}
+
+func topK(s []Standing, k int) []Standing {
+	if k > 0 && len(s) > k {
+		return s[:k]
+	}
+	return s
+}
+
+func newNonce() uint64 {
+	var b [8]byte
+	cryptorand.Read(b[:])
+	n := binary.BigEndian.Uint64(b[:])
+	if n == 0 {
+		n = 1 // 0 is the "no nonce" sentinel — never issue it as a real nonce
+	}
+	return n
+}
+
+func newID() string {
+	var b [16]byte
+	cryptorand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func seedFromCrypto() int64 {
+	var b [8]byte
+	cryptorand.Read(b[:])
+	return int64(binary.BigEndian.Uint64(b[:]))
+}

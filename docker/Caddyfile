@@ -1,0 +1,10 @@
+# Caddy terminates TLS and reverse-proxies to the app on loopback. WSS is
+# required for the game socket; Caddy upgrades /ws transparently (no special
+# config needed — it proxies the Upgrade headers through). Replace the host.
+#
+#   caddy run --config docker/Caddyfile
+
+splitclicker.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:6969
+}
