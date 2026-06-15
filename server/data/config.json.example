@@ -1,0 +1,5 @@
+{
+  "_comment": "Host-editable runtime config. Copy to config.json (same dir); the server re-reads it on every request, so edits apply live with no rebuild/restart. skin_image is a filename inside ./media. winner_lock_time is RFC3339 (empty/omitted hides the countdown). 1AM CST on the 16th == 2026-06-16T07:00:00Z.",
+  "skin_image": "skin2win.png",
+  "winner_lock_time": "2026-06-16T07:00:00Z"
+}

@@ -49,4 +49,4 @@ $COMPOSE exec -T postgres \
 echo "boards wiped — restarting app so its leaderboard cache reloads empty…"
 $COMPOSE restart app
 
-echo "done. Set the new WINNER_LOCK_TIME / SKIN_IMAGE in .env and 'make up' if changed."
+echo "done. Edit data/config.json (skin_image / winner_lock_time) to set the next winner — applies live, no restart."

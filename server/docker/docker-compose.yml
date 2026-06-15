@@ -19,8 +19,11 @@ services:
       DATABASE_URL: "postgres://splitclicker@postgres:5432/splitclicker?sslmode=disable"
       PORT: "6969"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
-      # Skin-to-win image (served at /api/v1/skin) and the winner-lock countdown.
-      SKIN_IMAGE: "${SKIN_IMAGE:-skin2win.png}"
+      # Skin image + winner-lock countdown are edited live in ./data/config.json
+      # (see the volume below). These envs are only fallbacks when config.json is
+      # absent / a field is blank.
+      RUNTIME_DIR: /data
+      SKIN_IMAGE: "${SKIN_IMAGE:-}"
       WINNER_LOCK_TIME: "${WINNER_LOCK_TIME:-}"
       # Game tunables (optional — omit to use defaults from internal/game/config.go)
       ARM_MIN_SEC: "${ARM_MIN_SEC:-10}"
@@ -28,6 +31,11 @@ services:
       CLICKS_PER_PLAYER: "${CLICKS_PER_PLAYER:-1}"
       MIN_CLICKS: "${MIN_CLICKS:-1}"
       ROUNDS_PER_GAME: "${ROUNDS_PER_GAME:-10}"
+    volumes:
+      # Host-editable skin images + config.json. Relative to this compose file,
+      # so ../data == server/data. Edit data/config.json or replace an image in
+      # data/media and it's served live — no rebuild, no restart.
+      - ../data:/data
     depends_on:
       postgres:
         condition: service_healthy
