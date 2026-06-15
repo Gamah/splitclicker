@@ -50,7 +50,9 @@ services:
     ports:
       # Loopback only (same UFW-bypass reason as the app) — just for host tooling
       # like `make psql`; the app reaches Postgres over the internal Docker network.
-      - "127.0.0.1:5432:5432"
+      # Host port 5434 (not 5432) so it doesn't collide with another stack's
+      # Postgres publish on the same box (rotaliate uses 5432, its test uses 5433).
+      - "127.0.0.1:5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U splitclicker"]
       interval: 5s
