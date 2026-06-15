@@ -1,0 +1,430 @@
+@using System
+@using System.Collections.Generic
+@using System.Threading.Tasks
+@using Sandbox
+@using Sandbox.UI
+@using Splitclicker.Api
+@using Splitclicker.Game
+@namespace Splitclicker.UI
+@inherits PanelComponent
+
+@*
+	The whole HUD as a SINGLE root PanelComponent. This matters: a ScreenPanel lays
+	its child PanelComponent roots out in a flex row and ignores `position` set on
+	those roots, so sibling panels can't pin/center themselves. The working pattern
+	(see rotaliate's GameHud) is one root with `width/height: 100%` that genuinely
+	fills the screen, with every piece an absolutely-positioned CHILD of it:
+
+	  • session board   — pinned top-left
+	  • the button + status HUD + "clicks sent" — dead-center of the screen
+	  • hourly board     — pinned top-right, just left of hours-won
+	  • hours-won board  — pinned hard to the top-right edge
+*@
+
+<root>
+	@{ var c = ClickController.Instance; }
+
+	@* ── session board: current game's cumulative standings, pinned top-left ── *@
+	<div class="board session">
+		<div class="title">SESSION · TOP CLICKERS</div>
+		<div class="divider"></div>
+		@if ( SessionEntries.Count == 0 )
+		{
+			<div class="empty">No scores yet</div>
+		}
+		else
+		{
+			@for ( int i = 0; i < SessionEntries.Count && i < DisplayLimit; i++ )
+			{
+				var s = SessionEntries[i];
+				<div class="row @(IsMe( s ) ? "me" : "")">
+					<div class="rank">@(i + 1)</div>
+					<div class="name">@DisplayName( s )</div>
+					<div class="pts">@s.Points</div>
+				</div>
+			}
+		}
+	</div>
+
+	@* ── the one global button, dead-center, with the status HUD over it ── *@
+	<div class="center">
+		<div class="btn @StateClass()" onclick="@OnPress"></div>
+
+		<div class="hud">
+			<div class="round">Round @(c?.Round ?? 0) / @(c?.Of ?? 0)</div>
+			<div class="state @PhaseClass()">@PhaseText()</div>
+			<div class="meta">
+				<div class="score">You: @(c?.MyPoints ?? 0)</div>
+				<div class="sep">·</div>
+				<div class="players">@(c?.Players ?? 0) online</div>
+				<div class="sep">·</div>
+				<div class="clicks">@(c?.ClicksToWin ?? 0) clicks exist for this round</div>
+			</div>
+			@if ( c?.Phase == GamePhase.Pending && (c?.ArmMaxSec ?? 0) > 0 )
+			{
+				<div class="arm">arms in @(c.ArmMinSec)–@(c.ArmMaxSec)s</div>
+			}
+			@if ( (c?.PenaltyMs ?? 0) > 0 )
+			{
+				<div class="penalty">throttled +@(c.PenaltyMs)ms</div>
+			}
+		</div>
+
+		<div class="clicks-sent">clicks sent: @(c?.ClicksSent ?? 0)</div>
+	</div>
+
+	@* ── hourly board: Postgres "most clicks this hour", pinned right (inner) ── *@
+	<div class="board hourly">
+		<div class="title">HOURLY · TOP CLICKERS</div>
+		<div class="reset">resets in @ResetCountdown()</div>
+		<div class="divider"></div>
+		@if ( _hourly.Count == 0 )
+		{
+			<div class="empty">@(_hourlyLoaded ? "No scores this hour yet" : "loading…")</div>
+		}
+		else
+		{
+			@for ( int i = 0; i < _hourly.Count; i++ )
+			{
+				var s = _hourly[i];
+				<div class="row @(IsMe( s ) ? "me" : "")">
+					<div class="rank">@(i + 1)</div>
+					<div class="name">@DisplayName( s )</div>
+					<div class="pts">@s.Points</div>
+				</div>
+			}
+		}
+	</div>
+
+	@* ── hours-won board: career UTC clock-hours topped, pinned right (outer) ── *@
+	<div class="board hourswon">
+		<div class="title">HOURS WON</div>
+		<div class="divider"></div>
+		@if ( _hoursWon.Count == 0 )
+		{
+			<div class="empty">@(_hoursWonLoaded ? "No hours won yet" : "loading…")</div>
+		}
+		else
+		{
+			@for ( int i = 0; i < _hoursWon.Count; i++ )
+			{
+				var s = _hoursWon[i];
+				<div class="row @(IsMe( s ) ? "me" : "")">
+					<div class="rank">@(i + 1)</div>
+					<div class="name">@DisplayName( s )</div>
+					<div class="pts">@s.Points</div>
+				</div>
+			}
+		}
+	</div>
+</root>
+
+<style>
+	/* The root genuinely fills the screen, so every absolutely-positioned child
+	   below anchors against the full screen rect. pointer-events:none here; only
+	   the button re-enables them. */
+	root {
+		width: 100%;
+		height: 100%;
+		pointer-events: none;
+	}
+
+	/* ── boards: shared look; each pinned via its own position class ── */
+	.board {
+		position: absolute;
+		top: 18px;
+		width: 280px;
+		flex-direction: column;
+		background-color: rgba(7, 5, 26, 0.82);
+		border: 1.5px solid rgba(255, 255, 255, 0.12);
+		border-radius: 10px;
+		padding: 12px 14px;
+		gap: 3px;
+	}
+
+	.board.session { left: 14px; }
+	.board.hourly { right: 308px; } /* 14 (edge) + 280 (hours-won) + 14 (gap) */
+	.board.hourswon { right: 14px; }
+
+	.board .title {
+		font-size: 14px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.85);
+		letter-spacing: 1px;
+		justify-content: center;
+		margin-bottom: 4px;
+	}
+
+	.board .reset {
+		font-size: 11px;
+		color: rgba(255, 255, 255, 0.5);
+		justify-content: center;
+		margin-top: -2px;
+		margin-bottom: 4px;
+	}
+
+	.board .divider {
+		height: 1px;
+		background-color: rgba(255, 255, 255, 0.1);
+		margin-bottom: 5px;
+	}
+
+	.board .row {
+		flex-direction: row;
+		align-items: center;
+		font-size: 13px;
+		color: rgba(255, 255, 255, 0.78);
+		padding: 2px 5px;
+		border-radius: 4px;
+	}
+
+	.board .rank { width: 24px; color: rgba(255, 255, 255, 0.4); font-size: 12px; }
+	.board .name { flex-grow: 1; overflow: hidden; white-space: nowrap; }
+	.board .pts { color: #06d6a0; font-weight: bold; }
+	.board .row.me { background-color: rgba(6, 214, 160, 0.15); }
+
+	/* hours-won is the gold board */
+	.board.hourswon .pts { color: #ffd166; }
+	.board.hourswon .row.me { background-color: rgba(255, 209, 102, 0.15); }
+
+	.board .empty {
+		justify-content: center;
+		font-size: 12px;
+		color: rgba(255, 255, 255, 0.35);
+		margin-top: 4px;
+	}
+
+	/* ── center column: full-screen overlay that centers the button ── */
+	.center {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		pointer-events: none;
+	}
+
+	/* Fixed square (ScreenPanel auto-scales to a 1080-tall reference) so the button
+	   is a true circle, centered, at ~70% of screen height. */
+	.btn {
+		width: 700px;
+		height: 700px;
+		border-radius: 50%;
+		background-color: #e63946; /* red: not clickable */
+		border: 8px solid rgba(255, 255, 255, 0.14);
+		transition: all 0.08s ease-out;
+		pointer-events: all;
+		cursor: default;
+	}
+
+	.btn.armed {
+		background-color: #06d6a0; /* green only while a valid click can score */
+		border-color: #ffffff;
+		cursor: pointer;
+		transform: scale(1.02);
+	}
+
+	.btn.armed:active { transform: scale(0.98); }
+
+	/* HUD overlaid dead-center on the button; clicks fall through to the button. */
+	.hud {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 10px;
+		pointer-events: none;
+	}
+
+	.round {
+		font-size: 22px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.85);
+		letter-spacing: 1px;
+	}
+
+	.state {
+		font-size: 54px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.9);
+		letter-spacing: 3px;
+	}
+
+	.state.armed { color: #ffffff; }
+	.state.offline { color: #ffd166; }
+
+	.meta {
+		flex-direction: row;
+		gap: 10px;
+		align-items: center;
+		font-size: 18px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.85);
+	}
+
+	.meta .sep { color: rgba(255, 255, 255, 0.4); }
+	.meta .score { color: #06d6a0; }
+
+	.arm {
+		font-size: 16px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.6);
+		letter-spacing: 1px;
+	}
+
+	.penalty {
+		font-size: 16px;
+		font-weight: bold;
+		color: #ffd166;
+	}
+
+	/* Centered just under the circle: the button is 700px (350px radius) centered
+	   on screen, so 360px below screen-center sits 10px below its bottom edge. */
+	.clicks-sent {
+		position: absolute;
+		top: 50%;
+		margin-top: 360px;
+		left: 0;
+		right: 0;
+		justify-content: center;
+		font-size: 22px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.65);
+		letter-spacing: 1px;
+		pointer-events: none;
+	}
+</style>
+
+@code {
+	const int DisplayLimit = 10;
+	const float RefreshInterval = 20f;
+
+	ClickController C => ClickController.Instance;
+
+	// ── session: live standings pushed inside round_result/game_over (never fetched) ──
+	static List<Standing> SessionEntries => ClickController.Instance?.Standings ?? new List<Standing>();
+
+	// ── hourly + hours-won: fetched over HTTP, deliberately infrequently (once on
+	//    connect, then when a round closes, throttled) so neither becomes a fan-in
+	//    GET stampede. The hot click path never touches HTTP. ──
+	List<Standing> _hourly = new();
+	bool _hourlyLoaded, _hourlyFetching;
+	RealTimeSince _hourlyLast;
+
+	List<Standing> _hoursWon = new();
+	bool _hoursWonLoaded, _hoursWonFetching;
+	RealTimeSince _hoursWonLast;
+
+	GamePhase _lastPhase = GamePhase.Connecting;
+
+	protected override void OnTreeFirstBuilt()
+	{
+		_ = RefreshHourly();
+		_ = RefreshHoursWon();
+	}
+
+	protected override void OnUpdate()
+	{
+		var phase = C?.Phase ?? GamePhase.Connecting;
+		// Refresh when a round just closed (player is reading scores between presses),
+		// throttled so rapid result→pending churn can't spam the endpoints.
+		bool roundJustClosed = phase != _lastPhase &&
+			( phase == GamePhase.Result || phase == GamePhase.GameOver );
+		_lastPhase = phase;
+		if ( roundJustClosed )
+		{
+			if ( _hourlyLast > RefreshInterval ) _ = RefreshHourly();
+			if ( _hoursWonLast > RefreshInterval ) _ = RefreshHoursWon();
+		}
+	}
+
+	async Task RefreshHourly()
+	{
+		if ( _hourlyFetching ) return;
+		_hourlyFetching = true;
+		_hourlyLast = 0;
+		try
+		{
+			var board = await ApiClient.GetHourlyLeaderboard( DisplayLimit );
+			_hourly = board ?? new List<Standing>();
+			_hourlyLoaded = true;
+			StateHasChanged();
+		}
+		finally { _hourlyFetching = false; }
+	}
+
+	async Task RefreshHoursWon()
+	{
+		if ( _hoursWonFetching ) return;
+		_hoursWonFetching = true;
+		_hoursWonLast = 0;
+		try
+		{
+			var board = await ApiClient.GetHoursWonLeaderboard( DisplayLimit );
+			_hoursWon = board ?? new List<Standing>();
+			_hoursWonLoaded = true;
+			StateHasChanged();
+		}
+		finally { _hoursWonFetching = false; }
+	}
+
+	static bool IsMe( Standing s )
+	{
+		var tag = ClickController.Instance?.Tag;
+		return !string.IsNullOrEmpty( tag ) && s.Tag == tag;
+	}
+
+	// Show the player's name (claimed username or Steam display name, resolved
+	// server-side), never the opaque hex tag.
+	static string DisplayName( Standing s ) =>
+		!string.IsNullOrWhiteSpace( s.Username ) ? s.Username : "anonymous";
+
+	// Wall-clock time left until the UTC hour ticks over (when the hourly board
+	// resets), as MM:SS — not a rolling 60-minute window.
+	static string ResetCountdown()
+	{
+		var now = DateTime.UtcNow;
+		var nextHour = now.Date.AddHours( now.Hour + 1 );
+		var left = nextHour - now;
+		return $"{(int)left.TotalMinutes:D2}:{left.Seconds:D2}";
+	}
+
+	bool Armed => C?.CanClick ?? false;
+
+	void OnPress() => ClickController.Instance?.SendClick();
+
+	// Green ("armed") only while a valid click can score; red (base) otherwise.
+	string StateClass() => Armed ? "armed" : "";
+
+	string PhaseText() => C?.Phase switch
+	{
+		GamePhase.Armed => "CLICK!",
+		GamePhase.Pending => "WAIT…",
+		GamePhase.Result => "ROUND OVER",
+		GamePhase.GameOver => "GAME OVER",
+		GamePhase.Disconnected => "RECONNECTING…",
+		GamePhase.Connecting => "CONNECTING…",
+		_ => "",
+	};
+
+	string PhaseClass() => C?.Phase switch
+	{
+		GamePhase.Armed => "armed",
+		GamePhase.Disconnected => "offline",
+		_ => "",
+	};
+
+	// Include the seconds-remaining so the countdown re-renders as it ticks.
+	protected override int BuildHash() => HashCode.Combine(
+		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0, C?.MyPoints ?? 0,
+			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
+		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
+			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ) );
+}
