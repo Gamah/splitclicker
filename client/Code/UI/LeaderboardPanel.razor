@@ -1,0 +1,112 @@
+@using System
+@using System.Collections.Generic
+@using Sandbox
+@using Sandbox.UI
+@using Splitclicker.Api
+@using Splitclicker.Game
+@namespace Splitclicker.UI
+@inherits PanelComponent
+
+@*
+	Standings shown between rounds and at game over. The list is PUSHED inside the
+	round_result / game_over frames (never fetched), so there is no per-round HTTP
+	stampede — we just render ClickController.Instance.Standings.
+*@
+
+<root>
+	@if ( Show() )
+	{
+		<div class="panel">
+			<div class="title">@Title()</div>
+			<div class="divider"></div>
+			@if ( C.Standings.Count == 0 )
+			{
+				<div class="empty">No scores yet</div>
+			}
+			else
+			{
+				@for ( int i = 0; i < C.Standings.Count; i++ )
+				{
+					var s = C.Standings[i];
+					<div class="row @(s.Tag == C.Tag ? "me" : "")">
+						<div class="rank">@(i + 1)</div>
+						<div class="name">@DisplayName( s )</div>
+						<div class="pts">@s.Points</div>
+					</div>
+				}
+			}
+		</div>
+	}
+</root>
+
+<style>
+	root {
+		width: 100%;
+		height: 100%;
+		align-items: center;
+		justify-content: center;
+		pointer-events: none;
+	}
+
+	.panel {
+		width: 360px;
+		flex-direction: column;
+		background-color: #07051a;
+		border: 1.5px solid rgba(255, 255, 255, 0.14);
+		border-radius: 10px;
+		padding: 14px 16px;
+		gap: 4px;
+	}
+
+	.title {
+		font-size: 18px;
+		font-weight: bold;
+		color: white;
+		letter-spacing: 1px;
+		justify-content: center;
+		margin-bottom: 4px;
+	}
+
+	.divider {
+		height: 1px;
+		background-color: rgba(255, 255, 255, 0.1);
+		margin-bottom: 6px;
+	}
+
+	.row {
+		flex-direction: row;
+		align-items: center;
+		font-size: 14px;
+		color: rgba(255, 255, 255, 0.8);
+		padding: 3px 6px;
+		border-radius: 4px;
+	}
+
+	.row.me { background-color: rgba(6, 214, 160, 0.15); }
+
+	.rank { width: 26px; color: rgba(255, 255, 255, 0.4); font-size: 13px; }
+	.name { flex-grow: 1; overflow: hidden; white-space: nowrap; }
+	.pts { color: #06d6a0; font-weight: bold; }
+
+	.empty {
+		justify-content: center;
+		font-size: 13px;
+		color: rgba(255, 255, 255, 0.35);
+		margin-top: 6px;
+	}
+</style>
+
+@code {
+	ClickController C => ClickController.Instance;
+
+	bool Show() => C != null && ( C.Phase == GamePhase.Result || C.Phase == GamePhase.GameOver );
+
+	string Title() => C?.Phase == GamePhase.GameOver ? "FINAL STANDINGS" : "STANDINGS";
+
+	static string DisplayName( Standing s ) =>
+		!string.IsNullOrWhiteSpace( s.Username ) ? s.Username
+			: ( string.IsNullOrWhiteSpace( s.Tag ) ? "anonymous" : s.Tag );
+
+	protected override int BuildHash() =>
+		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Standings?.Count ?? 0, C?.MyPoints ?? 0 );
+}

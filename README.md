@@ -1,23 +1,32 @@
-# splitclicker (backend)
+# splitclicker
 
-The Go backend for **splitclicker** — a global, real-time clicker race. One
-global button arms after a secret delay; the first **N** clicks worldwide score
-a point; **X** rounds make a game; points accumulate into a per-UTC-hour
-leaderboard. See **[PLAN.md](PLAN.md)** for the full design and **[CLAUDE.md](CLAUDE.md)**
-for orientation.
+A competitive, global, real-time **clicker race**. One global button arms after
+a secret delay; the first **N** clicks worldwide each score a point; **X** rounds
+make a game; points accumulate into a per-UTC-hour leaderboard. The click path
+goes straight to a Go backend over WebSocket (never through the s&box engine
+tick), so rounds are decided by true server wire-arrival order.
 
-This repo is the **server only**. The s&box client lives in a separate
-`splitclicker-client` repo (not yet created).
+See **[PLAN.md](PLAN.md)** for the full design and **[CLAUDE.md](CLAUDE.md)** for
+orientation.
 
-## Layout
+## Repo layout
+
+This is a monorepo with two halves:
+
+```
+server/   Go backend — the sole authority (game loop, WS hub, auth, Postgres)
+client/   s&box game — thin HTTP/WS front-end (C# + Razor UI)
+```
+
+### `server/` — Go backend
 
 ```
 cmd/server/        entrypoint + graceful shutdown
 internal/
   steam/           Facepunch auth-token validation (the only auth path)
   session/         public player tag + username validation
-  game/            authoritative round/game state machine (arm RNG, race,
-                   nonce, spam penalty, scoring) — transport/DB-agnostic
+  game/            authoritative state machine (arm RNG, nonce race, scoring,
+                   spam penalty) — transport/DB-agnostic behind interfaces
   store/           Postgres-backed hourly board + players (pgx)
   ws/              WebSocket hub (gorilla); implements game.Broadcaster
   api/             REST: /auth, /leaderboard/hourly, /health, + /ws upgrade
@@ -26,56 +35,42 @@ migrations/        goose SQL
 docker/            Dockerfile, compose (app + postgres), Caddyfile (TLS/WSS)
 ```
 
-The engine knows nothing about WebSockets or SQL — it talks to a
-`game.Broadcaster` (the hub) and a `game.Store` (Postgres). That keeps it
-unit-testable and keeps the broadcast swappable (the documented horizontal
-fan-out escape hatch).
+Run it (from `server/`):
 
-## Dependencies
+```sh
+cp .env.example .env      # set DATABASE_URL
+make migrate-up           # apply schema
+make dev                  # go run ./cmd/server   (listens on :6969)
+make test                 # go test ./... -race
+# or the whole stack in Docker:
+make up                   # app + Postgres
+```
 
-Standard library plus the proven rotaliate-family set: `gorilla/websocket`,
+Dependencies: stdlib plus the rotaliate-family set — `gorilla/websocket`,
 `jackc/pgx/v5`, `pressly/goose/v3`, `google/uuid`, `go.uber.org/zap`.
 
-## Run locally
+### `client/` — s&box game
 
-```sh
-cp .env.example .env          # set DATABASE_URL
-make migrate-up               # apply schema (needs goose + DATABASE_URL)
-make dev                      # go run ./cmd/server
-make test                     # go test ./... -race
-```
+Thin front-end: prove a Steam identity once (Facepunch token → WS ticket),
+connect the socket, and play. `ClickController` owns the WS lifecycle and phase;
+the button enables only on `armed` and a press sends `{"t":"click","nonce":…}`.
+A startup scene and the s&box Services achievement/stat config are created
+in-editor — see `client/`'s code comments and PLAN §7.
 
-Or the whole stack (app + Postgres) in Docker:
+## Contract (HTTP / WebSocket)
 
-```sh
-make up      # build + start
-make logs
-make down
-```
-
-## HTTP / WebSocket contract
-
-1. `POST /api/v1/auth` `{steam_id, token, username?}` — the client mints `token`
-   with `Sandbox.Services.Auth.GetToken("splitclicker")`. The server validates it
-   against Facepunch (fail-closed), upserts the player, and returns
-   `{tag, username, ticket, ttl_ms}`.
-2. `GET /ws?ticket=…` — upgrade with the single-use ticket. The SteamID never
-   rides the URL.
-3. WebSocket frames (JSON):
-   - **client→server:** `{"t":"click","nonce":"<hex>"}` (echo the current arm
-     nonce), `{"t":"ping"}`
-   - **server→client:** `hello`, `round_pending`, `armed` (carries `nonce`),
-     `round_result` (with `you.points_delta` + `round_id`), `game_over` (with
-     `you.placement`, `you.won`, `game_id`).
+1. `POST /api/v1/auth` `{steam_id, token, username?}` — client mints `token` with
+   `Sandbox.Services.Auth.GetToken("splitclicker")`; server validates against
+   Facepunch (fail-closed), upserts the player, returns `{tag, username, ticket, ttl_ms}`.
+2. `GET /ws?ticket=…` — upgrade with the single-use ticket (SteamID never on the URL).
+3. WS frames (JSON): client→ `click {nonce}`, `ping`; server→ `hello`,
+   `round_pending`, `armed {nonce}`, `round_result` (with `you.points_delta`,
+   `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`).
 4. `GET /api/v1/leaderboard/hourly?limit=100` — current UTC hour, top players.
 
-## Notes / first-pass scope
+## Deployment / security note
 
-- Auth is **Facepunch token validation only** — no Steam OpenID web sign-in.
-- The hot-path `armed`/`click` frames are JSON here; PLAN §3.5c suggests a binary
-  encoding at scale. Easy follow-up.
-- Idle-click spam penalty currently accrues during the *pending* phase only
-  (the bulk of mashing); result/intermission clicks are dropped without penalty.
-- gorilla/websocket (goroutine-per-conn) is fine at launch scale; swap for an
-  epoll reader behind the same `game.Broadcaster` interface if idle-conn cost
-  ever dominates.
+The app and Postgres publish their ports **bound to `127.0.0.1` only**. Docker's
+port publishing inserts iptables rules that bypass UFW, so a bare `6969:6969`
+would expose the service to the internet even behind `ufw deny`. Caddy terminates
+TLS on the host and reverse-proxies to the loopback port (WSS required for `/ws`).

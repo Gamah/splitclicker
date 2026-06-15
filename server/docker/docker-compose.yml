@@ -10,7 +10,10 @@ services:
         GIT_HASH: ${GIT_HASH:-}
     restart: unless-stopped
     ports:
-      # Loopback only — Caddy (on the host) proxies to it; nothing else can reach it.
+      # MUST stay bound to 127.0.0.1. Docker publishes ports by inserting DOCKER-chain
+      # iptables rules that BYPASS UFW — a bare "6969:6969" would expose the app to the
+      # whole internet even with `ufw deny 6969`. Binding to loopback DNATs only from
+      # 127.0.0.1, so only Caddy (terminating TLS on the host) can reach it.
       - "127.0.0.1:6969:6969"
     environment:
       DATABASE_URL: "postgres://splitclicker@postgres:5432/splitclicker?sslmode=disable"
@@ -37,6 +40,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
+      # Loopback only (same UFW-bypass reason as the app) — just for host tooling
+      # like `make psql`; the app reaches Postgres over the internal Docker network.
       - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U splitclicker"]

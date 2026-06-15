@@ -1,0 +1,88 @@
+@using System
+@using Sandbox
+@using Sandbox.UI
+@using Splitclicker.Game
+@namespace Splitclicker.UI
+@inherits PanelComponent
+
+@*
+	The one global button. The handler does nothing but enqueue the click send —
+	no allocation, no awaiting render — so input latency is minimal. Its enabled
+	state and scoring eligibility share one source: ClickController.CanClick.
+*@
+
+<root>
+	<div class="btn @StateClass()" onclick="@OnPress">
+		<div class="label">@Label()</div>
+	</div>
+</root>
+
+<style>
+	root {
+		width: 100%;
+		height: 100%;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.btn {
+		width: 320px;
+		height: 320px;
+		border-radius: 320px;
+		align-items: center;
+		justify-content: center;
+		background-color: #2a2a3a;
+		border: 6px solid rgba(255, 255, 255, 0.12);
+		transition: all 0.08s ease-out;
+		cursor: default;
+	}
+
+	.label {
+		font-size: 40px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.5);
+		letter-spacing: 2px;
+	}
+
+	.btn.armed {
+		background-color: #ff2e63;
+		border-color: #ffd166;
+		cursor: pointer;
+		transform: scale(1.06);
+	}
+
+	.btn.armed .label { color: white; }
+	.btn.armed:active { transform: scale(0.97); }
+
+	.btn.pending { background-color: #1d1d2b; }
+</style>
+
+@code {
+	void OnPress() => ClickController.Instance?.SendClick();
+
+	bool Armed => ClickController.Instance?.CanClick ?? false;
+
+	string StateClass()
+	{
+		var p = ClickController.Instance?.Phase ?? GamePhase.Connecting;
+		if ( Armed ) return "armed";
+		return p == GamePhase.Pending ? "pending" : "";
+	}
+
+	string Label()
+	{
+		var c = ClickController.Instance;
+		if ( c == null ) return "…";
+		return c.Phase switch
+		{
+			GamePhase.Armed => "CLICK!",
+			GamePhase.Pending => "WAIT…",
+			GamePhase.Result => "ROUND OVER",
+			GamePhase.GameOver => "GAME OVER",
+			GamePhase.Disconnected => "OFFLINE",
+			_ => "…",
+		};
+	}
+
+	protected override int BuildHash() => HashCode.Combine( Armed, ClickController.Instance?.Phase ?? GamePhase.Connecting );
+}

@@ -1,0 +1,5 @@
+# s&box build/codegen artifacts
+.sbox/
+obj/
+bin/
+*.user
