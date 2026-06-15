@@ -5,7 +5,7 @@
   "Ident": "splitclicker",
   "Schema": 1,
   "IncludeSourceFiles": false,
-  "Resources": "media/firstskintowin.png",
+  "Resources": "media/firstskintowin.*",
   "PackageReferences": [],
   "EditorReferences": null,
   "Mounts": null,
