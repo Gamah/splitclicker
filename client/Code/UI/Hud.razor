@@ -68,7 +68,9 @@
 			{
 				<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
 			}
-			@if ( (c?.PenaltyMs ?? 0) > 0 )
+			@* throttle sits directly below the arms text and is always shown while
+			   in a game (it counts up live as the player idle-clicks). *@
+			@if ( c != null && c.Phase != GamePhase.Connecting && c.Phase != GamePhase.Disconnected )
 			{
 				<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
 			}

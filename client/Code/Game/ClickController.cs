@@ -44,8 +44,16 @@ public sealed class ClickController : Component
 	public int Players { get; private set; }
 	public int ClicksToWin { get; private set; }
 	/// <summary>This connection's current arm-delay penalty in ms (the spam
-	/// deterrent), 0 for honest clients. Surfaced so the player sees the throttle.</summary>
+	/// deterrent), 0 for honest clients. Surfaced so the player sees the throttle.
+	/// Counted locally as the player idle-clicks (see <see cref="SendClick"/>) so it
+	/// updates live; the armed frame's authoritative value then overwrites it.</summary>
 	public int PenaltyMs { get; private set; }
+
+	/// <summary>Spam-penalty tunables from the server: ms added per idle click and
+	/// the per-round cap (0 = uncapped). Sent in hello/round_pending so the client
+	/// can mirror the escalating throttle without waiting for the armed frame.</summary>
+	public int PenaltyPerClickMs { get; private set; }
+	public int PenaltyCapMs { get; private set; }
 
 	/// <summary>Click frames actually sent to the API during the current/just-ended
 	/// CLICK! phase. Reset on each arm; shown under the button.</summary>
@@ -103,6 +111,12 @@ public sealed class ClickController : Component
 		else if ( Phase == GamePhase.Pending )
 		{
 			_ = _ws.Send( "{\"t\":\"click\",\"nonce\":\"\"}" );
+			// Mirror the server's escalating idle-click penalty locally so the throttle
+			// climbs the instant the player mashes (min(cur + perClick, cap)); the
+			// armed frame's authoritative value overwrites this estimate.
+			int next = PenaltyMs + PenaltyPerClickMs;
+			if ( PenaltyCapMs > 0 && next > PenaltyCapMs ) next = PenaltyCapMs;
+			PenaltyMs = next;
 		}
 	}
 
@@ -184,6 +198,8 @@ public sealed class ClickController : Component
 					ClicksToWin = h.Game.Clicks;
 					ArmMinSec = h.Game.ArmMin;
 					ArmMaxSec = h.Game.ArmMax;
+					PenaltyPerClickMs = h.Game.PenaltyPerClickMs;
+					PenaltyCapMs = h.Game.PenaltyCapMs;
 					Phase = PhaseFrom( h.Game.Phase );
 					break;
 
@@ -193,7 +209,9 @@ public sealed class ClickController : Component
 					Of = p.Of;
 					Players = p.Players;
 					ClicksToWin = p.Clicks;
-					PenaltyMs = 0; // fresh round: throttle is recomputed and re-revealed on arm
+					PenaltyPerClickMs = p.PenaltyPerClickMs;
+					PenaltyCapMs = p.PenaltyCapMs;
+					PenaltyMs = 0; // fresh round: throttle resets, then counts up as the player idle-clicks
 					Phase = GamePhase.Pending;
 					_nonce = null;
 					break;

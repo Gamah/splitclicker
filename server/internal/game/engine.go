@@ -72,11 +72,16 @@ type Standing struct {
 // PendingFrame announces a new round is arming. The arm time is secret, so this
 // carries no countdown. Players/Clicks tell the client how many people are
 // connected and how many scoring clicks (N) this round will take to fill.
+// PenaltyPerClickMs/PenaltyCapMs are the (static) spam-penalty tunables, sent so
+// the client can count its own idle-click throttle live this round — the server's
+// authoritative value still overwrites it in the armed frame.
 type PendingFrame struct {
-	Round   int
-	Of      int
-	Players int
-	Clicks  int
+	Round             int
+	Of                int
+	Players           int
+	Clicks            int
+	PenaltyPerClickMs int
+	PenaltyCapMs      int
 }
 
 // ArmedFrame goes live: the race is open. Penalties is keyed by SteamID — the
@@ -194,13 +199,15 @@ func (e *Engine) Submit(ev ClickEvent) {
 // Snapshot is the current phase/round (plus the live player count and the N a
 // round would take right now), for the hello frame. Safe from any goroutine.
 type Snapshot struct {
-	Phase     Phase
-	Round     int
-	Of        int
-	Players   int
-	Clicks    int
-	ArmMinSec int // arming-window bounds (the per-round delay itself stays secret)
-	ArmMaxSec int
+	Phase             Phase
+	Round             int
+	Of                int
+	Players           int
+	Clicks            int
+	ArmMinSec         int // arming-window bounds (the per-round delay itself stays secret)
+	ArmMaxSec         int
+	PenaltyPerClickMs int // spam-penalty tunables, so a client can count its own throttle
+	PenaltyCapMs      int
 }
 
 func (e *Engine) Snapshot() Snapshot {
@@ -215,6 +222,8 @@ func (e *Engine) Snapshot() Snapshot {
 		Phase: phase, Round: round, Of: e.cfg.RoundsPerGame,
 		Players: players, Clicks: e.clicksFor(players),
 		ArmMinSec: int(e.cfg.ArmMin / time.Second), ArmMaxSec: int(e.cfg.ArmMax / time.Second),
+		PenaltyPerClickMs: int(e.cfg.IdlePenaltyPerClick / time.Millisecond),
+		PenaltyCapMs:      int(e.cfg.IdlePenaltyCap / time.Millisecond),
 	}
 }
 
@@ -308,7 +317,11 @@ func (e *Engine) creditSessionWin(steamID string) {
 // delay (the spam deterrent), returned keyed by SteamID for the hub to apply.
 func (e *Engine) pending(ctx context.Context, round, of, players, n int, info map[string]playerInfo) map[string]time.Duration {
 	e.setPhase(PhasePending, round)
-	e.bc.Pending(PendingFrame{Round: round, Of: of, Players: players, Clicks: n})
+	e.bc.Pending(PendingFrame{
+		Round: round, Of: of, Players: players, Clicks: n,
+		PenaltyPerClickMs: int(e.cfg.IdlePenaltyPerClick / time.Millisecond),
+		PenaltyCapMs:      int(e.cfg.IdlePenaltyCap / time.Millisecond),
+	})
 
 	penalties := map[string]time.Duration{}
 	timer := time.NewTimer(e.randArmDelay())

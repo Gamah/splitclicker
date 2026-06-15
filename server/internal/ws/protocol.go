@@ -14,13 +14,15 @@ type helloYou struct {
 }
 
 type helloGame struct {
-	Round   int    `json:"round"`
-	Of      int    `json:"of"`
-	Phase   string `json:"phase"`
-	Players int    `json:"players"`
-	Clicks  int    `json:"clicks"`
-	ArmMin  int    `json:"arm_min"` // arming-window bounds, seconds (the delay itself is secret)
-	ArmMax  int    `json:"arm_max"`
+	Round             int    `json:"round"`
+	Of                int    `json:"of"`
+	Phase             string `json:"phase"`
+	Players           int    `json:"players"`
+	Clicks            int    `json:"clicks"`
+	ArmMin            int    `json:"arm_min"` // arming-window bounds, seconds (the delay itself is secret)
+	ArmMax            int    `json:"arm_max"`
+	PenaltyPerClickMs int    `json:"penalty_per_click_ms"` // so a client can count its own idle-click throttle
+	PenaltyCapMs      int    `json:"penalty_cap_ms"`
 }
 
 type helloWire struct {
@@ -30,11 +32,13 @@ type helloWire struct {
 }
 
 type pendingWire struct {
-	T       string `json:"t"`
-	Round   int    `json:"round"`
-	Of      int    `json:"of"`
-	Players int    `json:"players"`
-	Clicks  int    `json:"clicks"`
+	T                 string `json:"t"`
+	Round             int    `json:"round"`
+	Of                int    `json:"of"`
+	Players           int    `json:"players"`
+	Clicks            int    `json:"clicks"`
+	PenaltyPerClickMs int    `json:"penalty_per_click_ms"` // so a client can count its own idle-click throttle
+	PenaltyCapMs      int    `json:"penalty_cap_ms"`
 }
 
 // penalty_ms is this connection's own arm-delay penalty (the spam deterrent),
