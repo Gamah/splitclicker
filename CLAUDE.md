@@ -92,23 +92,31 @@ s&box engine docs: `../sbox-docs` (e.g. `docs/services/{auth-tokens,achievements
 
 ---
 
-## Planned repo layout
+## Repo layout
+
+This is a **monorepo**: the Go backend lives under `server/` and the s&box game
+under `client/`, with a single root `README.md`. (This supersedes the original
+plan of a separate `splitclicker-client` repo — kept as one repo at the user's
+direction.)
 
 ```
-cmd/server/            # main entrypoint
-internal/
-  steam/               # Facepunch token validation (copied from rotaliate)
-  game/                # round/game state machine: arm RNG, race, scoring, dedupe
-  ws/                  # WS hub: registry, single precomputed broadcast, click ingestion
-  api/                 # REST: /auth, /ws/ticket, /leaderboard/*, /health
-  db/                  # pgx pool + goose migrations (filesystem)
-migrations/            # goose SQL files
-docker/                # Dockerfile + compose
+server/                # Go backend (module github.com/gamah/splitclicker)
+  cmd/server/          # main entrypoint
+  internal/
+    steam/             # Facepunch token validation (copied from rotaliate)
+    session/           # public player tag + username validation
+    game/              # round/game state machine: arm RNG, race, scoring, dedupe
+    store/             # Postgres-backed hourly board + players (pgx)
+    ws/                # WS hub: registry, single precomputed broadcast, click ingestion
+    api/               # REST: /auth, /leaderboard/hourly, /health, + /ws upgrade
+    db/                # pgx pool + goose migrations (filesystem)
+  migrations/          # goose SQL files
+  docker/              # Dockerfile + compose + Caddyfile
+client/                # s&box game (splitclicker.sbproj + Code/)
 PLAN.md                # full design & architecture (source of truth)
 ```
 
-A separate **`splitclicker-client`** repo will hold the s&box project (mirrors the
-rotaliate/rotaliate-client split).
+Run Go tooling from `server/` (the module root). The s&box project is `client/`.
 
 ---
 

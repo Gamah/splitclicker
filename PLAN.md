@@ -397,9 +397,11 @@ client appears).
 
 ## 9. Repo & build
 
-- New private repo `splitclicker` (Go backend) + `splitclicker-client` (s&box), matching the
-  rotaliate/rotaliate-client split. Reuse rotaliate's `Makefile`, `docker/` compose, Caddy
-  TLS, goose-on-startup, `GIT_HASH` version-stamp conventions.
+- Single **monorepo** `splitclicker` with `server/` (Go backend) and `client/` (s&box)
+  folders and one root README. (Originally planned as two repos mirroring
+  rotaliate/rotaliate-client; consolidated into one at the user's direction.) Reuse
+  rotaliate's `Makefile`, `docker/` compose, Caddy TLS, goose-on-startup, `GIT_HASH`
+  version-stamp conventions.
 - Backend behind Caddy (TLS); the s&box client's `HttpAllowList` and WS URL point at the
   public host. **WSS** (TLS) is required for the WS too — terminate at Caddy.
 
