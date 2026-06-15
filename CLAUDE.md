@@ -24,11 +24,14 @@ global field of players racing the same button.
 
 ### Core rules
 - A **game** = **X rounds**. Each round: random arm delay (default 10–120s) → button arms →
-  first **N** clicks each score +1 → button disables → leaderboard shown → next round.
+  the first **N** clicks worldwide each score +1 → button disables → leaderboard shown → next
+  round. The window stays open until all **N** clicks are consumed (or RaceMax fires).
 - After X rounds → `game_over` (final standings), brief intermission, fresh game.
 - Points accumulate into an **hourly leaderboard** (UTC) that resets on the clock hour — the
   persistent "most clicks" board.
-- `N=1` = pure first-click-wins; `N>1` = multiple winners per arm. All numbers are tunable.
+- **No per-player dedupe within an arm:** a fast clicker can take several of the N slots in one
+  arm (mashing inside the live window is rewarded; the per-connection rate limiter bounds it).
+- `N=1` = pure first-click-wins; `N>1` = multiple scoring clicks per arm. All numbers tunable.
 
 ### The hard constraint: latency fairness
 Rounds are decided by sub-frame click timing, so the click path must **not** go through the
@@ -110,7 +113,7 @@ server/                # Go backend (module github.com/gamah/splitclicker)
   internal/
     steam/             # Facepunch token validation (copied from rotaliate)
     session/           # public player tag + username validation
-    game/              # round/game state machine: arm RNG, race, scoring, dedupe
+    game/              # round/game state machine: arm RNG, race, scoring (first N by arrival)
     store/             # Postgres-backed hourly board + players (pgx)
     ws/                # WS hub: registry, single precomputed broadcast, click ingestion
     api/               # REST: /auth, /leaderboard/hourly, /health, + /ws upgrade

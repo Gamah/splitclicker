@@ -53,14 +53,15 @@ Per global game instance the server cycles:
    then a fresh game. A new game = `round` resets to 1.
 
 ### Scoring & leaderboards
-- **Round point**: +1 per scoring click (a player can score at most once per arm — dedupe
-  by SteamID within a round so one person can't take all N slots).
+- **Round point**: +1 per scoring click. The armed window stays open until all N slots are
+  consumed (or RaceMax). There is **no per-player dedupe** — a fast clicker can take several
+  (or all) of the N slots in one arm, so mashing inside the live window is rewarded.
 - **Game standings**: sum of round points within the current game.
 - **Hourly leaderboard** (the persistent one): sum of points within the clock hour (UTC),
   resets hourly. This is the "most clicks" board the user described. Persisted to Postgres.
 
 ### Tunables (all server-side config / env)
-`armMinSec=10`, `armMaxSec=120`, `clicksPerRound N=1`, `roundsPerGame X` (e.g. 10),
+`armMinSec=10`, `armMaxSec=120`, `clicksPerRound N=25`, `roundsPerGame X` (e.g. 10),
 `raceMaxMs`, `resultDisplayMs`, `intermissionMs`, leaderboard reset cadence (default hourly).
 N=1 gives pure first-click-wins; N>1 gives multiple winners per arm.
 
@@ -166,7 +167,7 @@ forever. Cut it:
 handles this game's scale; we do **not** build multiple instances. *If* one box ever exceeds
 its idle-conn/fan-out budget, the future move is fan-out relays: edge nodes each hold a slice
 of connections, the single arming authority sends **one** arm message per edge, edges fan out
-and forward scoring clicks back; hot global state (arm nonce, click count, dedupe set) stays
+and forward scoring clicks back; hot global state (arm nonce, click count) stays
 on the authority. Keep the broadcast behind a small interface so this stays possible — that's
 the entire near-term obligation; otherwise ignore sharding.
 
@@ -213,7 +214,8 @@ Flow for splitclicker:
 - **Token-bucket per connection** for click frames (reuse the shape of rotaliate's solo
   move limiter: ~1/30ms sustained, small burst). Excess → drop + strike; repeated abuse →
   disconnect. WS-hub already enforces `MinMoveInterval`-style throttles in rotaliate.
-- **One score per SteamID per arm** (dedupe set keyed by player for the round).
+- **No per-player dedupe within an arm** — a player may legitimately fill multiple of the N
+  slots by clicking fast; the per-connection token bucket above is what bounds a masher.
 - **Seq/state gating** (§3) defeats pre-fire and replayed click frames.
 - **Server clock only** for ordering — never trust a client-sent timestamp.
 - Connection cap / IP throttle on the WS upgrade endpoint.
@@ -252,7 +254,7 @@ New repo (mirror rotaliate's layout). Suggested packages:
 |---|---|---|
 | `cmd/server` | entrypoint, config from env | `cmd/server` |
 | `internal/steam` | **copy `auth.go` verbatim** (`ValidateToken`) | `internal/steam` |
-| `internal/game` | round/game state machine, arming RNG, scoring, dedupe | `internal/game`, `internal/solo` |
+| `internal/game` | round/game state machine, arming RNG, scoring (first N clicks by arrival) | `internal/game`, `internal/solo` |
 | `internal/ws` | WS hub: connection registry, **single precomputed broadcast**, click ingestion goroutine, rate limit, ticket lookup. Prefer an **epoll-based** lib (`nbio`/`gobwas/ws`) over goroutine-per-conn for idle-conn scale (see §3.5) | `internal/ws/hub.go` |
 | `internal/api` | REST: `POST /auth`, `POST /ws/ticket`, `GET /leaderboard/*`, `GET /health` | `internal/api/router.go` |
 | `internal/db` | pgx pool + goose migrations from `migrations/` (filesystem, NOT embed) | `internal/db` |
@@ -445,8 +447,9 @@ Client pattern sources:
 ## 12. Verification
 
 This is a greenfield design plan; "verification" = how we'd prove the build once implemented:
-1. **Backend unit tests**: state machine (arming RNG bounds, N-click cutoff, dedupe, seq
-   gating, late-click rejection); `ValidateToken` (copy rotaliate's `auth_test.go` stub).
+1. **Backend unit tests**: state machine (arming RNG bounds, N-click cutoff, multi-slot
+   single-player scoring, seq gating, late-click rejection); `ValidateToken` (copy
+   rotaliate's `auth_test.go` stub).
 2. **Latency/ordering test**: fire M concurrent click goroutines at an armed round; assert
    exactly N score and ordering matches server arrival stamps.
 3. **Integration**: run Go backend locally, connect 2+ s&box client instances, confirm the
