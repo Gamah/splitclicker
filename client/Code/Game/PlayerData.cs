@@ -18,6 +18,10 @@ public sealed class PlayerData
 	/// <summary>game_id whose win we last counted toward the `wins` stat.</summary>
 	public string LastWinGameId { get; set; } = "";
 
+	/// <summary>Index of the procedural music track currently playing, persisted so the
+	/// endless song sequence resumes where it left off (see Audio/MusicController).</summary>
+	public int MusicN { get; set; }
+
 	const string FileName = "player.json";
 	static PlayerData _cache;
 

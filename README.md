@@ -58,6 +58,12 @@ the button enables only on `armed` and a press sends `{"t":"click","nonce":…}`
 A startup scene and the s&box Services achievement/stat config are created
 in-editor — see `client/`'s code comments and PLAN §7.
 
+`Code/Audio/` ports rotaliate's procedural ska/reggae-rock generator (`MusicGen`
++ `VibeCodec`) as a background soundtrack: `MusicController` (on the scene's
+GameController, no UI) rerolls a random "vibe" once per load, plays an endless
+crossfaded sequence at a fixed 15% volume, and persists the song index
+(`PlayerData.MusicN`) so it resumes across loads.
+
 ## Contract (HTTP / WebSocket)
 
 1. `POST /api/v1/auth` `{steam_id, token, username?, display_name?}` — client mints
