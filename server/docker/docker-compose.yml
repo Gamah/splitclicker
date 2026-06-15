@@ -1,3 +1,10 @@
+# The `name:` below pins the Compose project, which namespaces containers,
+# networks and volumes (splitclicker_*). Without it the project defaults to the
+# parent dir name ("docker"), colliding with any other repo whose compose file
+# also lives under docker/ (they'd share container `docker-app-1`, the network
+# and the postgres volume — which silently took prod's :8080 app offline).
+name: splitclicker
+
 services:
 
   app:
