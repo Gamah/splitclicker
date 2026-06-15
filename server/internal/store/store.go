@@ -97,11 +97,13 @@ func (s *Store) GetPlayer(ctx context.Context, steamID string) (p Player, ok boo
 	return playerOf(steamID, name, disp), true, nil
 }
 
-// LeaderboardEntry is one row of the hourly board (public fields only).
+// LeaderboardEntry is one row of a board. SteamID64 is public (the Steam-profile
+// identifier), sent so the client can open/copy a player's community profile.
 type LeaderboardEntry struct {
 	Tag      string `json:"tag"`
 	Username string `json:"username"`
 	Points   int    `json:"points"`
+	SteamID  string `json:"steam_id"`
 }
 
 // HourlyLeaderboard returns up to limit players for the current UTC clock-hour,
@@ -130,7 +132,7 @@ func (s *Store) HourlyLeaderboard(ctx context.Context, limit int) ([]Leaderboard
 			return nil, err
 		}
 		p := playerOf(steamID, name, disp)
-		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: pts})
+		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: pts, SteamID: steamID})
 	}
 	return out, rows.Err()
 }
@@ -159,7 +161,46 @@ func (s *Store) HoursWonLeaderboard(ctx context.Context, limit int) ([]Leaderboa
 			return nil, err
 		}
 		p := playerOf(steamID, name, disp)
-		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: hours})
+		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: hours, SteamID: steamID})
+	}
+	return out, rows.Err()
+}
+
+// AddSessionWin credits one game win to steamID on the persistent sessions-won
+// board. Implements game.Store; called when a game's final standings are settled.
+func (s *Store) AddSessionWin(ctx context.Context, steamID string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO session_wins (steam_id, wins) VALUES ($1, 1)
+		ON CONFLICT (steam_id) DO UPDATE SET wins = session_wins.wins + 1
+	`, steamID)
+	return err
+}
+
+// SessionsWonLeaderboard returns up to limit players by career sessions (games)
+// won, highest first. Points carries the wins count (reusing the entry shape).
+func (s *Store) SessionsWonLeaderboard(ctx context.Context, limit int) ([]LeaderboardEntry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT sw.steam_id, p.username, p.display_name, sw.wins
+		FROM session_wins sw
+		LEFT JOIN players p ON p.steam_id = sw.steam_id
+		ORDER BY sw.wins DESC, sw.steam_id ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []LeaderboardEntry{}
+	for rows.Next() {
+		var steamID string
+		var name, disp *string
+		var wins int
+		if err := rows.Scan(&steamID, &name, &disp, &wins); err != nil {
+			return nil, err
+		}
+		p := playerOf(steamID, name, disp)
+		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: wins, SteamID: steamID})
 	}
 	return out, rows.Err()
 }

@@ -27,9 +27,9 @@ internal/
   session/         public player tag + username validation
   game/            authoritative state machine (arm RNG, nonce race, scoring,
                    spam penalty) — transport/DB-agnostic behind interfaces
-  store/           Postgres-backed hourly board + hours-won + players (pgx)
+  store/           Postgres-backed hourly board + hours-won + sessions-won + players (pgx)
   ws/              WebSocket hub (gorilla); implements game.Broadcaster
-  api/             REST: /auth, /leaderboard/{hourly,hours-won}, /health, + /ws upgrade
+  api/             REST: /auth, /leaderboard/{hourly,hours-won,sessions-won}, /health, + /ws upgrade
   db/              pgx pool + goose migrations
 migrations/        goose SQL
 docker/            Dockerfile, compose (app + postgres); app listens on 6969
@@ -72,6 +72,12 @@ in-editor — see `client/`'s code comments and PLAN §7.
 4. `GET /api/v1/leaderboard/hourly?limit=100` — current UTC hour, top players.
 5. `GET /api/v1/leaderboard/hours-won?limit=100` — career board: hours won (the
    top scorer of each completed clock-hour wins that hour).
+6. `GET /api/v1/leaderboard/sessions-won?limit=100` — career board: sessions
+   (games) won (the top scorer of each completed game wins that session).
+
+All boards (and the `standings` in `round_result`/`game_over`) sort by count
+descending and carry each player's public `steam_id` (SteamID64) so the client
+can copy the player's `steamcommunity.com/profiles/{id}` link on a name click.
 
 ## Deployment / security note
 

@@ -90,8 +90,8 @@ func TestStandingsOrder(t *testing.T) {
 	info := map[string]playerInfo{"a": {}, "b": {}, "c": {}}
 	s := standingsOf(scores, info)
 	// b,c tie at 3 — SteamID asc tiebreak puts b before c; a last.
-	if s[0].steamID != "b" || s[1].steamID != "c" || s[2].steamID != "a" {
-		t.Fatalf("unexpected order: %v %v %v", s[0].steamID, s[1].steamID, s[2].steamID)
+	if s[0].SteamID != "b" || s[1].SteamID != "c" || s[2].SteamID != "a" {
+		t.Fatalf("unexpected order: %v %v %v", s[0].SteamID, s[1].SteamID, s[2].SteamID)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestEngineLoopScores(t *testing.T) {
 		if r.Deltas["winner"] != 1 {
 			t.Fatalf("winner should have delta 1, got %v", r.Deltas)
 		}
-		if len(r.Winners) != 1 || r.Winners[0].steamID != "winner" {
+		if len(r.Winners) != 1 || r.Winners[0].SteamID != "winner" {
 			t.Fatalf("unexpected winners: %+v", r.Winners)
 		}
 	case <-time.After(3 * time.Second):

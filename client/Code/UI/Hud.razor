@@ -39,7 +39,7 @@
 				var s = SessionEntries[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
-					<div class="name">@DisplayName( s )</div>
+					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
 			}
@@ -50,27 +50,31 @@
 	<div class="center">
 		<div class="btn @StateClass()" onclick="@OnPress"></div>
 
+		@* Each line below is a SINGLE interpolated expression on purpose: mixing
+		   literal text with razor expressions in one element emits several text nodes,
+		   which s&box's panel reconciler reorders across rebuilds (the "arms in 2-6s"
+		   -> "- arms in 26s" / vanishing-penalty bug). One expression = one stable node. *@
 		<div class="hud">
-			<div class="round">Round @(c?.Round ?? 0) / @(c?.Of ?? 0)</div>
+			<div class="round">@($"Round {c?.Round ?? 0} / {c?.Of ?? 0}")</div>
 			<div class="state @PhaseClass()">@PhaseText()</div>
 			<div class="meta">
-				<div class="score">You: @(c?.MyPoints ?? 0)</div>
+				<div class="score">@($"You: {c?.MyPoints ?? 0}")</div>
 				<div class="sep">·</div>
-				<div class="players">@(c?.Players ?? 0) online</div>
+				<div class="players">@($"{c?.Players ?? 0} online")</div>
 				<div class="sep">·</div>
-				<div class="clicks">@(c?.ClicksToWin ?? 0) clicks exist for this round</div>
+				<div class="clicks">@($"{c?.ClicksToWin ?? 0} clicks exist for this round")</div>
 			</div>
 			@if ( c?.Phase == GamePhase.Pending && (c?.ArmMaxSec ?? 0) > 0 )
 			{
-				<div class="arm">arms in @(c.ArmMinSec)–@(c.ArmMaxSec)s</div>
+				<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
 			}
 			@if ( (c?.PenaltyMs ?? 0) > 0 )
 			{
-				<div class="penalty">throttled +@(c.PenaltyMs)ms</div>
+				<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
 			}
 		</div>
 
-		<div class="clicks-sent">clicks sent: @(c?.ClicksSent ?? 0)</div>
+		<div class="clicks-sent">@($"clicks sent: {c?.ClicksSent ?? 0}")</div>
 	</div>
 
 	@* ── hourly board: Postgres "most clicks this hour", pinned right (inner) ── *@
@@ -89,7 +93,7 @@
 				var s = _hourly[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
-					<div class="name">@DisplayName( s )</div>
+					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
 			}
@@ -111,12 +115,40 @@
 				var s = _hoursWon[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
-					<div class="name">@DisplayName( s )</div>
+					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
 			}
 		}
 	</div>
+
+	@* ── sessions-won board: career games (sessions) topped, pinned bottom-right ── *@
+	<div class="board sessionswon">
+		<div class="title">SESSIONS WON</div>
+		<div class="divider"></div>
+		@if ( _sessionsWon.Count == 0 )
+		{
+			<div class="empty">@(_sessionsWonLoaded ? "No sessions won yet" : "loading…")</div>
+		}
+		else
+		{
+			@for ( int i = 0; i < _sessionsWon.Count; i++ )
+			{
+				var s = _sessionsWon[i];
+				<div class="row @(IsMe( s ) ? "me" : "")">
+					<div class="rank">@(i + 1)</div>
+					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
+					<div class="pts">@s.Points</div>
+				</div>
+			}
+		}
+	</div>
+
+	@* ── transient "copied profile link" toast, top-center for ~a second ── *@
+	@if ( ToastVisible )
+	{
+		<div class="toast">@_toast</div>
+	}
 </root>
 
 <style>
@@ -145,6 +177,9 @@
 	.board.session { left: 14px; }
 	.board.hourly { right: 308px; } /* 14 (edge) + 280 (hours-won) + 14 (gap) */
 	.board.hourswon { right: 14px; }
+	/* sessions-won pins to the free bottom-right corner (top:auto cancels the
+	   shared top:18px) so the three right-hand boards never crowd the button. */
+	.board.sessionswon { top: auto; bottom: 18px; right: 14px; }
 
 	.board .title {
 		font-size: 14px;
@@ -183,9 +218,18 @@
 	.board .pts { color: #06d6a0; font-weight: bold; }
 	.board .row.me { background-color: rgba(6, 214, 160, 0.15); }
 
+	/* names are clickable (copy the player's Steam profile link); re-enable
+	   pointer events on just these against the pointer-events:none root. */
+	.board .name.clickable { pointer-events: all; cursor: pointer; }
+	.board .name.clickable:hover { color: #ffffff; text-decoration: underline; }
+
 	/* hours-won is the gold board */
 	.board.hourswon .pts { color: #ffd166; }
 	.board.hourswon .row.me { background-color: rgba(255, 209, 102, 0.15); }
+
+	/* sessions-won is the blue board */
+	.board.sessionswon .pts { color: #4cc9f0; }
+	.board.sessionswon .row.me { background-color: rgba(76, 201, 240, 0.15); }
 
 	.board .empty {
 		justify-content: center;
@@ -213,12 +257,17 @@
 		width: 700px;
 		height: 700px;
 		border-radius: 50%;
-		background-color: #e63946; /* red: not clickable */
+		background-color: #e63946; /* red: armed race not open (idle clicks still register) */
 		border: 8px solid rgba(255, 255, 255, 0.14);
 		transition: all 0.08s ease-out;
 		pointer-events: all;
-		cursor: default;
+		/* the button is always pressable — idle clicks are a real (penalised) input —
+		   so it always reads as clickable, not just when green. */
+		cursor: pointer;
 	}
+
+	/* press feedback in any state, so a red-button click visibly does something. */
+	.btn:active { transform: scale(0.98); }
 
 	.btn.armed {
 		background-color: #06d6a0; /* green only while a valid click can score */
@@ -300,6 +349,21 @@
 		letter-spacing: 1px;
 		pointer-events: none;
 	}
+
+	/* transient confirmation that a profile link was copied; top-center, fades by
+	   simply un-rendering after ToastDuration (see BuildHash). */
+	.toast {
+		position: absolute;
+		top: 40px;
+		left: 0;
+		right: 0;
+		justify-content: center;
+		font-size: 20px;
+		font-weight: bold;
+		color: #4cc9f0;
+		letter-spacing: 1px;
+		pointer-events: none;
+	}
 </style>
 
 @code {
@@ -322,12 +386,23 @@
 	bool _hoursWonLoaded, _hoursWonFetching;
 	RealTimeSince _hoursWonLast;
 
+	List<Standing> _sessionsWon = new();
+	bool _sessionsWonLoaded, _sessionsWonFetching;
+	RealTimeSince _sessionsWonLast;
+
 	GamePhase _lastPhase = GamePhase.Connecting;
+
+	// ── "copied profile link" toast: shown for ToastDuration after a name click ──
+	const float ToastDuration = 1.2f;
+	string _toast = "";
+	RealTimeSince _toastSince = 1000f; // start expired
+	bool ToastVisible => _toastSince < ToastDuration;
 
 	protected override void OnTreeFirstBuilt()
 	{
 		_ = RefreshHourly();
 		_ = RefreshHoursWon();
+		_ = RefreshSessionsWon();
 	}
 
 	protected override void OnUpdate()
@@ -342,6 +417,7 @@
 		{
 			if ( _hourlyLast > RefreshInterval ) _ = RefreshHourly();
 			if ( _hoursWonLast > RefreshInterval ) _ = RefreshHoursWon();
+			if ( _sessionsWonLast > RefreshInterval ) _ = RefreshSessionsWon();
 		}
 	}
 
@@ -373,6 +449,35 @@
 			StateHasChanged();
 		}
 		finally { _hoursWonFetching = false; }
+	}
+
+	async Task RefreshSessionsWon()
+	{
+		if ( _sessionsWonFetching ) return;
+		_sessionsWonFetching = true;
+		_sessionsWonLast = 0;
+		try
+		{
+			var board = await ApiClient.GetSessionsWonLeaderboard( DisplayLimit );
+			_sessionsWon = board ?? new List<Standing>();
+			_sessionsWonLoaded = true;
+			StateHasChanged();
+		}
+		finally { _sessionsWonFetching = false; }
+	}
+
+	// Copy the clicked player's public Steam community profile link to the
+	// clipboard and flash a short confirmation toast. SteamID64 is public, so the
+	// link works for anyone; no-op if the row carries no id.
+	void CopyProfile( Standing s )
+	{
+		if ( s == null || string.IsNullOrEmpty( s.SteamId ) ) return;
+		var url = $"https://steamcommunity.com/profiles/{s.SteamId}";
+		try { Clipboard.SetText( url ); }
+		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
+		_toast = $"Copied {DisplayName( s )}'s profile link";
+		_toastSince = 0f;
+		StateHasChanged();
 	}
 
 	static bool IsMe( Standing s )
@@ -421,10 +526,12 @@
 		_ => "",
 	};
 
-	// Include the seconds-remaining so the countdown re-renders as it ticks.
+	// Include the seconds-remaining so the countdown re-renders as it ticks, and
+	// ToastVisible so the copied-link toast appears and clears itself on time.
 	protected override int BuildHash() => HashCode.Combine(
 		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0, C?.MyPoints ?? 0,
 			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
-			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ) );
+			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
+		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible ) );
 }

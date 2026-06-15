@@ -279,8 +279,11 @@ then — design the state machine behind an interface so this is a later swap.
 - **Leaderboard read**: `SELECT … FROM hourly_scores WHERE hour_bucket = $current ORDER BY
   points DESC LIMIT 100`. (Materialized view optional; a hot indexed query is fine at this
   size — start simple, add an MV like rotaliate's only if needed.)
-- Public payloads expose a **player_tag**-style id + username, never the SteamID raw, if
-  you want to match rotaliate's privacy posture (optional given the lighter threat model).
+- Public payloads expose a **player_tag**-style id + username, **and** the public
+  SteamID64 (`steam_id`). Decision taken: given the lighter threat model and that a
+  SteamID64 is itself the public Steam-profile identifier, boards/standings carry it
+  so the client can copy a player's `steamcommunity.com/profiles/{id}` link on a name
+  click. (rotaliate's stricter "never expose SteamID" posture was the alternative.)
 
 ---
 

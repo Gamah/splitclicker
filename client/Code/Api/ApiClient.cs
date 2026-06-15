@@ -100,6 +100,11 @@ public static class ApiClient
 	public static Task<List<Standing>> GetHoursWonLeaderboard( int limit = 100 ) =>
 		GetLeaderboard( "hours-won", limit );
 
+	/// <summary>Career "sessions won" leaderboard (top `limit`). Empty list on
+	/// failure. Each Standing's Points is the games-won count.</summary>
+	public static Task<List<Standing>> GetSessionsWonLeaderboard( int limit = 100 ) =>
+		GetLeaderboard( "sessions-won", limit );
+
 	static async Task<List<Standing>> GetLeaderboard( string board, int limit )
 	{
 		try

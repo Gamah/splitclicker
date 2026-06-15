@@ -57,17 +57,15 @@ type ClickEvent struct {
 	At       time.Time
 }
 
-// Standing is one player's position on a board. steamID is unexported — it keys
-// per-player deltas/placements but is never marshalled into a public frame.
+// Standing is one player's position on a board. SteamID64 is public information
+// (it is literally the public Steam-profile identifier), so it is sent to clients
+// — the UI uses it to open/copy a player's steamcommunity.com profile.
 type Standing struct {
 	Tag      string `json:"tag"`
 	Username string `json:"username"`
 	Points   int    `json:"points"`
-	steamID  string
+	SteamID  string `json:"steam_id"`
 }
-
-// SteamID exposes the (private) account id to same-package transport code.
-func (s Standing) SteamID() string { return s.steamID }
 
 // --- broadcaster (implemented by the ws hub) ---
 
@@ -135,8 +133,11 @@ type HourlyDelta struct {
 }
 
 // Store persists scoring. bucket is the UTC clock-hour the points belong to.
+// AddSessionWin credits one game ("session") win to the steamID that topped a
+// completed game's final standings.
 type Store interface {
 	AddHourlyPoints(ctx context.Context, bucket time.Time, deltas []HourlyDelta) error
+	AddSessionWin(ctx context.Context, steamID string) error
 }
 
 // --- engine ---
@@ -273,8 +274,8 @@ func (e *Engine) playGame(ctx context.Context) {
 	placements := make(map[string]int, len(final))
 	won := make(map[string]bool, len(final))
 	for i, s := range final {
-		placements[s.steamID] = i + 1
-		won[s.steamID] = i == 0 // placement 1 == win
+		placements[s.SteamID] = i + 1
+		won[s.SteamID] = i == 0 // placement 1 == win
 	}
 	e.bc.GameOver(GameOverFrame{
 		Standings:  topK(final, e.cfg.BoardSize),
@@ -282,6 +283,24 @@ func (e *Engine) playGame(ctx context.Context) {
 		Placements: placements,
 		Won:        won,
 	})
+
+	// Credit the session win to the game's top scorer (if anyone scored), off the
+	// hot path so DB latency never delays the intermission.
+	if len(final) > 0 && e.store != nil {
+		e.creditSessionWin(final[0].SteamID)
+	}
+}
+
+// creditSessionWin records a game win for steamID on the persistent "sessions
+// won" board. Detached context so a shutdown right after game_over still records.
+func (e *Engine) creditSessionWin(steamID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := e.store.AddSessionWin(ctx, steamID); err != nil {
+			e.log.Error("persist session win", zap.Error(err))
+		}
+	}()
 }
 
 // pending is the IDLE/arming phase: announce the round, then wait the secret
@@ -352,7 +371,7 @@ raceLoop:
 		}
 		seen[ev.SteamID] = true
 		pi := info[ev.SteamID]
-		winners = append(winners, Standing{Tag: pi.tag, Username: pi.username, Points: scores[ev.SteamID], steamID: ev.SteamID})
+		winners = append(winners, Standing{Tag: pi.tag, Username: pi.username, Points: scores[ev.SteamID], SteamID: ev.SteamID})
 	}
 	e.bc.Result(ResultFrame{
 		Round:     round,
@@ -467,13 +486,13 @@ func standingsOf(scores map[string]int, info map[string]playerInfo) []Standing {
 	out := make([]Standing, 0, len(scores))
 	for sid, pts := range scores {
 		pi := info[sid]
-		out = append(out, Standing{Tag: pi.tag, Username: pi.username, Points: pts, steamID: sid})
+		out = append(out, Standing{Tag: pi.tag, Username: pi.username, Points: pts, SteamID: sid})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Points != out[j].Points {
 			return out[i].Points > out[j].Points
 		}
-		return out[i].steamID < out[j].steamID
+		return out[i].SteamID < out[j].SteamID
 	})
 	return out
 }

@@ -12,12 +12,14 @@ public record AuthResponse(
 	[property: JsonPropertyName( "ttl_ms" )] long TtlMs
 );
 
-// One row of the hourly leaderboard (GET /api/v1/leaderboard/hourly) and of the
-// standings embedded in round_result / game_over.
+// One row of a leaderboard (GET /api/v1/leaderboard/*) and of the standings
+// embedded in round_result / game_over. SteamId is the public SteamID64, used to
+// open/copy the player's steamcommunity.com profile.
 public record Standing(
 	[property: JsonPropertyName( "tag" )] string Tag,
 	[property: JsonPropertyName( "username" )] string Username,
-	[property: JsonPropertyName( "points" )] int Points
+	[property: JsonPropertyName( "points" )] int Points,
+	[property: JsonPropertyName( "steam_id" )] string SteamId
 );
 
 // --- WebSocket server→client frames (the "t" field selects the shape) ---
