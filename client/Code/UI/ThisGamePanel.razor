@@ -37,10 +37,14 @@
 </root>
 
 <style>
-	/* Left column of the HUD row: fixed width so the center button gets the rest. */
+	/* Pinned hard against the left edge — the mirror of the right-hand boards.
+	   Absolute (not a flex cell) so placement doesn't depend on the ScreenPanel's
+	   flow now that the button and right boards are absolute overlays too. */
 	root {
+		position: absolute;
+		top: 0;
+		left: 0;
 		width: 300px;
-		flex-shrink: 0;
 		height: 100%;
 		align-items: flex-start;
 		justify-content: flex-start;
