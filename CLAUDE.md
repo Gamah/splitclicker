@@ -147,6 +147,14 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   idempotent). Initial set: `first_point`, `points_50`, `points_100`, `top_5`, `top_3`,
   `first_win`, `wins_5`, `wins_10` (total score 285 / 1000 cap). Separate from the Postgres
   hourly board.
+- **HUD is ONE full-screen PanelComponent** (`client/Code/UI/Hud.razor`), not several. A
+  `ScreenPanel` row-flexes its child PanelComponent roots and **ignores `position` set on a
+  root**, so sibling panels can't pin/center themselves — `position:absolute` on a `<root>`
+  is a no-op. The working pattern (mirrors rotaliate's `GameHud`): a single root with
+  `width/height:100%` that fills the screen, with every piece an absolutely-positioned
+  **child**. ScreenPanel auto-scales to a 1080-tall reference, so vertical px is aspect-stable.
+  When s&box layout surprises you, read `../sbox-docs/docs/ui/` (and check rotaliate) to learn
+  the model — don't assume web-CSS semantics.
 
 ---
 
