@@ -17,7 +17,10 @@
 	fills the screen, with every piece an absolutely-positioned CHILD of it:
 
 	  • session board   — pinned top-left
-	  • the button + status HUD + "clicks sent" — dead-center of the screen
+	  • a bounding box inset between the left/right boards — holds the status HUD
+	    (centred) and the global button, which is small and JUMPS to a random spot
+	    inside the box each time the round arms (whack-a-mole); "clicks sent" sits
+	    pinned to the box bottom
 	  • hourly board     — pinned top-right, just left of hours-won
 	  • hours-won board  — pinned hard to the top-right edge
 *@
@@ -53,8 +56,9 @@
 	@* ── the one global button, dead-center, with the status HUD over it ── *@
 	@* StateClass also lands on .center so the HUD text can flip to black on the
 	   yellow-orange WAIT background (and stay white everywhere else). *@
-	<div class="center @StateClass()">
-		<div class="btn @StateClass()" onclick="@OnPress"></div>
+	<div class="center @StateClass()" @ref="_box">
+		<div class="btn @StateClass()" @ref="_btn"
+		     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
 
 		@* Each line below is a SINGLE interpolated expression on purpose: mixing
 		   literal text with razor expressions in one element emits several text nodes,
@@ -357,28 +361,35 @@
 		margin-top: 4px;
 	}
 
-	/* ── center column: full-screen overlay that centers the button ── */
+	/* ── center: the BOUNDING BOX the button roams inside, inset between the
+	   left session board (right edge ≈ 308px) and the right board column (also
+	   308px), with a little top/bottom breathing room. The button is positioned
+	   absolutely within this box; the status HUD overlays it centred. ── */
 	.center {
 		position: absolute;
-		top: 0;
-		left: 0;
-		right: 0;
-		bottom: 0;
+		top: 24px;
+		bottom: 24px;
+		left: 308px;
+		right: 308px;
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
 		pointer-events: none;
 	}
 
-	/* Fixed square (ScreenPanel auto-scales to a 1080-tall reference) so the button
-	   is a true circle, centered, at ~70% of screen height. */
+	/* The global button: a small circle (1/5 of its former size) positioned
+	   absolutely via inline left/top % (set from ClickController state) so it can
+	   JUMP to a random spot in the box on each arm. left/top are deliberately left
+	   OUT of the transition so the move is an instant teleport, not a slide; only
+	   colour + the press/armed scale animate. */
 	.btn {
-		width: 700px;
-		height: 700px;
+		position: absolute;
+		width: 140px;
+		height: 140px;
 		border-radius: 50%;
 		background-color: #e63946; /* red: armed race not open (idle clicks still register) */
-		border: 8px solid rgba(255, 255, 255, 0.14);
-		transition: all 0.08s ease-out;
+		border: 4px solid rgba(255, 255, 255, 0.14);
+		transition: background-color 0.08s ease-out, transform 0.08s ease-out;
 		pointer-events: all;
 		/* the button is always pressable — idle clicks are a real (penalised) input —
 		   so it always reads as clickable, not just when green. */
@@ -470,23 +481,13 @@
 		color: #ffffff;
 	}
 
-	/* HUD text overlaid on the button is black on the yellow-orange WAIT background
-	   (for contrast) and white in every other state. These high-specificity rules
-	   win over the per-element colors above. (clicks-sent sits *below* the button on
-	   the dark page background, so it stays white — excluded here.) */
-	.center.wait .round,
-	.center.wait .state,
-	.center.wait .meta,
-	.center.wait .meta .sep,
-	.center.wait .arm,
-	.center.wait .penalty { color: #000000; }
+	/* The status HUD now floats centred on the dark box (the button roams away from
+	   it), so the text stays white in every state — no on-button contrast override. */
 
-	/* Centered just under the circle: the button is 700px (350px radius) centered
-	   on screen, so 360px below screen-center sits 10px below its bottom edge. */
+	/* Pinned to the bottom of the bounding box, centred horizontally. */
 	.clicks-sent {
 		position: absolute;
-		top: 50%;
-		margin-top: 360px;
+		bottom: 0;
 		left: 0;
 		right: 0;
 		justify-content: center;
@@ -539,6 +540,18 @@
 
 	GamePhase _lastPhase = GamePhase.Connecting;
 
+	// ── roaming button: the bounding box (.center) and the button itself, captured
+	//    by @ref so we can measure them, plus the button's current position as a
+	//    left/top percentage of the box. The button JUMPS to a random in-box spot
+	//    each time the round arms (the "make green" frame), and returns to the box
+	//    centre while dormant. Percentages are whole ints (locale-safe interpolation;
+	//    the sandbox doesn't whitelist System.Globalization for float formatting). ──
+	Panel _box;
+	Panel _btn;
+	bool _positioned;
+	int _btnLeftPct = 44; // sensible centre-ish default until first measured
+	int _btnTopPct = 43;
+
 	// ── server-driven skin + winner-lock countdown (GET /api/v1/config) ──
 	// _winnerLockMs is the winner-lock instant as Unix epoch ms (0 = unset, hides
 	// the countdown); _skinUrl is the absolute URL the backend serves the current
@@ -576,17 +589,66 @@
 	protected override void OnUpdate()
 	{
 		var phase = C?.Phase ?? GamePhase.Connecting;
-		// Refresh when a round just closed (player is reading scores between presses),
-		// throttled so rapid result→pending churn can't spam the endpoints.
-		bool roundJustClosed = phase != _lastPhase &&
-			( phase == GamePhase.Result || phase == GamePhase.GameOver );
-		_lastPhase = phase;
-		if ( roundJustClosed )
+
+		// Rest the button at the box centre once both panels have been laid out
+		// (their measured rects become valid only after the first frame).
+		if ( !_positioned && (_box?.Box.Rect.Width ?? 0f) > 0f && (_btn?.Box.Rect.Width ?? 0f) > 0f )
 		{
-			if ( _hourlyLast > RefreshInterval ) _ = RefreshHourly();
-			if ( _hoursWonLast > RefreshInterval ) _ = RefreshHoursWon();
-			if ( _sessionsWonLast > RefreshInterval ) _ = RefreshSessionsWon();
+			( _btnLeftPct, _btnTopPct ) = CenterPos();
+			_positioned = true;
+			StateHasChanged();
 		}
+
+		if ( phase != _lastPhase )
+		{
+			// Whack-a-mole: the instant the button arms ("make green"), jump it to a
+			// random spot in the box; send it back to centre while it's dormant again.
+			if ( phase == GamePhase.Armed )
+				( _btnLeftPct, _btnTopPct ) = RandomPos();
+			else if ( phase == GamePhase.Pending )
+				( _btnLeftPct, _btnTopPct ) = CenterPos();
+
+			// Refresh the boards when a round just closed (player is reading scores
+			// between presses), throttled so rapid result→pending churn can't spam.
+			if ( phase == GamePhase.Result || phase == GamePhase.GameOver )
+			{
+				if ( _hourlyLast > RefreshInterval ) _ = RefreshHourly();
+				if ( _hoursWonLast > RefreshInterval ) _ = RefreshHoursWon();
+				if ( _sessionsWonLast > RefreshInterval ) _ = RefreshSessionsWon();
+			}
+
+			_lastPhase = phase;
+			StateHasChanged();
+		}
+	}
+
+	// The usable left/top range (as a percentage of the box) that keeps the button
+	// fully inside it: 1 − button/box along each axis. Derived from the live measured
+	// rects (their ratio is resolution- and scale-independent); falls back to a
+	// roughly-correct range if a rect isn't available yet, so the button still roams.
+	(float x, float y) BoxRange()
+	{
+		float bw = _box?.Box.Rect.Width ?? 0f, bh = _box?.Box.Rect.Height ?? 0f;
+		float w = _btn?.Box.Rect.Width ?? 0f, h = _btn?.Box.Rect.Height ?? 0f;
+		if ( bw <= 0f || bh <= 0f || w <= 0f || h <= 0f ) return ( 88f, 86f );
+		return ( Math.Clamp( 1f - w / bw, 0f, 1f ) * 100f,
+		         Math.Clamp( 1f - h / bh, 0f, 1f ) * 100f );
+	}
+
+	// Centre of the valid range (top-left positioning, so this — not 50/50 — is the
+	// position that visually centres the button in the box).
+	(int, int) CenterPos()
+	{
+		var ( x, y ) = BoxRange();
+		return ( (int)(x / 2f), (int)(y / 2f) );
+	}
+
+	// A uniformly-random in-box position within the valid range.
+	(int, int) RandomPos()
+	{
+		var ( x, y ) = BoxRange();
+		var r = System.Random.Shared;
+		return ( (int)(r.NextSingle() * x), (int)(r.NextSingle() * y) );
 	}
 
 	async Task RefreshHourly()
@@ -750,5 +812,6 @@
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
 		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), IsMuted,
-			_skinUrl, _winnerLockMs, WinnerLockPassed() ) );
+			_skinUrl, _winnerLockMs, WinnerLockPassed() ),
+		HashCode.Combine( _btnLeftPct, _btnTopPct ) );
 }
