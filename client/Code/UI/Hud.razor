@@ -67,6 +67,12 @@
 			<div class="game-btn @StateClass()" @ref="_btn"
 			     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
 
+			@* "+ PENALTY" popups: one per bad click, floating up from where it was hit. *@
+			@foreach ( var p in _pops )
+			{
+				<div class="penalty-pop" style="left: @(p.Left)%; top: @(p.Top)%;">+ PENALTY</div>
+			}
+
 			@* Each line below is a SINGLE interpolated expression on purpose: mixing
 			   literal text with razor expressions in one element emits several text nodes,
 			   which s&box's panel reconciler reorders across rebuilds (the "arms in 2-6s"
@@ -452,6 +458,29 @@
 		100% { background-color: #000000; }
 	}
 
+	/* "+ PENALTY" popup: red text with a white outline, positioned absolutely in the
+	   box (left/top % set inline, same space as the button) and animated up + faded
+	   over 1s, then held gone (forwards) until OnUpdate prunes it. pointer-events:none
+	   so it never eats a click; high z so it reads over the button and HUD. */
+	.penalty-pop {
+		position: absolute;
+		font-size: 30px;
+		font-weight: bold;
+		color: #e63946;
+		text-stroke: 2px #ffffff;
+		pointer-events: none;
+		z-index: 120;
+		animation-name: penalty-rise;
+		animation-duration: 1s;
+		animation-timing-function: ease-out;
+		animation-fill-mode: forwards;
+	}
+
+	@@keyframes penalty-rise {
+		0%   { opacity: 1; transform: translateY(0px); }
+		100% { opacity: 0; transform: translateY(-90px); }
+	}
+
 	/* HUD pinned to the top edge of the screen, centred horizontally over the box;
 	   the button roams below/behind it and clicks fall through. */
 	.hud {
@@ -618,6 +647,14 @@
 
 	protected override void OnUpdate()
 	{
+		// Drop finished "+ PENALTY" popups (the CSS animation runs for PopLife). While
+		// any are live, re-render every frame so removals take effect on time.
+		if ( _pops.Count > 0 )
+		{
+			_pops.RemoveAll( p => p.Since >= PopLife );
+			StateHasChanged();
+		}
+
 		var phase = C?.Phase ?? GamePhase.Connecting;
 
 		// Rest the button at the box centre once both panels have been laid out
@@ -793,10 +830,29 @@
 	// next click (it is not recentred between rounds/games).
 	void OnPress()
 	{
-		ClickController.Instance?.SendClick();
+		// The button is about to teleport — capture where it was clicked so the
+		// "+ PENALTY" pops from that spot. SendClick returns true when the click was a
+		// penalised bad click (idle / wrong phase); spawn a popup for each one, so
+		// rapid mashing stacks several on screen at once.
+		int px = _btnLeftPct, py = _btnTopPct;
+		bool bad = ClickController.Instance?.SendClick() ?? false;
+		if ( bad )
+		{
+			_pops.Add( new PenaltyPop { Left = px, Top = py, Since = 0f } );
+			_popSeq++;
+		}
 		( _btnLeftPct, _btnTopPct ) = RandomPos();
 		StateHasChanged();
 	}
+
+	// ── "+ PENALTY" popups: one per bad click, each floats up and fades over PopLife
+	//    seconds (CSS keyframe), then is pruned. Several can be live at once. Left/Top
+	//    are the box-relative % the button sat at when clicked (same space as the
+	//    button), so the text rises from where the player hit it. ──
+	class PenaltyPop { public int Left; public int Top; public RealTimeSince Since; }
+	readonly List<PenaltyPop> _pops = new();
+	int _popSeq; // bumps on every spawn so BuildHash rebuilds and the new popup renders
+	const float PopLife = 1f;
 
 	// ── music panel toggle ──
 	// The panel (mute/volume + genre/vibe knobs + seed sharing) is a child Panel of this
@@ -847,5 +903,5 @@
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
 		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), MusicOpen,
 			_skinUrl, _winnerLockMs, WinnerLockPassed() ),
-		HashCode.Combine( _btnLeftPct, _btnTopPct ) );
+		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count ) );
 }

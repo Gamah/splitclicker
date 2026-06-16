@@ -46,7 +46,9 @@ public record HelloGame(
 	[property: JsonPropertyName( "players" )] int Players,
 	[property: JsonPropertyName( "clicks" )] int Clicks,
 	[property: JsonPropertyName( "arm_min" )] int ArmMin,
-	[property: JsonPropertyName( "arm_max" )] int ArmMax
+	[property: JsonPropertyName( "arm_max" )] int ArmMax,
+	[property: JsonPropertyName( "penalty_base_ms" )] int PenaltyBaseMs,
+	[property: JsonPropertyName( "penalty_step_ms" )] int PenaltyStepMs
 );
 
 public record HelloMsg(

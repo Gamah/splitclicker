@@ -32,6 +32,12 @@ public sealed class ClickController : Component
 	/// http://localhost:8080 for a local play-test. Applied to ApiClient at startup.</summary>
 	[Property] public string BackendUrl { get; set; } = "";
 
+	/// <summary>API version to talk to, editable in the scene inspector. "v2" is the
+	/// real game; set it to "v1" to exercise the legacy/troll path the outdated
+	/// client hits (server feeds back the "UPDATE UPDATE" board and ignores clicks).
+	/// Applied to <see cref="ApiClient.ApiVersion"/> at startup.</summary>
+	[Property] public string ApiVersion { get; set; } = "v2";
+
 	public GamePhase Phase { get; private set; } = GamePhase.Connecting;
 	public int Round { get; private set; }
 	public int Of { get; private set; }
@@ -79,6 +85,8 @@ public sealed class ClickController : Component
 		Instance = this;
 		if ( !string.IsNullOrWhiteSpace( BackendUrl ) )
 			ApiClient.BaseUrl = BackendUrl.TrimEnd( '/' );
+		if ( !string.IsNullOrWhiteSpace( ApiVersion ) )
+			ApiClient.ApiVersion = ApiVersion.Trim().TrimStart( '/' );
 		_ws = GameObject.Components.GetOrCreate<WsClient>();
 		_ws.OnMessage = OnMessage;
 		_ws.OnDone = OnDisconnected;
@@ -94,11 +102,13 @@ public sealed class ClickController : Component
 	}
 
 	// SendClick is the hot path. While armed, fire the nonce frame (it scores) and
-	// count it. While the button is dormant (Pending), send an idle click with no
-	// nonce: it scores nothing but earns the escalating arm-delay penalty — sent so
-	// the player actually sees the throttle they're inflicting on themselves. Other
-	// phases send nothing.
-	public void SendClick()
+	// count it. In EVERY other connected phase — dormant, mid-round stand-by, result,
+	// game over — send an idle click with no nonce: it scores nothing but is a "bad"
+	// click the server penalises (the escalating arm-delay), so the player sees the
+	// throttle they're inflicting on themselves no matter when they mash. Returns true
+	// when a bad click was actually sent (so the HUD can pop a "+ PENALTY"); false for
+	// a scoring click or when there's no socket to penalise it.
+	public bool SendClick()
 	{
 		// Local audio feedback, independent of socket state and mirroring exactly what the
 		// button shows: the "click" blip only while the race is live (the CLICK! window),
@@ -106,27 +116,32 @@ public sealed class ClickController : Component
 		if ( CanClick ) SoundPlayer.PlayClick();
 		else SoundPlayer.PlayThrottle();
 
-		if ( _ws == null || !_ws.Connected ) return;
-		if ( Phase == GamePhase.Armed && !string.IsNullOrEmpty( _nonce ) )
+		if ( _ws == null || !_ws.Connected ) return false;
+		if ( CanClick )
 		{
 			_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{_nonce}\"}}" );
 			ClicksSent++;
+			return false;
 		}
-		else if ( Phase == GamePhase.Pending )
-		{
-			_ = _ws.Send( "{\"t\":\"click\",\"nonce\":\"\"}" );
-			// Mirror the server's escalating idle-click penalty locally so the throttle
-			// climbs the instant the player mashes; the armed frame's authoritative
-			// value overwrites this estimate.
-			_idleClicks++;
-			PenaltyMs = IdlePenaltyMs( _idleClicks );
-		}
+
+		// Any non-armed phase: an idle (bad) click. Send it so the server sees and
+		// penalises it, even mid-round / between games.
+		_ = _ws.Send( "{\"t\":\"click\",\"nonce\":\"\"}" );
+		// Mirror the server's escalating bad-click penalty locally so the throttle
+		// climbs the instant the player mashes; the next armed frame's authoritative
+		// value overwrites this estimate (and resets the count — see OnMessage).
+		_idleClicks++;
+		PenaltyMs = IdlePenaltyMs( _idleClicks );
+		return true;
 	}
 
-	// Mirror of the server's idle-click penalty (game.idlePenalty): the Nth click
-	// adds N×5ms, so totals run 5,15,30,50,75,105… ms.
-	const int PenaltyStepMs = 5;
-	static int IdlePenaltyMs( int n ) => n <= 0 ? 0 : PenaltyStepMs * n * ( n + 1 ) / 2;
+	// Mirror of the server's bad-click penalty (game.idlePenalty): the kth bad click
+	// since the last arm adds base+step·(k−1) ms. base/step are server-configured and
+	// arrive in the hello frame; until then we use the 500/100 default so the throttle
+	// estimate still drives the UI from the very first click.
+	int _penaltyBaseMs = 500;
+	int _penaltyStepMs = 100;
+	int IdlePenaltyMs( int n ) => n <= 0 ? 0 : _penaltyBaseMs * n + _penaltyStepMs * n * ( n - 1 ) / 2;
 
 	async Task ConnectFlow()
 	{
@@ -206,6 +221,10 @@ public sealed class ClickController : Component
 					ClicksToWin = h.Game.Clicks;
 					ArmMinSec = h.Game.ArmMin;
 					ArmMaxSec = h.Game.ArmMax;
+					// Adopt the server's penalty escalation (keep the 500/100 default if it
+					// didn't send one) so the local throttle estimate matches the authority.
+					if ( h.Game.PenaltyBaseMs > 0 ) _penaltyBaseMs = h.Game.PenaltyBaseMs;
+					if ( h.Game.PenaltyStepMs > 0 ) _penaltyStepMs = h.Game.PenaltyStepMs;
 					Phase = PhaseFrom( h.Game.Phase );
 					break;
 
@@ -215,8 +234,9 @@ public sealed class ClickController : Component
 					Of = p.Of;
 					Players = p.Players;
 					ClicksToWin = p.Clicks;
-					PenaltyMs = 0; // fresh round: throttle resets, then counts up as the player idle-clicks
-					_idleClicks = 0;
+					// NB: the throttle is NOT reset here — bad clicks accrue across phases
+					// (result/game-over/intermission included) and are forgiven only at the
+					// next arm, mirroring the server. The armed frame resets _idleClicks.
 					Phase = GamePhase.Pending;
 					_nonce = null;
 					SoundPlayer.PlayArming();
@@ -228,7 +248,8 @@ public sealed class ClickController : Component
 					Players = a.Players;
 					ClicksToWin = a.Clicks;
 					PenaltyMs = a.PenaltyMs;
-					ClicksSent = 0; // fresh CLICK! phase: start the sent tally over
+					_idleClicks = 0; // the server forgave the accrued bad clicks at this arm
+					ClicksSent = 0;  // fresh CLICK! phase: start the sent tally over
 					_nonce = a.Nonce;
 					Phase = GamePhase.Armed;
 					SoundPlayer.PlayArmed();

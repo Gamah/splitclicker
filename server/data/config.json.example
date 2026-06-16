@@ -12,5 +12,7 @@
   "race_max_ms": 5000,
   "result_display_ms": 4000,
   "intermission_ms": 5000,
-  "board_size": 20
+  "board_size": 20,
+  "penalty_base_ms": 500,
+  "penalty_step_ms": 100
 }

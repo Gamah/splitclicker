@@ -21,6 +21,10 @@ type helloGame struct {
 	Clicks  int    `json:"clicks"`
 	ArmMin  int    `json:"arm_min"` // arming-window bounds, seconds (the delay itself is secret)
 	ArmMax  int    `json:"arm_max"`
+	// Bad-click penalty escalation (ms), so the client mirrors the live throttle
+	// estimate without hardcoding the formula.
+	PenaltyBase int `json:"penalty_base_ms"`
+	PenaltyStep int `json:"penalty_step_ms"`
 }
 
 type helloWire struct {

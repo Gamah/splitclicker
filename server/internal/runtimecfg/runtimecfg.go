@@ -33,6 +33,8 @@ type File struct {
 	ResultDisplayMs *int `json:"result_display_ms"`
 	IntermissionMs  *int `json:"intermission_ms"`
 	BoardSize       *int `json:"board_size"`
+	PenaltyBaseMs   *int `json:"penalty_base_ms"`
+	PenaltyStepMs   *int `json:"penalty_step_ms"`
 }
 
 // Dir is the host-mounted config+media directory.

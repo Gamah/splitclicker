@@ -18,6 +18,12 @@ type Config struct {
 	Intermission  time.Duration // pause between games
 
 	BoardSize int // top-K standings included in result/game_over frames
+
+	// Bad-click penalty escalation (ms): the kth bad click since the last arm adds
+	// PenaltyBaseMs + PenaltyStepMs·(k−1) to that connection's held arm delay. Sent
+	// to clients on connect so they mirror the live estimate. See idlePenalty.
+	PenaltyBaseMs int
+	PenaltyStepMs int
 }
 
 // DefaultConfig is the baseline tuning (overridable via data/config.json, then env).
@@ -32,6 +38,8 @@ func DefaultConfig() Config {
 		ResultDisplay:   4 * time.Second,
 		Intermission:    5 * time.Second,
 		BoardSize:       20,
+		PenaltyBaseMs:   500,
+		PenaltyStepMs:   100,
 	}
 }
 
@@ -48,6 +56,8 @@ func ConfigFromEnv() Config {
 	c.ResultDisplay = envDur("RESULT_DISPLAY_MS", c.ResultDisplay, time.Millisecond)
 	c.Intermission = envDur("INTERMISSION_MS", c.Intermission, time.Millisecond)
 	c.BoardSize = envInt("BOARD_SIZE", c.BoardSize)
+	c.PenaltyBaseMs = envInt("PENALTY_BASE_MS", c.PenaltyBaseMs)
+	c.PenaltyStepMs = envInt("PENALTY_STEP_MS", c.PenaltyStepMs)
 	return c
 }
 
