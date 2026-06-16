@@ -55,13 +55,13 @@
 	<div class="board howto">
 		<div class="title">HOW TO PLAY</div>
 		<div class="divider"></div>
-		<div class="line">One global button, shared by everyone. The first @(C?.ClicksToWin ?? 0) clicks each round score a point.</div>
-		<div class="state-row"><span class="tag wait">WAIT…</span><span class="desc">button is arming — hold off</span></div>
-		<div class="state-row"><span class="tag go">CLICK!</span><span class="desc">it's live — mash to grab a point</span></div>
-		<div class="state-row"><span class="tag over">ROUND OVER</span><span class="desc">slots gone — scores shown</span></div>
-		<div class="state-row"><span class="tag over">GAME OVER</span><span class="desc">last round done — final standings</span></div>
+		<div class="line">One global button, limited clicks, shared by everyone.</div>
+		<div class="state-row"><span class="tag wait">WAIT…</span><span class="desc">Button is arming - DO NOT CLICK just because it's green</span></div>
+		<div class="state-row"><span class="tag go">CLICK!</span><span class="desc">Button is live! One point per click.</span></div>
+		<div class="state-row"><span class="tag over">ROUND OVER</span><span class="desc">All clicks used up, current score shown.</span></div>
+		<div class="state-row"><span class="tag over">GAME OVER</span><span class="desc">Session winner picked, new game next!</span></div>
 		<div class="divider"></div>
-		<div class="line penalty-note">Clicking while dormant is allowed but throttled: each idle click delays your next CLICK! by a growing amount (5, 15, 30ms…), reset every round. Patience wins.</div>
+		<div class="line penalty-note">Clicking while not live is allowed but delays your button becoming live behind other players.</div>
 	</div>
 
 	@* ── music button: bottom edge, just right of the session list. Opens the music
