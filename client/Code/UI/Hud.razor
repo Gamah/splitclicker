@@ -50,6 +50,20 @@
 		}
 	</div>
 
+	@* ── how-to-play: a static help card pinned bottom-left, under the session
+	     board. Quick primer on the round states and the idle-click penalty. ── *@
+	<div class="board howto">
+		<div class="title">HOW TO PLAY</div>
+		<div class="divider"></div>
+		<div class="line">One global button, shared by everyone. The first @(C?.ClicksToWin ?? 0) clicks each round score a point.</div>
+		<div class="state-row"><span class="tag wait">WAIT…</span><span class="desc">button is arming — hold off</span></div>
+		<div class="state-row"><span class="tag go">CLICK!</span><span class="desc">it's live — mash to grab a point</span></div>
+		<div class="state-row"><span class="tag over">ROUND OVER</span><span class="desc">slots gone — scores shown</span></div>
+		<div class="state-row"><span class="tag over">GAME OVER</span><span class="desc">last round done — final standings</span></div>
+		<div class="divider"></div>
+		<div class="line penalty-note">Clicking while dormant is allowed but throttled: each idle click delays your next CLICK! by a growing amount (5, 15, 30ms…), reset every round. Patience wins.</div>
+	</div>
+
 	@* ── music button: bottom edge, just right of the session list. Opens the music
 	     panel (genre / vibe knobs / seed sharing / mute + volume), which is a child of
 	     this single root (a PanelComponent can't be nested, but a Panel can). ── *@
@@ -225,6 +239,48 @@
 	}
 
 	.board.session { left: 14px; }
+
+	/* how-to-play card: pinned to the bottom-left corner (top:auto cancels the
+	   shared top:18px), under the session board. Same board chrome, but a column
+	   of explanatory text rather than a leaderboard. */
+	.board.howto { top: auto; bottom: 18px; left: 14px; width: 300px; }
+
+	.board.howto .line {
+		font-size: 12px;
+		color: rgba(255, 255, 255, 0.6);
+		margin-bottom: 4px;
+		white-space: normal;
+	}
+
+	.board.howto .penalty-note {
+		margin-bottom: 0;
+		margin-top: 2px;
+	}
+
+	.board.howto .state-row {
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 3px;
+	}
+
+	.board.howto .tag {
+		width: 90px;
+		font-size: 12px;
+		font-weight: bold;
+		letter-spacing: 0.5px;
+	}
+
+	.board.howto .tag.wait { color: #06d6a0; }
+	.board.howto .tag.go { color: #ffffff; }
+	.board.howto .tag.over { color: #e63946; }
+
+	.board.howto .desc {
+		flex-grow: 1;
+		font-size: 12px;
+		color: rgba(255, 255, 255, 0.6);
+		white-space: normal;
+	}
 
 	/* music button: bottom edge, just right of the session list's column. */
 	.music-btn {
