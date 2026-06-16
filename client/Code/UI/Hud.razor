@@ -59,7 +59,7 @@
 	@* ── the one global button, dead-center, with the status HUD over it ── *@
 	@* StateClass also lands on .center so the HUD text can flip to black on the
 	   yellow-orange WAIT background (and stay white everywhere else). *@
-	<div class="center @StateClass()" @ref="_box">
+	<div class="center @StateClass() @(MusicOpen ? "hidden" : "")" @ref="_box">
 		<div class="btn @StateClass()" @ref="_btn"
 		     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
 
@@ -379,6 +379,11 @@
 		justify-content: center;
 		pointer-events: none;
 	}
+
+	/* While the music panel is open the connection is dropped, so the button, the status
+	   HUD (round/wait/online/arms-in/throttled) and "clicks sent" — all children of this
+	   box — hide together rather than showing a stale/disconnected state. */
+	.center.hidden { display: none; }
 
 	/* The global button: a small circle (1/5 of its former size) positioned
 	   absolutely via inline left/top % (set from ClickController state) so it can

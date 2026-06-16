@@ -61,6 +61,11 @@ public sealed class ClickController : Component
 	/// enabled state and scoring eligibility from one source.</summary>
 	public bool CanClick => Phase == GamePhase.Armed && !string.IsNullOrEmpty( _nonce );
 
+	/// <summary>While true the socket is intentionally dropped (the player is in a menu such
+	/// as the music panel): no frames are received, stray clicks can't score, and the player
+	/// drops out of the online/click count. No auto-reconnect runs until <see cref="Resume"/>.</summary>
+	public bool Suspended { get; private set; }
+
 	static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
 	// Idle clicks sent this round; drives the locally-counted throttle estimate.
@@ -86,8 +91,9 @@ public sealed class ClickController : Component
 
 	protected override void OnUpdate()
 	{
-		// Jittered reconnect: only re-attempt once the backoff window elapses.
-		if ( Phase == GamePhase.Disconnected && !_connecting && RealTime.Now >= _reconnectAt )
+		// Jittered reconnect: only re-attempt once the backoff window elapses — and never
+		// while intentionally suspended in a menu (Resume drives the reconnect there).
+		if ( Phase == GamePhase.Disconnected && !Suspended && !_connecting && RealTime.Now >= _reconnectAt )
 			_ = ConnectFlow();
 	}
 
@@ -119,6 +125,27 @@ public sealed class ClickController : Component
 	// adds N×5ms, so totals run 5,15,30,50,75,105… ms.
 	const int PenaltyStepMs = 5;
 	static int IdlePenaltyMs( int n ) => n <= 0 ? 0 : PenaltyStepMs * n * ( n + 1 ) / 2;
+
+	/// <summary>Drop the connection while the player is busy in a menu (the music panel), so
+	/// stray/idle clicks can't score and they don't inflate the online count. The reconnect
+	/// loop is held off until <see cref="Resume"/>.</summary>
+	public void Suspend()
+	{
+		if ( Suspended ) return;
+		Suspended = true;
+		_ws?.Disconnect();
+		Phase = GamePhase.Disconnected;
+		_nonce = null;
+	}
+
+	/// <summary>Resume after <see cref="Suspend"/>: reconnect right away (no backoff wait).</summary>
+	public void Resume()
+	{
+		if ( !Suspended ) return;
+		Suspended = false;
+		_reconnectAttempt = 0;
+		_ = ConnectFlow();
+	}
 
 	async Task ConnectFlow()
 	{

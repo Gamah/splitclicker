@@ -4,6 +4,7 @@
 @using Sandbox
 @using Sandbox.UI
 @using Splitclicker.Audio
+@using Splitclicker.Game
 @using Skafinity
 @namespace Splitclicker.UI
 
@@ -150,10 +151,14 @@
 </root>
 
 <style>
-	/* Full-screen overlay; positioned so the backdrop + centered modal anchor to it.
-	   pointer-events:none so a closed panel never blocks the game button (only the
-	   backdrop/modal, present only while open, take pointer events). */
-	root { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+	/* Full-screen overlay that flex-centers the modal. pointer-events:none so a closed
+	   panel never blocks the game button (only the backdrop/modal, present only while
+	   open, take pointer events). */
+	root {
+		position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+		justify-content: center; align-items: center;
+		pointer-events: none;
+	}
 
 	/* Dim, click-to-close backdrop behind the modal (only present while open, so it never
 	   blocks the game button when the panel is closed). */
@@ -162,10 +167,11 @@
 		background-color: rgba(0,0,0,0.55); pointer-events: all;
 	}
 
+	/* The modal itself — flex-centered by the root. Fixed width / percentage height (it
+	   scrolls if the knobs overflow), capped so it never touches the screen edges. */
 	.music {
-		position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-		margin: auto;
-		width: 1100px; height: 84%;
+		flex-shrink: 0;
+		width: 1320px; max-width: 94%; height: 92%;
 		flex-direction: column;
 		align-items: stretch;
 		padding: 24px 36px;
@@ -288,11 +294,18 @@
 
 	string Seed() => Mc?.CurrentSeed ?? "—";
 
-	/// <summary>Open/close the panel (HUD MUSIC button).</summary>
+	/// <summary>Open/close the panel (HUD MUSIC button). While open, the game connection is
+	/// dropped so the player doesn't contribute to the click/online count while in here.</summary>
 	public void Toggle()
 	{
-		IsOpen = !IsOpen;
-		if ( !IsOpen ) _tagInit = false;
+		if ( IsOpen ) Close();
+		else Open();
+	}
+
+	void Open()
+	{
+		IsOpen = true;
+		ClickController.Instance?.Suspend();
 		StateHasChanged();
 	}
 
@@ -300,6 +313,7 @@
 	{
 		IsOpen = false;
 		_tagInit = false;
+		ClickController.Instance?.Resume();
 		StateHasChanged();
 	}
 
