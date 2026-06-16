@@ -61,7 +61,7 @@
 	   lives in here too: it's centred on this same box (which already centres the
 	   button), and while it's open the button + status + "clicks sent" stop drawing
 	   (the connection stays open — we just don't paint the game). *@
-	<div class="center @StateClass()" @ref="_box">
+	<div class="center @StateClass() @(MusicOpen ? "music-open" : "")" @ref="_box">
 		@if ( !MusicOpen )
 		{
 			<div class="game-btn @StateClass()" @ref="_btn"
@@ -386,6 +386,11 @@
 		justify-content: center;
 		pointer-events: none;
 	}
+
+	/* While the music panel is open, lift the whole box (and the panel inside it) above
+	   the leaderboard/winner boards — they're declared after .center in the markup, so
+	   without this they paint on top of the panel. */
+	.center.music-open { z-index: 100; }
 
 	/* The global button: a small circle (1/5 of its former size) positioned
 	   absolutely via inline left/top % (set from ClickController state) so it can
