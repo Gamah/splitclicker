@@ -158,12 +158,14 @@
 		pointer-events: none;
 	}
 
-	/* The modal itself — flex-centred by the root. Sizes to its content up to a cap that
-	   keeps it inside the box, so when the knobs fit there's nothing to scroll/drag; it
-	   only scrolls vertically once the content is genuinely taller than the box. */
+	/* The modal itself — flex-centred by the root. It sizes to its own content (no height
+	   cap, no overflow), so the box is always exactly as tall as the knobs it holds and
+	   there is never a scroll range to drag-pan. The content is compact enough to fit the
+	   screen at the 1080-tall reference; if it ever grew past the viewport it would extend
+	   past the box rather than scroll, so keep it lean. */
 	.music {
 		flex-shrink: 0;
-		width: 96%; max-width: 1320px; max-height: 100%;
+		width: 96%; max-width: 1320px;
 		flex-direction: column;
 		align-items: stretch;
 		padding: 14px 32px;
@@ -172,8 +174,6 @@
 		border-radius: 16px;
 		gap: 6px;
 		pointer-events: all;
-		overflow-x: hidden;
-		overflow-y: scroll;
 	}
 
 	.music > div { flex-shrink: 0; }

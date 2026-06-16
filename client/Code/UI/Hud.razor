@@ -72,19 +72,19 @@
 			   which s&box's panel reconciler reorders across rebuilds (the "arms in 2-6s"
 			   -> "- arms in 26s" / vanishing-penalty bug). One expression = one stable node. *@
 			<div class="hud">
-				<div class="round">@($"Round {c?.Round ?? 0} / {c?.Of ?? 0}")</div>
-				<div class="state @PhaseClass()">@PhaseText()</div>
 				<div class="meta">
 					<div class="players">@($"{c?.Players ?? 0} online")</div>
 					<div class="sep">·</div>
 					<div class="clicks">@($"{c?.ClicksToWin ?? 0} clicks exist for this round")</div>
 				</div>
+				<div class="round">@($"Round {c?.Round ?? 0} / {c?.Of ?? 0}")</div>
+				<div class="state @PhaseClass()">@PhaseText()</div>
 				@if ( c?.Phase == GamePhase.Pending && (c?.ArmMaxSec ?? 0) > 0 )
 				{
 					<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
 				}
-				@* throttle sits directly below the arms text and is always shown while
-				   in a game (it counts up live as the player idle-clicks). *@
+				@* throttle is always shown while in a game (it counts up live as the
+				   player idle-clicks). *@
 				@if ( c != null && c.Phase != GamePhase.Connecting && c.Phase != GamePhase.Disconnected )
 				{
 					<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
@@ -441,7 +441,8 @@
 		100% { background-color: #000000; }
 	}
 
-	/* HUD overlaid dead-center on the button; clicks fall through to the button. */
+	/* HUD pinned to the top edge of the screen, centred horizontally over the box;
+	   the button roams below/behind it and clicks fall through. */
 	.hud {
 		position: absolute;
 		top: 0;
@@ -450,7 +451,7 @@
 		bottom: 0;
 		flex-direction: column;
 		align-items: center;
-		justify-content: center;
+		justify-content: flex-start;
 		gap: 10px;
 		pointer-events: none;
 	}
@@ -491,7 +492,7 @@
 	}
 
 	.penalty {
-		font-size: 16px;
+		font-size: 32px;
 		font-weight: bold;
 		color: #ffffff;
 	}
