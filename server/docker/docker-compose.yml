@@ -24,6 +24,8 @@ services:
       DATABASE_URL: "postgres://splitclicker@postgres:5432/splitclicker?sslmode=disable"
       PORT: "6969"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      # Password for the /admin dashboard (blank disables it). Set in .env.
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       # Skin image, winner-lock countdown, and game tunables are configured in
       # ./data/config.json (bind-mounted below), not here.
       RUNTIME_DIR: /data

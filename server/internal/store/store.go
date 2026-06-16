@@ -166,6 +166,50 @@ func (s *Store) HoursWonLeaderboard(ctx context.Context, limit int) ([]Leaderboa
 	return out, rows.Err()
 }
 
+// RecordGame writes a completed game's full history — the games row, its
+// game_rounds, and one round_scores row per scoring click — in a single
+// transaction. Implements game.Store; called once at game end off the hot path.
+// The games insert is idempotent (ON CONFLICT DO NOTHING) so a retry after a
+// partial failure can't duplicate a game.
+func (s *Store) RecordGame(ctx context.Context, log game.GameLog) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO games (id, started_at, ended_at, rounds)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (id) DO NOTHING
+	`, log.GameID, log.StartedAt, log.EndedAt, log.Rounds)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Game already recorded by an earlier attempt — nothing more to do.
+		return tx.Commit(ctx)
+	}
+
+	batch := &pgx.Batch{}
+	for _, r := range log.RoundLogs {
+		batch.Queue(`
+			INSERT INTO game_rounds (id, game_id, round_no, n, players, armed_at)
+			VALUES ($1, $2, $3, $4, $5, $6)
+		`, r.RoundID, log.GameID, r.RoundNo, r.N, r.Players, r.ArmedAt)
+		for _, c := range r.Clicks {
+			batch.Queue(`
+				INSERT INTO round_scores (round_id, slot_no, steam_id, offset_ms)
+				VALUES ($1, $2, $3, $4)
+			`, r.RoundID, c.SlotNo, c.SteamID, c.OffsetMs)
+		}
+	}
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // AddSessionWin credits one game win to steamID on the persistent sessions-won
 // board. Implements game.Store; called when a game's final standings are settled.
 func (s *Store) AddSessionWin(ctx context.Context, steamID string) error {

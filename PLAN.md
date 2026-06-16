@@ -275,8 +275,14 @@ then — design the state machine behind an interface so this is a later swap.
 
 ### Persistence (Postgres, goose migrations)
 - `players (id uuid pk, steam_id text unique, username text, created_at)`
-- `games (id, instance, started_at, rounds)` — optional history
-- `rounds (id, game_id, round_no, armed_at, n, winners jsonb)` — optional history/anti-cheat
+- `games (id, started_at, ended_at, rounds)` — completed-game history, written
+  once at game end (see `00005_game_history.sql`).
+- `game_rounds (id, game_id, round_no, n, players, armed_at)` — one row per round.
+- `round_scores (round_id, slot_no, steam_id, offset_ms)` — one row per scoring
+  click: `slot_no` is "click N", `offset_ms` its arrival latency from `armed_at`.
+- `game_standings` — VIEW deriving per-game points (`COUNT(*)` of slots) + placement.
+  Game history is accumulated in-memory by the engine and flushed in one batched
+  `RecordGame` transaction off the hot path; it never touches a WS frame.
 - `hourly_scores (steam_id, hour_bucket, points)` — the authoritative per-hour tally,
   upserted on each scoring click; PK `(steam_id, hour_bucket)`.
 - **Leaderboard read**: `SELECT … FROM hourly_scores WHERE hour_bucket = $current ORDER BY

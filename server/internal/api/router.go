@@ -27,13 +27,14 @@ import (
 )
 
 type handler struct {
-	store    *store.Store
-	cache    *store.LeaderboardCache
-	hub      *ws.Hub
-	engine   *game.Engine
-	log      *zap.Logger
-	tickets  *ticketStore
-	upgrader websocket.Upgrader
+	store         *store.Store
+	cache         *store.LeaderboardCache
+	hub           *ws.Hub
+	engine        *game.Engine
+	log           *zap.Logger
+	tickets       *ticketStore
+	upgrader      websocket.Upgrader
+	adminPassword string // ADMIN_PASSWORD; empty disables the /admin surface
 }
 
 // allowedOrigins is the cross-origin allowlist for the REST CORS middleware and
@@ -73,12 +74,13 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	rl := newRateLimiter(1, 5)
 
 	h := &handler{
-		store:   st,
-		cache:   cache,
-		hub:     hub,
-		engine:  engine,
-		log:     log,
-		tickets: newTicketStore(),
+		store:         st,
+		cache:         cache,
+		hub:           hub,
+		engine:        engine,
+		log:           log,
+		tickets:       newTicketStore(),
+		adminPassword: os.Getenv("ADMIN_PASSWORD"),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -87,6 +89,11 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	}
 
 	mux.HandleFunc("GET /health", h.health)
+
+	// Admin (password-gated, server-rendered HTML). Disabled unless ADMIN_PASSWORD
+	// is set; rate-limited to blunt password guessing.
+	mux.HandleFunc("GET /admin", rl.wrap(h.adminDashboard))
+	mux.HandleFunc("GET /admin/game", rl.wrap(h.adminGame))
 
 	// v2 — the real game surface (current client build).
 	mux.HandleFunc("GET /api/v2/config", h.config)
