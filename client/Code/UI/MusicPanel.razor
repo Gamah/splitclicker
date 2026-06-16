@@ -32,7 +32,6 @@
 	@if ( IsOpen )
 	{
 	@{ var cfg = Mc?.EffectiveConfig(); int genre = cfg?.Genre ?? 0; }
-	<div class="backdrop" onclick="@Close"></div>
 	<div class="music">
 		<div class="header">
 			<div class="title">MUSIC</div>
@@ -150,27 +149,21 @@
 </root>
 
 <style>
-	/* Full-screen overlay that flex-centers the modal. pointer-events:none so a closed
-	   panel never blocks the game button (only the backdrop/modal, present only while
-	   open, take pointer events). */
+	/* Overlay anchored to the parent .center box (the same box that centres the game
+	   button), flex-centring the modal inside it. pointer-events:none so a closed panel
+	   never blocks anything; only the modal itself takes pointer events. */
 	root {
 		position: absolute; top: 0; left: 0; right: 0; bottom: 0;
 		justify-content: center; align-items: center;
 		pointer-events: none;
 	}
 
-	/* Dim, click-to-close backdrop behind the modal (only present while open, so it never
-	   blocks the game button when the panel is closed). */
-	.backdrop {
-		position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-		background-color: rgba(0,0,0,0.55); pointer-events: all;
-	}
-
-	/* The modal itself — flex-centered by the root. Fixed width / percentage height (it
-	   scrolls if the knobs overflow), capped so it never touches the screen edges. */
+	/* The modal itself — flex-centred by the root. Sizes to its content up to a cap that
+	   keeps it inside the box, so when the knobs fit there's nothing to scroll/drag; it
+	   only scrolls vertically once the content is genuinely taller than the box. */
 	.music {
 		flex-shrink: 0;
-		width: 1320px; max-width: 94%; height: 92%;
+		width: 96%; max-width: 1320px; max-height: 100%;
 		flex-direction: column;
 		align-items: stretch;
 		padding: 24px 36px;
@@ -295,7 +288,7 @@
 	string Seed() => Mc?.CurrentSeed ?? "—";
 
 	/// <summary>Open/close the panel (HUD MUSIC button). The connection stays open; the HUD
-	/// just stops drawing the game button + status while we're up (see Hud's .center.hidden).</summary>
+	/// just stops drawing the game button + status while we're up (Hud's @if(!MusicOpen)).</summary>
 	public void Toggle()
 	{
 		IsOpen = !IsOpen;

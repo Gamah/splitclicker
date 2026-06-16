@@ -54,40 +54,47 @@
 	     panel (genre / vibe knobs / seed sharing / mute + volume), which is a child of
 	     this single root (a PanelComponent can't be nested, but a Panel can). ── *@
 	<div class="music-btn @(MusicOpen ? "open" : "")" onclick="@ToggleMusic">MUSIC</div>
-	<MusicPanel @ref="_music" />
 
 	@* ── the one global button, dead-center, with the status HUD over it ── *@
 	@* StateClass also lands on .center so the HUD text can flip to black on the
-	   yellow-orange WAIT background (and stay white everywhere else). *@
-	<div class="center @StateClass() @(MusicOpen ? "hidden" : "")" @ref="_box">
-		<div class="game-btn @StateClass()" @ref="_btn"
-		     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
+	   yellow-orange WAIT background (and stay white everywhere else). The music panel
+	   lives in here too: it's centred on this same box (which already centres the
+	   button), and while it's open the button + status + "clicks sent" stop drawing
+	   (the connection stays open — we just don't paint the game). *@
+	<div class="center @StateClass()" @ref="_box">
+		@if ( !MusicOpen )
+		{
+			<div class="game-btn @StateClass()" @ref="_btn"
+			     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
 
-		@* Each line below is a SINGLE interpolated expression on purpose: mixing
-		   literal text with razor expressions in one element emits several text nodes,
-		   which s&box's panel reconciler reorders across rebuilds (the "arms in 2-6s"
-		   -> "- arms in 26s" / vanishing-penalty bug). One expression = one stable node. *@
-		<div class="hud">
-			<div class="round">@($"Round {c?.Round ?? 0} / {c?.Of ?? 0}")</div>
-			<div class="state @PhaseClass()">@PhaseText()</div>
-			<div class="meta">
-				<div class="players">@($"{c?.Players ?? 0} online")</div>
-				<div class="sep">·</div>
-				<div class="clicks">@($"{c?.ClicksToWin ?? 0} clicks exist for this round")</div>
+			@* Each line below is a SINGLE interpolated expression on purpose: mixing
+			   literal text with razor expressions in one element emits several text nodes,
+			   which s&box's panel reconciler reorders across rebuilds (the "arms in 2-6s"
+			   -> "- arms in 26s" / vanishing-penalty bug). One expression = one stable node. *@
+			<div class="hud">
+				<div class="round">@($"Round {c?.Round ?? 0} / {c?.Of ?? 0}")</div>
+				<div class="state @PhaseClass()">@PhaseText()</div>
+				<div class="meta">
+					<div class="players">@($"{c?.Players ?? 0} online")</div>
+					<div class="sep">·</div>
+					<div class="clicks">@($"{c?.ClicksToWin ?? 0} clicks exist for this round")</div>
+				</div>
+				@if ( c?.Phase == GamePhase.Pending && (c?.ArmMaxSec ?? 0) > 0 )
+				{
+					<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
+				}
+				@* throttle sits directly below the arms text and is always shown while
+				   in a game (it counts up live as the player idle-clicks). *@
+				@if ( c != null && c.Phase != GamePhase.Connecting && c.Phase != GamePhase.Disconnected )
+				{
+					<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
+				}
 			</div>
-			@if ( c?.Phase == GamePhase.Pending && (c?.ArmMaxSec ?? 0) > 0 )
-			{
-				<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
-			}
-			@* throttle sits directly below the arms text and is always shown while
-			   in a game (it counts up live as the player idle-clicks). *@
-			@if ( c != null && c.Phase != GamePhase.Connecting && c.Phase != GamePhase.Disconnected )
-			{
-				<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
-			}
-		</div>
 
-		<div class="clicks-sent">@($"clicks sent: {c?.ClicksSent ?? 0}")</div>
+			<div class="clicks-sent">@($"clicks sent: {c?.ClicksSent ?? 0}")</div>
+		}
+
+		<MusicPanel @ref="_music" />
 	</div>
 
 	@* ── hourly board: Postgres "most clicks this hour", pinned right (inner) ── *@
@@ -379,11 +386,6 @@
 		justify-content: center;
 		pointer-events: none;
 	}
-
-	/* While the music panel is open the connection is dropped, so the button, the status
-	   HUD (round/wait/online/arms-in/throttled) and "clicks sent" — all children of this
-	   box — hide together rather than showing a stale/disconnected state. */
-	.center.hidden { display: none; }
 
 	/* The global button: a small circle (1/5 of its former size) positioned
 	   absolutely via inline left/top % (set from ClickController state) so it can
