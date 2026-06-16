@@ -61,7 +61,7 @@
 	   The music panel lives in here too: it's centred on this same box, and while it's
 	   open the button + status + "clicks sent" stop drawing (the connection stays open
 	   — we just don't paint the game). *@
-	<div class="center @StateClass() @(MusicOpen ? "music-open" : "")" @ref="_box">
+	<div class="center @StateClass()" @ref="_box">
 		@if ( !MusicOpen )
 		{
 			<div class="game-btn @StateClass()" @ref="_btn"
@@ -375,7 +375,14 @@
 	/* ── center: the BOUNDING BOX the button roams inside, inset between the
 	   left session board (right edge ≈ 308px) and the right board column (also
 	   308px), with a little top/bottom breathing room. The button is positioned
-	   absolutely within this box; the status HUD overlays it centred. ── */
+	   absolutely within this box; the status HUD overlays it centred. ──
+
+	   The box (and so the button + status HUD + music panel inside it) is kept ABOVE every
+	   board at all times via z-index. The boards are declared after .center in the markup,
+	   so without this they'd paint — and take clicks — on top of anything in the box. The
+	   box is normally inset clear of every board, but the roaming button (and the music
+	   button it can overlap at the bottom-left) must always win paint AND click priority
+	   when they do intersect, so the box outranks them unconditionally. */
 	.center {
 		position: absolute;
 		top: 24px;
@@ -386,12 +393,8 @@
 		align-items: center;
 		justify-content: center;
 		pointer-events: none;
+		z-index: 100;
 	}
-
-	/* While the music panel is open, lift the whole box (and the panel inside it) above
-	   the leaderboard/winner boards — they're declared after .center in the markup, so
-	   without this they paint on top of the panel. */
-	.center.music-open { z-index: 100; }
 
 	/* The global button: a small circle positioned absolutely via inline left/top %
 	   (set from ClickController state) so it can TELEPORT to a random spot in the box
@@ -409,7 +412,11 @@
 		height: 140px;
 		border-radius: 50%;
 		background-color: #e63946; /* red base: stand-by, connecting, disconnected */
-		border: 4px solid rgba(255, 255, 255, 0.14);
+		/* The white outline is always drawn so the button's location is unmistakable in
+		   every phase — crucially it survives the fade-to-black (which animates only the
+		   background-color, never the border), so the circle stays visible even at full
+		   black. Only the music panel opening removes it (the button stops rendering). */
+		border: 4px solid rgba(255, 255, 255, 0.9);
 		/* only the press scale transitions; colour is per-state (instant green / keyframed fade). */
 		transition: transform 0.08s ease-out;
 		/* No animation by default. Only .fade adds one (more specific, so it wins). This
@@ -531,6 +538,9 @@
 		color: #4cc9f0;
 		letter-spacing: 1px;
 		pointer-events: none;
+		/* above the .center box (z-index:100) so the confirmation isn't hidden behind
+		   the centred status HUD when both are near the top of the screen. */
+		z-index: 110;
 	}
 </style>
 
