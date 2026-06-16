@@ -178,9 +178,11 @@ func (h *Hub) GameOver(g game.GameOverFrame) {
 			T:         "game_over",
 			Standings: g.Standings,
 			You: youGameOver{
-				Placement: g.Placements[c.SteamID],
-				Won:       g.Won[c.SteamID],
-				GameID:    g.GameID,
+				Placement:   g.Placements[c.SteamID],
+				Won:         g.Won[c.SteamID],
+				GameID:      g.GameID,
+				PointsDelta: g.Deltas[c.SteamID],
+				RoundID:     g.RoundID,
 			},
 		}))
 	}

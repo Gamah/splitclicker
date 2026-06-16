@@ -12,6 +12,7 @@ namespace Splitclicker.Game;
 public enum GamePhase
 {
 	Connecting,
+	Waiting,      // connected mid-round: sitting out until the next arm (can't score this one)
 	Pending,      // arming — button dormant
 	Armed,        // live — race is open
 	Result,       // round leaderboard
@@ -251,6 +252,9 @@ public sealed class ClickController : Component
 					Phase = GamePhase.GameOver;
 					_nonce = null;
 					SoundPlayer.PlayDisarm();
+					// The final round folds into game_over (no round_result of its own), so
+					// credit that round's points here too — same once-per-round-id guard.
+					AchievementTracker.OnRoundResult( g.You.PointsDelta, g.You.RoundId );
 					AchievementTracker.OnGameOver( g.You.Placement, g.You.Won, g.You.GameId );
 					break;
 			}
@@ -261,12 +265,15 @@ public sealed class ClickController : Component
 		}
 	}
 
+	// Map the hello snapshot to a starting phase. Only `pending` (a round that is
+	// still arming) is safe to join straight into — the client will receive that
+	// round's `armed` frame, nonce and all, and can score. Every other phase means
+	// we connected mid-round (armed/result) or between games (intermission): we
+	// can't score the round in flight, so we sit in Waiting until the next `armed`.
 	static GamePhase PhaseFrom( string s ) => s switch
 	{
 		"pending" => GamePhase.Pending,
-		"armed" => GamePhase.Armed,
-		"result" => GamePhase.Result,
-		_ => GamePhase.Connecting,
+		_ => GamePhase.Waiting,
 	};
 
 	static T Deser<T>( string json ) => JsonSerializer.Deserialize<T>( json, JsonOpts );

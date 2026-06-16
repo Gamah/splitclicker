@@ -106,11 +106,16 @@ type ResultFrame struct {
 
 // GameOverFrame is the final standings. Placements/Won are per-SteamID, merged
 // per connection by the hub (drives placement/win achievements); GameID dedupes.
+// Deltas/RoundID carry the FINAL round's points (per-SteamID) and its round id:
+// the last round folds straight into game_over with no separate round_result, so
+// the client still needs these here to drive its `points` stat exactly once.
 type GameOverFrame struct {
 	Standings  []Standing
 	GameID     string
 	Placements map[string]int
 	Won        map[string]bool
+	Deltas     map[string]int
+	RoundID    string
 }
 
 // Broadcaster is how the engine reaches connected clients. All methods are
@@ -264,6 +269,10 @@ func (e *Engine) playGame(ctx context.Context) {
 	info := map[string]playerInfo{} // latest display info by SteamID
 	x := e.cfg.RoundsPerGame
 
+	// The final round's points + round id, carried into game_over (the last round
+	// has no separate round_result — see race/final).
+	var finalDeltas map[string]int
+	var finalRoundID string
 	for round := 1; round <= x && ctx.Err() == nil; round++ {
 		// Size the round to the crowd at arm time: N scales with connected players.
 		players := e.bc.PlayerCount()
@@ -272,7 +281,11 @@ func (e *Engine) playGame(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		e.race(ctx, round, x, players, n, penalties, scores, info)
+		final := round == x
+		deltas, roundID := e.race(ctx, round, x, players, n, penalties, scores, info, final)
+		if final {
+			finalDeltas, finalRoundID = deltas, roundID
+		}
 	}
 	if ctx.Err() != nil {
 		return
@@ -290,6 +303,8 @@ func (e *Engine) playGame(ctx context.Context) {
 		GameID:     gameID,
 		Placements: placements,
 		Won:        won,
+		Deltas:     finalDeltas,
+		RoundID:    finalRoundID,
 	})
 
 	// Post-game work runs off the hot path (we're entering intermission) in one
@@ -341,8 +356,15 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 }
 
 // race is the ARMED phase: arm with a fresh nonce, accept the first N valid
-// clicks (by arrival), then publish the result. Closes the instant click N lands.
-func (e *Engine) race(ctx context.Context, round, of, players, n int, penalties map[string]time.Duration, scores map[string]int, info map[string]playerInfo) {
+// clicks (by arrival), then score them. Closes the instant click N lands. It
+// returns the round's per-SteamID points deltas and its round id.
+//
+// On a non-final round it then publishes round_result and pauses for the result
+// display. On the FINAL round (final==true) it scores and returns but publishes
+// nothing — playGame folds straight into game_over (which carries the returned
+// deltas/roundID), so the last round shows the final standings once instead of a
+// redundant ROUND OVER → GAME OVER pair.
+func (e *Engine) race(ctx context.Context, round, of, players, n int, penalties map[string]time.Duration, scores map[string]int, info map[string]playerInfo, final bool) (map[string]int, string) {
 	nonce := newNonce()
 	e.setPhase(PhaseArmed, round)
 	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: nonce, Players: players, Clicks: n, Penalties: penalties})
@@ -355,7 +377,7 @@ raceLoop:
 	for !rs.full() {
 		select {
 		case <-ctx.Done():
-			return
+			return nil, ""
 		case ev := <-e.clicks:
 			recordInfo(info, ev)
 			rs.offer(ev)
@@ -363,8 +385,6 @@ raceLoop:
 			break raceLoop // safety: fewer than N clicks arrived
 		}
 	}
-
-	e.setPhase(PhaseResult, round)
 
 	deltas := map[string]int{}
 	for _, ev := range rs.scored {
@@ -374,6 +394,15 @@ raceLoop:
 	if len(deltas) > 0 && e.store != nil {
 		e.persist(deltas)
 	}
+	roundID := newID()
+
+	// Final round: no separate round_result or result-display pause — playGame
+	// emits game_over next, carrying these deltas/roundID.
+	if final {
+		return deltas, roundID
+	}
+
+	e.setPhase(PhaseResult, round)
 
 	// One entry per scoring player in first-arrival order; a masher who took
 	// several slots still shows once, with their cumulative game points.
@@ -392,11 +421,12 @@ raceLoop:
 		Of:        of,
 		Winners:   winners,
 		Standings: topK(standingsOf(scores, info), e.cfg.BoardSize),
-		RoundID:   newID(),
+		RoundID:   roundID,
 		Deltas:    deltas,
 	})
 
 	e.drain(ctx, e.cfg.ResultDisplay)
+	return deltas, roundID
 }
 
 // persist writes the round's points to the hourly board off the hot path, so DB

@@ -126,8 +126,9 @@ func (b *captureBC) Result(r ResultFrame)     { b.result <- r }
 func (b *captureBC) GameOver(g GameOverFrame) { b.gameOver <- g }
 func (b *captureBC) PlayerCount() int         { return 1 }
 
-// TestEngineLoopScores runs the real timed loop with tiny delays: one round,
-// N=1, fire a valid click on arm, assert it scores and the game ends.
+// TestEngineLoopScores runs the real timed loop with tiny delays: one round
+// (which is therefore the final round), N=1, fire a valid click on arm, assert it
+// scores and the game folds straight into game_over — no separate round_result.
 func TestEngineLoopScores(t *testing.T) {
 	cfg := Config{
 		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
@@ -150,24 +151,63 @@ func TestEngineLoopScores(t *testing.T) {
 
 	e.Submit(click("winner", armed.Nonce))
 
-	select {
-	case r := <-bc.result:
-		if r.Deltas["winner"] != 1 {
-			t.Fatalf("winner should have delta 1, got %v", r.Deltas)
-		}
-		if len(r.Winners) != 1 || r.Winners[0].SteamID != "winner" {
-			t.Fatalf("unexpected winners: %+v", r.Winners)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("no result frame")
-	}
-
+	// The only round is the final round, so it must NOT emit a round_result.
 	select {
 	case g := <-bc.gameOver:
 		if g.Placements["winner"] != 1 || !g.Won["winner"] {
 			t.Fatalf("winner should place 1 and win: %+v %+v", g.Placements, g.Won)
 		}
-	case <-time.After(time.Second):
+		if g.Deltas["winner"] != 1 {
+			t.Fatalf("game_over should carry the final round's delta 1, got %v", g.Deltas)
+		}
+		if g.RoundID == "" {
+			t.Fatal("game_over should carry the final round's round id")
+		}
+	case <-bc.result:
+		t.Fatal("final round must fold into game_over, not emit round_result")
+	case <-time.After(3 * time.Second):
+		t.Fatal("no game_over frame")
+	}
+}
+
+// TestEngineFinalRoundFoldsIntoGameOver: a 2-round game emits exactly one
+// round_result (round 1), then game_over for the final round.
+func TestEngineFinalRoundFoldsIntoGameOver(t *testing.T) {
+	cfg := Config{
+		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
+		MinClicks: 1, RoundsPerGame: 2,
+		RaceMax: 2 * time.Second, ResultDisplay: 5 * time.Millisecond,
+		Intermission: 5 * time.Millisecond, BoardSize: 20,
+	}
+	bc := newCaptureBC()
+	e := New(cfg, bc, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	// Round 1 (non-final): scores, emits a round_result.
+	a1 := <-bc.armed
+	e.Submit(click("winner", a1.Nonce))
+	select {
+	case r := <-bc.result:
+		if r.Round != 1 {
+			t.Fatalf("first result should be round 1, got %d", r.Round)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no round_result for round 1")
+	}
+
+	// Round 2 (final): scores, folds into game_over with no second round_result.
+	a2 := <-bc.armed
+	e.Submit(click("winner", a2.Nonce))
+	select {
+	case g := <-bc.gameOver:
+		if g.Deltas["winner"] != 1 {
+			t.Fatalf("game_over should carry the final round's delta 1, got %v", g.Deltas)
+		}
+	case <-bc.result:
+		t.Fatal("final round must not emit a second round_result")
+	case <-time.After(3 * time.Second):
 		t.Fatal("no game_over frame")
 	}
 }

@@ -66,10 +66,14 @@ type resultWire struct {
 }
 
 // youGameOver drives placement/win achievements; game_id dedupes (§7.1).
+// points_delta/round_id carry the FINAL round's score (the last round has no
+// round_result of its own) so the client can drive its `points` stat once.
 type youGameOver struct {
-	Placement int    `json:"placement"`
-	Won       bool   `json:"won"`
-	GameID    string `json:"game_id"`
+	Placement   int    `json:"placement"`
+	Won         bool   `json:"won"`
+	GameID      string `json:"game_id"`
+	PointsDelta int    `json:"points_delta"`
+	RoundID     string `json:"round_id"`
 }
 
 type gameOverWire struct {

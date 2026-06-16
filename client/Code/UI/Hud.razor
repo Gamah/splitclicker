@@ -83,9 +83,10 @@
 				{
 					<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
 				}
-				@* throttle is always shown while in a game (it counts up live as the
-				   player idle-clicks). *@
-				@if ( c != null && c.Phase != GamePhase.Connecting && c.Phase != GamePhase.Disconnected )
+				@* throttle is shown while actively in a round (it counts up live as the
+				   player idle-clicks); hidden before we've joined one (connecting / mid-
+				   round stand-by) and while disconnected. *@
+				@if ( c != null && c.Phase != GamePhase.Connecting && c.Phase != GamePhase.Disconnected && c.Phase != GamePhase.Waiting )
 				{
 					<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
 				}
@@ -392,26 +393,25 @@
 	   without this they paint on top of the panel. */
 	.center.music-open { z-index: 100; }
 
-	/* The global button: a small circle (1/5 of its former size) positioned
-	   absolutely via inline left/top % (set from ClickController state) so it can
-	   TELEPORT to a random spot in the box on every click. left/top are deliberately
-	   left OUT of the transition so the move is an instant teleport, not a slide;
-	   only colour + the press scale animate.
+	/* The global button: a small circle positioned absolutely via inline left/top %
+	   (set from ClickController state) so it can TELEPORT to a random spot in the box
+	   on every click. left/top are deliberately left OUT of any transition so the
+	   move is an instant teleport, not a slide; the random teleport-on-every-click is
+	   the anti-autoclicker measure (a fixed-position bot lands one click per spot).
 
-	   It uses only TWO colours, deliberately DECOUPLED from the scoring ("armed")
-	   state so an autoclicker can't watch the colour to time a winning click:
-	     • green — WAIT/arming (no click can score yet)
-	     • red   — everything else, INCLUDING the live armed round and round/game over
-	   The "CLICK!" text in the HUD is the only on-screen cue that the round is live;
-	   there's no armed-specific scale/border tell for the same reason. */
+	   Colour follows the game phase:
+	     • green — the whole playable window: WAIT/arming + CLICK!/live (.go)
+	     • fade  — ROUND OVER / GAME OVER fade from red to black (.fade)
+	     • red   — STAND BY (mid-round join), connecting, disconnected (base) */
 	.game-btn {
 		position: absolute;
 		width: 140px;
 		height: 140px;
 		border-radius: 50%;
-		background-color: #e63946; /* red base: armed round, round/game over, idle */
+		background-color: #e63946; /* red base: stand-by, connecting, disconnected */
 		border: 4px solid rgba(255, 255, 255, 0.14);
-		transition: background-color 0.08s ease-out, transform 0.08s ease-out;
+		/* only the press scale transitions; colour is per-state (instant green / keyframed fade). */
+		transition: transform 0.08s ease-out;
 		pointer-events: all;
 		/* the button is always pressable — idle clicks are a real (penalised) input. */
 		cursor: pointer;
@@ -420,8 +420,25 @@
 	/* press feedback in any state, so every click visibly does something. */
 	.game-btn:active { transform: scale(0.98); }
 
-	/* WAIT (arming): the only non-red state. */
-	.game-btn.wait { background-color: #06d6a0; }
+	/* GO (arming + live): solid green. No colour transition, so leaving the fade it
+	   snaps back to green in a single frame at the next arm. */
+	.game-btn.go { background-color: #06d6a0; }
+
+	/* ROUND/GAME OVER: fade from red to black. A keyframe animation always starts at
+	   red (0%) regardless of the previous colour, so it reads as red→black, then
+	   holds black (forwards) through the result/intermission display. (@@keyframes —
+	   the @@ escapes Razor; longhand props mirror rotaliate's working CRT flicker.) */
+	.game-btn.fade {
+		animation-name: fade-to-black;
+		animation-duration: 1.2s;
+		animation-timing-function: ease-out;
+		animation-fill-mode: forwards;
+	}
+
+	@@keyframes fade-to-black {
+		0%   { background-color: #e63946; }
+		100% { background-color: #000000; }
+	}
 
 	/* HUD pinned to the top edge of the screen, centred horizontally over the box;
 	   the button roams below/behind it and clicks fall through. */
@@ -773,18 +790,25 @@
 	bool MusicOpen => _music?.IsOpen ?? false;
 	void ToggleMusic() { _music?.Toggle(); StateHasChanged(); }
 
-	// Button/center state class drives the colour — only TWO states, deliberately
-	// decoupled from the scoring ("armed") state so an autoclicker can't read the
-	// colour to time a winning click:
-	//   wait → green (Pending/arming — no click can score yet)
-	//   ""   → red base (everything else, INCLUDING the live armed round, round
-	//          result, game over, connecting and disconnected)
-	string StateClass() => C?.Phase == GamePhase.Pending ? "wait" : "";
+	// Button/center colour class — three states:
+	//   go   → green, applied with no colour transition so it snaps on in one frame
+	//          (Pending/arming AND Armed/live — the whole playable window is green)
+	//   fade → fades red→black over the round/game-over display (Result + GameOver)
+	//   ""   → solid red (Waiting, Connecting, Disconnected)
+	// Only `.game-btn.go`/`.game-btn.fade` are styled, so the same class landing on
+	// the (transparent) bounding box is a no-op.
+	string StateClass() => C?.Phase switch
+	{
+		GamePhase.Pending or GamePhase.Armed => "go",
+		GamePhase.Result or GamePhase.GameOver => "fade",
+		_ => "",
+	};
 
 	string PhaseText() => C?.Phase switch
 	{
 		GamePhase.Armed => "CLICK!",
 		GamePhase.Pending => "WAIT…",
+		GamePhase.Waiting => "STAND BY…",
 		GamePhase.Result => "ROUND OVER",
 		GamePhase.GameOver => "GAME OVER",
 		GamePhase.Disconnected => "RECONNECTING…",
