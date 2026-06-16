@@ -33,8 +33,9 @@ public sealed class ClickController : Component
 	[Property] public string BackendUrl { get; set; } = "";
 
 	/// <summary>API version to talk to, editable in the scene inspector. "v2" is the
-	/// real game; set it to "v1" to exercise the legacy/troll path the outdated
-	/// client hits (server feeds back the "UPDATE UPDATE" board and ignores clicks).
+	/// real game; "v1" exercises the legacy/troll path the new server gives outdated
+	/// clients. LEAVE BLANK to use raw, unversioned paths (/api/… and /ws) — for the
+	/// live old master backend, whose socket is bare /ws (no version segment).
 	/// Applied to <see cref="ApiClient.ApiVersion"/> at startup.</summary>
 	[Property] public string ApiVersion { get; set; } = "v2";
 
@@ -91,8 +92,10 @@ public sealed class ClickController : Component
 		Instance = this;
 		if ( !string.IsNullOrWhiteSpace( BackendUrl ) )
 			ApiClient.BaseUrl = BackendUrl.TrimEnd( '/' );
-		if ( !string.IsNullOrWhiteSpace( ApiVersion ) )
-			ApiClient.ApiVersion = ApiVersion.Trim().TrimStart( '/' );
+		// Always apply, even when blank: an empty version means raw, unversioned
+		// paths (/api/… and /ws) for talking to a legacy backend like the live old
+		// master (its socket is bare /ws). Skipping blank would keep the v2 default.
+		ApiClient.ApiVersion = (ApiVersion ?? "").Trim().Trim( '/' );
 		_ws = GameObject.Components.GetOrCreate<WsClient>();
 		_ws.OnMessage = OnMessage;
 		_ws.OnDone = OnDisconnected;
