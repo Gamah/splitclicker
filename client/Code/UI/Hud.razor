@@ -55,12 +55,12 @@
 	     this single root (a PanelComponent can't be nested, but a Panel can). ── *@
 	<div class="music-btn @(MusicOpen ? "open" : "")" onclick="@ToggleMusic">MUSIC</div>
 
-	@* ── the one global button, dead-center, with the status HUD over it ── *@
-	@* StateClass also lands on .center so the HUD text can flip to black on the
-	   yellow-orange WAIT background (and stay white everywhere else). The music panel
-	   lives in here too: it's centred on this same box (which already centres the
-	   button), and while it's open the button + status + "clicks sent" stop drawing
-	   (the connection stays open — we just don't paint the game). *@
+	@* ── the one global button (roams the box; centred only on first load) with the
+	   status HUD over it ── *@
+	@* StateClass also lands on .center (harmless; only the button reads it for colour).
+	   The music panel lives in here too: it's centred on this same box, and while it's
+	   open the button + status + "clicks sent" stop drawing (the connection stays open
+	   — we just don't paint the game). *@
 	<div class="center @StateClass() @(MusicOpen ? "music-open" : "")" @ref="_box">
 		@if ( !MusicOpen )
 		{
@@ -394,52 +394,34 @@
 
 	/* The global button: a small circle (1/5 of its former size) positioned
 	   absolutely via inline left/top % (set from ClickController state) so it can
-	   JUMP to a random spot in the box on each arm. left/top are deliberately left
-	   OUT of the transition so the move is an instant teleport, not a slide; only
-	   colour + the press/armed scale animate. */
+	   TELEPORT to a random spot in the box on every click. left/top are deliberately
+	   left OUT of the transition so the move is an instant teleport, not a slide;
+	   only colour + the press scale animate.
+
+	   It uses only TWO colours, deliberately DECOUPLED from the scoring ("armed")
+	   state so an autoclicker can't watch the colour to time a winning click:
+	     • green — WAIT/arming (no click can score yet)
+	     • red   — everything else, INCLUDING the live armed round and round/game over
+	   The "CLICK!" text in the HUD is the only on-screen cue that the round is live;
+	   there's no armed-specific scale/border tell for the same reason. */
 	.game-btn {
 		position: absolute;
 		width: 140px;
 		height: 140px;
 		border-radius: 50%;
-		background-color: #e63946; /* red: armed race not open (idle clicks still register) */
+		background-color: #e63946; /* red base: armed round, round/game over, idle */
 		border: 4px solid rgba(255, 255, 255, 0.14);
 		transition: background-color 0.08s ease-out, transform 0.08s ease-out;
 		pointer-events: all;
-		/* the button is always pressable — idle clicks are a real (penalised) input —
-		   so it always reads as clickable, not just when green. */
+		/* the button is always pressable — idle clicks are a real (penalised) input. */
 		cursor: pointer;
 	}
 
-	/* press feedback in any state, so a red-button click visibly does something. */
+	/* press feedback in any state, so every click visibly does something. */
 	.game-btn:active { transform: scale(0.98); }
 
-	.game-btn.armed {
-		background-color: #06d6a0; /* green only while a valid click can score */
-		border-color: #ffffff;
-		cursor: pointer;
-		transform: scale(1.02);
-	}
-
-	.game-btn.armed:active { transform: scale(0.98); }
-
-	/* WAIT (arming): yellow-orange. */
-	.game-btn.wait { background-color: #ff9f1c; }
-
-	/* ROUND OVER: start yellow-orange, then fade to black over 3s and hold there. */
-	.game-btn.result {
-		background-color: #000000;
-		animation-name: round-over-fade;
-		animation-duration: 3s;
-		animation-timing-function: ease-out;
-		animation-fill-mode: forwards;
-	}
-
-	@* @@ escapes the @ so Razor emits a literal @keyframes rather than parsing it as code *@
-	@@keyframes round-over-fade {
-		0% { background-color: #e63946; }
-		100% { background-color: #000000; }
-	}
+	/* WAIT (arming): the only non-red state. */
+	.game-btn.wait { background-color: #06d6a0; }
 
 	/* HUD pinned to the top edge of the screen, centred horizontally over the box;
 	   the button roams below/behind it and clicks fall through. */
@@ -617,12 +599,10 @@
 
 		if ( phase != _lastPhase )
 		{
-			// Whack-a-mole: the instant the button arms ("make green"), jump it to a
-			// random spot in the box; send it back to centre while it's dormant again.
-			if ( phase == GamePhase.Armed )
-				( _btnLeftPct, _btnTopPct ) = RandomPos();
-			else if ( phase == GamePhase.Pending )
-				( _btnLeftPct, _btnTopPct ) = CenterPos();
+			// The button no longer jumps on phase changes — it teleports on every
+			// CLICK instead (see OnPress), and otherwise stays exactly where it last
+			// landed, including between rounds/games. It's only ever centred once, on
+			// first load (the _positioned block above).
 
 			// Refresh the boards when a round just closed (player is reading scores
 			// between presses), throttled so rapid result→pending churn can't spam.
@@ -775,9 +755,16 @@
 		return $"{s / 3600:D2}:{(s % 3600) / 60:D2}:{s % 60:D2}";
 	}
 
-	bool Armed => C?.CanClick ?? false;
-
-	void OnPress() => ClickController.Instance?.SendClick();
+	// Every click sends the click AND teleports the button to a fresh random spot in
+	// the box — armed or not. A fixed-position autoclicker therefore lands at most one
+	// click per position; a human re-aims. The button stays where it lands until the
+	// next click (it is not recentred between rounds/games).
+	void OnPress()
+	{
+		ClickController.Instance?.SendClick();
+		( _btnLeftPct, _btnTopPct ) = RandomPos();
+		StateHasChanged();
+	}
 
 	// ── music panel toggle ──
 	// The panel (mute/volume + genre/vibe knobs + seed sharing) is a child Panel of this
@@ -786,22 +773,13 @@
 	bool MusicOpen => _music?.IsOpen ?? false;
 	void ToggleMusic() { _music?.Toggle(); StateHasChanged(); }
 
-	// Button/center state class drives the colour:
-	//   armed  → green (a valid click can score)
-	//   wait   → yellow-orange (arming)
-	//   result → yellow-orange fading to black over 3s
-	//   ""     → red base (connecting / disconnected / game over)
-	// Armed takes precedence so the green only shows while a click can actually score.
-	string StateClass()
-	{
-		if ( Armed ) return "armed";
-		return C?.Phase switch
-		{
-			GamePhase.Pending => "wait",
-			GamePhase.Result => "result",
-			_ => "",
-		};
-	}
+	// Button/center state class drives the colour — only TWO states, deliberately
+	// decoupled from the scoring ("armed") state so an autoclicker can't read the
+	// colour to time a winning click:
+	//   wait → green (Pending/arming — no click can score yet)
+	//   ""   → red base (everything else, INCLUDING the live armed round, round
+	//          result, game over, connecting and disconnected)
+	string StateClass() => C?.Phase == GamePhase.Pending ? "wait" : "";
 
 	string PhaseText() => C?.Phase switch
 	{
