@@ -13,6 +13,7 @@ directory is bind-mounted into the container at `/data` (see
    {
      "skin_image": "skin2win.png",
      "winner_lock_time": "2026-06-16T07:00:00Z",
+     "dev_note": "",
 
      "arm_min_sec": 2,
      "arm_max_sec": 6,
@@ -30,6 +31,9 @@ directory is bind-mounted into the container at `/data` (see
 - `skin_image` — a filename inside `media/` (served at `GET /api/v1/skin`).
 - `winner_lock_time` — RFC3339; the client counts down to it. Empty/omit hides
   the countdown. Once it passes, the HUD prompts for a new skin.
+- `dev_note` — a broadcast message shown orange on every client (under the
+  throttle line). Re-read once at the start of each game, so a change takes
+  effect on the next game; empty/omit clears it (no restart needed).
 
 **Game tunables (read at startup → `docker compose restart app` to apply):**
 - `arm_min_sec` / `arm_max_sec` — random arming-delay window.

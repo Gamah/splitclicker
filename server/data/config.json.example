@@ -1,8 +1,9 @@
 {
-  "_comment": "Host-editable runtime config. Copy to config.json (same dir) and edit. skin_image (a file in ./media) and winner_lock_time (RFC3339; empty hides the countdown) apply LIVE — re-read every request. The game tunables below are read at startup, so 'docker compose restart app' to apply them.",
+  "_comment": "Host-editable runtime config. Copy to config.json (same dir) and edit. skin_image (a file in ./media) and winner_lock_time (RFC3339; empty hides the countdown) apply LIVE — re-read every request. dev_note (empty = none) is a broadcast message shown orange on clients, re-read once at the start of each game. The game tunables below are read at startup, so 'docker compose restart app' to apply them.",
 
   "skin_image": "skin2win.png",
   "winner_lock_time": "2026-06-16T07:00:00Z",
+  "dev_note": "",
 
   "arm_min_sec": 2,
   "arm_max_sec": 6,
