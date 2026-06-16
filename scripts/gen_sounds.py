@@ -8,7 +8,7 @@ Every voice is a square + triangle wave of the same note overlapped (the triangl
 slightly detuned for a little shimmer), shaped by a per-sound envelope. Four sounds,
 tied together as a tiny musical motif around G:
 
-  arming   - "G" beeped twice (50 ms each, 150 ms apart) while the button is dormant
+  arming   - "G" beeped twice (50 ms each, 50 ms apart) while the button is dormant
   armed    - "C" above that G, 150 ms, fading out, as the button goes live
   click    - "D" above the armed C, a short snappy blip on each scoring click
   disarm   - "C" an octave below the G, double-beeped like arming, on round/game over
@@ -72,7 +72,7 @@ def beep(freq, dur):
     return blend(freq, n) * ar_env(n, 0.006, 0.012)
 
 
-def double_beep(freq, beep_dur=0.050, gap=0.150):
+def double_beep(freq, beep_dur=0.050, gap=0.050):
     """Two short beeps `gap` seconds apart — the arming/disarm rhythm."""
     b = beep(freq, beep_dur)
     silence = np.zeros(int(gap * SR))
