@@ -60,7 +60,7 @@
 	@* StateClass also lands on .center so the HUD text can flip to black on the
 	   yellow-orange WAIT background (and stay white everywhere else). *@
 	<div class="center @StateClass() @(MusicOpen ? "hidden" : "")" @ref="_box">
-		<div class="btn @StateClass()" @ref="_btn"
+		<div class="game-btn @StateClass()" @ref="_btn"
 		     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
 
 		@* Each line below is a SINGLE interpolated expression on purpose: mixing
@@ -390,7 +390,7 @@
 	   JUMP to a random spot in the box on each arm. left/top are deliberately left
 	   OUT of the transition so the move is an instant teleport, not a slide; only
 	   colour + the press/armed scale animate. */
-	.btn {
+	.game-btn {
 		position: absolute;
 		width: 140px;
 		height: 140px;
@@ -405,22 +405,22 @@
 	}
 
 	/* press feedback in any state, so a red-button click visibly does something. */
-	.btn:active { transform: scale(0.98); }
+	.game-btn:active { transform: scale(0.98); }
 
-	.btn.armed {
+	.game-btn.armed {
 		background-color: #06d6a0; /* green only while a valid click can score */
 		border-color: #ffffff;
 		cursor: pointer;
 		transform: scale(1.02);
 	}
 
-	.btn.armed:active { transform: scale(0.98); }
+	.game-btn.armed:active { transform: scale(0.98); }
 
 	/* WAIT (arming): yellow-orange. */
-	.btn.wait { background-color: #ff9f1c; }
+	.game-btn.wait { background-color: #ff9f1c; }
 
 	/* ROUND OVER: start yellow-orange, then fade to black over 3s and hold there. */
-	.btn.result {
+	.game-btn.result {
 		background-color: #000000;
 		animation-name: round-over-fade;
 		animation-duration: 3s;

@@ -4,7 +4,6 @@
 @using Sandbox
 @using Sandbox.UI
 @using Splitclicker.Audio
-@using Splitclicker.Game
 @using Skafinity
 @namespace Splitclicker.UI
 
@@ -155,7 +154,7 @@
 	   panel never blocks the game button (only the backdrop/modal, present only while
 	   open, take pointer events). */
 	root {
-		position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+		position: absolute; top: 0; left: 0; right: 0; bottom: 0;
 		justify-content: center; align-items: center;
 		pointer-events: none;
 	}
@@ -180,7 +179,8 @@
 		border-radius: 16px;
 		gap: 12px;
 		pointer-events: all;
-		overflow: scroll;
+		overflow-x: hidden;
+		overflow-y: scroll;
 	}
 
 	.music > div { flex-shrink: 0; }
@@ -294,18 +294,12 @@
 
 	string Seed() => Mc?.CurrentSeed ?? "—";
 
-	/// <summary>Open/close the panel (HUD MUSIC button). While open, the game connection is
-	/// dropped so the player doesn't contribute to the click/online count while in here.</summary>
+	/// <summary>Open/close the panel (HUD MUSIC button). The connection stays open; the HUD
+	/// just stops drawing the game button + status while we're up (see Hud's .center.hidden).</summary>
 	public void Toggle()
 	{
-		if ( IsOpen ) Close();
-		else Open();
-	}
-
-	void Open()
-	{
-		IsOpen = true;
-		ClickController.Instance?.Suspend();
+		IsOpen = !IsOpen;
+		if ( !IsOpen ) _tagInit = false;
 		StateHasChanged();
 	}
 
@@ -313,7 +307,6 @@
 	{
 		IsOpen = false;
 		_tagInit = false;
-		ClickController.Instance?.Resume();
 		StateHasChanged();
 	}
 
