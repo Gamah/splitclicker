@@ -17,7 +17,10 @@
 	fills the screen, with every piece an absolutely-positioned CHILD of it:
 
 	  • session board   — pinned top-left
-	  • the button + status HUD + "clicks sent" — dead-center of the screen
+	  • a bounding box inset between the left/right boards — holds the status HUD
+	    (centred) and the global button, which is small and JUMPS to a random spot
+	    inside the box each time the round arms (whack-a-mole); "clicks sent" sits
+	    pinned to the box bottom
 	  • hourly board     — pinned top-right, just left of hours-won
 	  • hours-won board  — pinned hard to the top-right edge
 *@
@@ -47,40 +50,79 @@
 		}
 	</div>
 
-	@* ── mute toggle: bottom edge, just right of the session list ── *@
-	<div class="mute-btn @(IsMuted ? "muted" : "")" onclick="@ToggleMute">@MuteLabel()</div>
+	@* ── how-to-play: a static help card pinned bottom-left, under the session
+	     board. Quick primer on the round states and the idle-click penalty. ── *@
+	<div class="board howto">
+		<div class="title">HOW TO PLAY</div>
+		<div class="divider"></div>
+		<div class="line">One global button, limited clicks, shared by everyone.</div>
+		<div class="state-row"><span class="tag wait">WAIT…</span><span class="desc">Button is arming - DO NOT CLICK just because it's green</span></div>
+		<div class="state-row"><span class="tag go">CLICK!</span><span class="desc">Button is live! One point per click.</span></div>
+		<div class="state-row"><span class="tag over">ROUND OVER</span><span class="desc">All clicks used up, current score shown.</span></div>
+		<div class="state-row"><span class="tag over">GAME OVER</span><span class="desc">Session winner picked, new game next!</span></div>
+		<div class="divider"></div>
+		<div class="line penalty-note">Clicking while not live is allowed but delays your button becoming live behind other players.</div>
+	</div>
 
-	@* ── the one global button, dead-center, with the status HUD over it ── *@
-	@* StateClass also lands on .center so the HUD text can flip to black on the
-	   yellow-orange WAIT background (and stay white everywhere else). *@
-	<div class="center @StateClass()">
-		<div class="btn @StateClass()" onclick="@OnPress"></div>
+	@* ── music button: bottom-left, directly below the how-to-play card. Opens the
+	     music panel (genre / vibe knobs / seed sharing / mute + volume), which is a child
+	     of this single root (a PanelComponent can't be nested, but a Panel can). ── *@
+	<div class="music-btn @(MusicOpen ? "open" : "")" onclick="@ToggleMusic">MUSIC</div>
 
-		@* Each line below is a SINGLE interpolated expression on purpose: mixing
-		   literal text with razor expressions in one element emits several text nodes,
-		   which s&box's panel reconciler reorders across rebuilds (the "arms in 2-6s"
-		   -> "- arms in 26s" / vanishing-penalty bug). One expression = one stable node. *@
-		<div class="hud">
-			<div class="round">@($"Round {c?.Round ?? 0} / {c?.Of ?? 0}")</div>
-			<div class="state @PhaseClass()">@PhaseText()</div>
-			<div class="meta">
-				<div class="players">@($"{c?.Players ?? 0} online")</div>
-				<div class="sep">·</div>
-				<div class="clicks">@($"{c?.ClicksToWin ?? 0} clicks exist for this round")</div>
+	@* ── the one global button (roams the box; centred only on first load) with the
+	   status HUD over it ── *@
+	@* StateClass also lands on .center (harmless; only the button reads it for colour).
+	   The music panel lives in here too: it's centred on this same box, and while it's
+	   open the button + status + "clicks sent" stop drawing (the connection stays open
+	   — we just don't paint the game). *@
+	<div class="center @StateClass()" @ref="_box">
+		@if ( !MusicOpen )
+		{
+			<div class="game-btn @StateClass()" @ref="_btn"
+			     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
+
+			@* "+ PENALTY" popups: one per bad click, floating up from where it was hit. *@
+			@foreach ( var p in _pops )
+			{
+				<div class="penalty-pop" style="left: @(p.Left)%; top: @(p.Top)%;">+ PENALTY</div>
+			}
+
+			@* Each line below is a SINGLE interpolated expression on purpose: mixing
+			   literal text with razor expressions in one element emits several text nodes,
+			   which s&box's panel reconciler reorders across rebuilds (the "arms in 2-6s"
+			   -> "- arms in 26s" / vanishing-penalty bug). One expression = one stable node. *@
+			<div class="hud">
+				<div class="meta">
+					<div class="players">@($"{c?.Players ?? 0} online")</div>
+					<div class="sep">·</div>
+					<div class="clicks">@($"{c?.ClicksToWin ?? 0} clicks exist for this round")</div>
+				</div>
+				<div class="round">@($"Round {c?.Round ?? 0} / {c?.Of ?? 0}")</div>
+				<div class="state @PhaseClass()">@PhaseText()</div>
+				@if ( c?.Phase == GamePhase.Pending && (c?.ArmMaxSec ?? 0) > 0 )
+				{
+					<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
+				}
+				@* throttle is shown while actively in a round (it counts up live as the
+				   player idle-clicks); hidden before we've joined one (connecting / mid-
+				   round stand-by) and while disconnected. *@
+				@if ( c != null && c.Phase != GamePhase.Connecting && c.Phase != GamePhase.Disconnected && c.Phase != GamePhase.Waiting )
+				{
+					<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
+				}
+				@* dev note: a host-pushed broadcast message, orange, directly under the
+				   throttle line. Independent of round phase; shows until the server
+				   sends an empty note. *@
+				@if ( c != null && !string.IsNullOrEmpty( c.DevNote ) )
+				{
+					<div class="dev-note">@c.DevNote</div>
+				}
 			</div>
-			@if ( c?.Phase == GamePhase.Pending && (c?.ArmMaxSec ?? 0) > 0 )
-			{
-				<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
-			}
-			@* throttle sits directly below the arms text and is always shown while
-			   in a game (it counts up live as the player idle-clicks). *@
-			@if ( c != null && c.Phase != GamePhase.Connecting && c.Phase != GamePhase.Disconnected )
-			{
-				<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
-			}
-		</div>
 
-		<div class="clicks-sent">@($"clicks sent: {c?.ClicksSent ?? 0}")</div>
+			<div class="clicks-sent">@($"clicks sent: {c?.ClicksSent ?? 0}")</div>
+		}
+
+		<MusicPanel @ref="_music" />
 	</div>
 
 	@* ── hourly board: Postgres "most clicks this hour", pinned right (inner) ── *@
@@ -205,11 +247,56 @@
 
 	.board.session { left: 14px; }
 
-	/* mute toggle: bottom edge, just right of the session list's column. */
-	.mute-btn {
+	/* how-to-play card: pinned to the bottom-left (top:auto cancels the shared
+	   top:18px), under the session board. Lifted clear of the bottom edge so the
+	   MUSIC button can sit beneath it. Same board chrome, but a column of
+	   explanatory text rather than a leaderboard. */
+	.board.howto { top: auto; bottom: 66px; left: 14px; width: 300px; }
+
+	.board.howto .line {
+		font-size: 12px;
+		color: rgba(255, 255, 255, 0.6);
+		margin-bottom: 4px;
+		white-space: normal;
+	}
+
+	.board.howto .penalty-note {
+		margin-bottom: 0;
+		margin-top: 2px;
+	}
+
+	.board.howto .state-row {
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 3px;
+	}
+
+	.board.howto .tag {
+		width: 90px;
+		font-size: 12px;
+		font-weight: bold;
+		letter-spacing: 0.5px;
+	}
+
+	.board.howto .tag.wait { color: #06d6a0; }
+	.board.howto .tag.go { color: #ffffff; }
+	.board.howto .tag.over { color: #e63946; }
+
+	.board.howto .desc {
+		flex-grow: 1;
+		font-size: 12px;
+		color: rgba(255, 255, 255, 0.6);
+		white-space: normal;
+	}
+
+	/* music button: bottom-left corner, directly beneath the how-to-play card and
+	   matching its column width. */
+	.music-btn {
 		position: absolute;
 		bottom: 18px;
-		left: 308px; /* 14 (session edge) + 280 (session width) + 14 (gap) */
+		left: 14px;
+		width: 300px;
 		pointer-events: all;
 		cursor: pointer;
 		flex-direction: row;
@@ -225,8 +312,8 @@
 		color: rgba(255, 255, 255, 0.78);
 	}
 
-	.mute-btn:hover { color: #ffffff; border-color: rgba(255, 255, 255, 0.3); }
-	.mute-btn.muted { color: #ffd166; }
+	.music-btn:hover { color: #ffffff; border-color: rgba(255, 255, 255, 0.3); }
+	.music-btn.open { color: #ffd166; border-color: rgba(255, 209, 102, 0.4); }
 	.board.hourly { right: 308px; } /* 14 (edge) + 280 (hours-won) + 14 (gap) */
 	.board.hourswon { right: 14px; }
 	/* sessions-won pins to the free bottom-right corner (top:auto cancels the
@@ -357,65 +444,111 @@
 		margin-top: 4px;
 	}
 
-	/* ── center column: full-screen overlay that centers the button ── */
+	/* ── center: the BOUNDING BOX the button roams inside, inset between the
+	   left session board (right edge ≈ 308px) and the right board column (also
+	   308px), with a little top/bottom breathing room. The button is positioned
+	   absolutely within this box; the status HUD overlays it centred. ──
+
+	   The box (and so the button + status HUD + music panel inside it) is kept ABOVE every
+	   board at all times via z-index. The boards are declared after .center in the markup,
+	   so without this they'd paint — and take clicks — on top of anything in the box. The
+	   box is normally inset clear of every board, but the roaming button (and the music
+	   button it can overlap at the bottom-left) must always win paint AND click priority
+	   when they do intersect, so the box outranks them unconditionally. */
 	.center {
 		position: absolute;
-		top: 0;
-		left: 0;
-		right: 0;
-		bottom: 0;
+		top: 24px;
+		bottom: 24px;
+		left: 308px;
+		right: 308px;
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
 		pointer-events: none;
+		z-index: 100;
 	}
 
-	/* Fixed square (ScreenPanel auto-scales to a 1080-tall reference) so the button
-	   is a true circle, centered, at ~70% of screen height. */
-	.btn {
-		width: 700px;
-		height: 700px;
+	/* The global button: a small circle positioned absolutely via inline left/top %
+	   (set from ClickController state) so it can TELEPORT to a random spot in the box
+	   on every click. left/top are deliberately left OUT of any transition so the
+	   move is an instant teleport, not a slide; the random teleport-on-every-click is
+	   the anti-autoclicker measure (a fixed-position bot lands one click per spot).
+
+	   Colour follows the game phase:
+	     • green — the whole playable window: WAIT/arming + CLICK!/live (.go)
+	     • fade  — ROUND OVER / GAME OVER fade from red to black (.fade)
+	     • red   — STAND BY (mid-round join), connecting, disconnected (base) */
+	.game-btn {
+		position: absolute;
+		width: 140px;
+		height: 140px;
 		border-radius: 50%;
-		background-color: #e63946; /* red: armed race not open (idle clicks still register) */
-		border: 8px solid rgba(255, 255, 255, 0.14);
-		transition: all 0.08s ease-out;
+		background-color: #e63946; /* red base: stand-by, connecting, disconnected */
+		/* The white outline is always drawn so the button's location is unmistakable in
+		   every phase — crucially it survives the fade-to-black (which animates only the
+		   background-color, never the border), so the circle stays visible even at full
+		   black. Only the music panel opening removes it (the button stops rendering). */
+		border: 4px solid rgba(255, 255, 255, 0.9);
+		/* only the press scale transitions; colour is per-state (instant green / keyframed fade). */
+		transition: transform 0.08s ease-out;
+		/* No animation by default. Only .fade adds one (more specific, so it wins). This
+		   matters: the fade holds black via fill-mode:forwards, so when the phase later
+		   leaves .fade we must cancel the animation here or the held black would stick and
+		   the button would never repaint green/red again. */
+		animation-name: none;
 		pointer-events: all;
-		/* the button is always pressable — idle clicks are a real (penalised) input —
-		   so it always reads as clickable, not just when green. */
+		/* the button is always pressable — idle clicks are a real (penalised) input. */
 		cursor: pointer;
 	}
 
-	/* press feedback in any state, so a red-button click visibly does something. */
-	.btn:active { transform: scale(0.98); }
+	/* press feedback in any state, so every click visibly does something. */
+	.game-btn:active { transform: scale(0.98); }
 
-	.btn.armed {
-		background-color: #06d6a0; /* green only while a valid click can score */
-		border-color: #ffffff;
-		cursor: pointer;
-		transform: scale(1.02);
-	}
+	/* GO (arming + live): solid green. No colour transition, so leaving the fade it
+	   snaps back to green in a single frame at the next arm. */
+	.game-btn.go { background-color: #06d6a0; }
 
-	.btn.armed:active { transform: scale(0.98); }
-
-	/* WAIT (arming): yellow-orange. */
-	.btn.wait { background-color: #ff9f1c; }
-
-	/* ROUND OVER: start yellow-orange, then fade to black over 3s and hold there. */
-	.btn.result {
-		background-color: #000000;
-		animation-name: round-over-fade;
-		animation-duration: 3s;
+	/* ROUND/GAME OVER: fade from red to black. A keyframe animation always starts at
+	   red (0%) regardless of the previous colour, so it reads as red→black, then
+	   holds black (forwards) through the result/intermission display. (@@keyframes —
+	   the @@ escapes Razor; longhand props mirror rotaliate's working CRT flicker.) */
+	.game-btn.fade {
+		animation-name: fade-to-black;
+		animation-duration: 1.2s;
 		animation-timing-function: ease-out;
 		animation-fill-mode: forwards;
 	}
 
-	@* @@ escapes the @ so Razor emits a literal @keyframes rather than parsing it as code *@
-	@@keyframes round-over-fade {
-		0% { background-color: #e63946; }
+	@@keyframes fade-to-black {
+		0%   { background-color: #e63946; }
 		100% { background-color: #000000; }
 	}
 
-	/* HUD overlaid dead-center on the button; clicks fall through to the button. */
+	/* "+ PENALTY" popup: red text with a white outline, positioned absolutely in the
+	   box (left/top % set inline, same space as the button) and animated up + faded
+	   over 1s, then held gone (forwards) until OnUpdate prunes it. pointer-events:none
+	   so it never eats a click; high z so it reads over the button and HUD. */
+	.penalty-pop {
+		position: absolute;
+		font-size: 30px;
+		font-weight: bold;
+		color: #e63946;
+		text-stroke: 2px #ffffff;
+		pointer-events: none;
+		z-index: 120;
+		animation-name: penalty-rise;
+		animation-duration: 1s;
+		animation-timing-function: ease-out;
+		animation-fill-mode: forwards;
+	}
+
+	@@keyframes penalty-rise {
+		0%   { opacity: 1; transform: translateY(0px); }
+		100% { opacity: 0; transform: translateY(-90px); }
+	}
+
+	/* HUD pinned to the top edge of the screen, centred horizontally over the box;
+	   the button roams below/behind it and clicks fall through. */
 	.hud {
 		position: absolute;
 		top: 0;
@@ -424,7 +557,7 @@
 		bottom: 0;
 		flex-direction: column;
 		align-items: center;
-		justify-content: center;
+		justify-content: flex-start;
 		gap: 10px;
 		pointer-events: none;
 	}
@@ -465,28 +598,26 @@
 	}
 
 	.penalty {
-		font-size: 16px;
+		font-size: 32px;
 		font-weight: bold;
 		color: #ffffff;
 	}
 
-	/* HUD text overlaid on the button is black on the yellow-orange WAIT background
-	   (for contrast) and white in every other state. These high-specificity rules
-	   win over the per-element colors above. (clicks-sent sits *below* the button on
-	   the dark page background, so it stays white — excluded here.) */
-	.center.wait .round,
-	.center.wait .state,
-	.center.wait .meta,
-	.center.wait .meta .sep,
-	.center.wait .arm,
-	.center.wait .penalty { color: #000000; }
+	/* Host-pushed broadcast note: same size as the throttle line, orange, sits
+	   directly underneath it. */
+	.dev-note {
+		font-size: 32px;
+		font-weight: bold;
+		color: #ff8c00;
+	}
 
-	/* Centered just under the circle: the button is 700px (350px radius) centered
-	   on screen, so 360px below screen-center sits 10px below its bottom edge. */
+	/* The status HUD now floats centred on the dark box (the button roams away from
+	   it), so the text stays white in every state — no on-button contrast override. */
+
+	/* Pinned to the bottom of the bounding box, centred horizontally. */
 	.clicks-sent {
 		position: absolute;
-		top: 50%;
-		margin-top: 360px;
+		bottom: 0;
 		left: 0;
 		right: 0;
 		justify-content: center;
@@ -510,6 +641,9 @@
 		color: #4cc9f0;
 		letter-spacing: 1px;
 		pointer-events: none;
+		/* above the .center box (z-index:100) so the confirmation isn't hidden behind
+		   the centred status HUD when both are near the top of the screen. */
+		z-index: 110;
 	}
 </style>
 
@@ -538,6 +672,18 @@
 	RealTimeSince _sessionsWonLast;
 
 	GamePhase _lastPhase = GamePhase.Connecting;
+
+	// ── roaming button: the bounding box (.center) and the button itself, captured
+	//    by @ref so we can measure them, plus the button's current position as a
+	//    left/top percentage of the box. The button JUMPS to a random in-box spot
+	//    each time the round arms (the "make green" frame), and returns to the box
+	//    centre while dormant. Percentages are whole ints (locale-safe interpolation;
+	//    the sandbox doesn't whitelist System.Globalization for float formatting). ──
+	Panel _box;
+	Panel _btn;
+	bool _positioned;
+	int _btnLeftPct = 44; // sensible centre-ish default until first measured
+	int _btnTopPct = 43;
 
 	// ── server-driven skin + winner-lock countdown (GET /api/v1/config) ──
 	// _winnerLockMs is the winner-lock instant as Unix epoch ms (0 = unset, hides
@@ -575,18 +721,73 @@
 
 	protected override void OnUpdate()
 	{
-		var phase = C?.Phase ?? GamePhase.Connecting;
-		// Refresh when a round just closed (player is reading scores between presses),
-		// throttled so rapid result→pending churn can't spam the endpoints.
-		bool roundJustClosed = phase != _lastPhase &&
-			( phase == GamePhase.Result || phase == GamePhase.GameOver );
-		_lastPhase = phase;
-		if ( roundJustClosed )
+		// Drop finished "+ PENALTY" popups (the CSS animation runs for PopLife). While
+		// any are live, re-render every frame so removals take effect on time.
+		if ( _pops.Count > 0 )
 		{
-			if ( _hourlyLast > RefreshInterval ) _ = RefreshHourly();
-			if ( _hoursWonLast > RefreshInterval ) _ = RefreshHoursWon();
-			if ( _sessionsWonLast > RefreshInterval ) _ = RefreshSessionsWon();
+			_pops.RemoveAll( p => p.Since >= PopLife );
+			StateHasChanged();
 		}
+
+		var phase = C?.Phase ?? GamePhase.Connecting;
+
+		// Rest the button at the box centre once both panels have been laid out
+		// (their measured rects become valid only after the first frame).
+		if ( !_positioned && (_box?.Box.Rect.Width ?? 0f) > 0f && (_btn?.Box.Rect.Width ?? 0f) > 0f )
+		{
+			( _btnLeftPct, _btnTopPct ) = CenterPos();
+			_positioned = true;
+			StateHasChanged();
+		}
+
+		if ( phase != _lastPhase )
+		{
+			// The button no longer jumps on phase changes — it teleports on every
+			// CLICK instead (see OnPress), and otherwise stays exactly where it last
+			// landed, including between rounds/games. It's only ever centred once, on
+			// first load (the _positioned block above).
+
+			// Refresh the boards when a round just closed (player is reading scores
+			// between presses), throttled so rapid result→pending churn can't spam.
+			if ( phase == GamePhase.Result || phase == GamePhase.GameOver )
+			{
+				if ( _hourlyLast > RefreshInterval ) _ = RefreshHourly();
+				if ( _hoursWonLast > RefreshInterval ) _ = RefreshHoursWon();
+				if ( _sessionsWonLast > RefreshInterval ) _ = RefreshSessionsWon();
+			}
+
+			_lastPhase = phase;
+			StateHasChanged();
+		}
+	}
+
+	// The usable left/top range (as a percentage of the box) that keeps the button
+	// fully inside it: 1 − button/box along each axis. Derived from the live measured
+	// rects (their ratio is resolution- and scale-independent); falls back to a
+	// roughly-correct range if a rect isn't available yet, so the button still roams.
+	(float x, float y) BoxRange()
+	{
+		float bw = _box?.Box.Rect.Width ?? 0f, bh = _box?.Box.Rect.Height ?? 0f;
+		float w = _btn?.Box.Rect.Width ?? 0f, h = _btn?.Box.Rect.Height ?? 0f;
+		if ( bw <= 0f || bh <= 0f || w <= 0f || h <= 0f ) return ( 88f, 86f );
+		return ( Math.Clamp( 1f - w / bw, 0f, 1f ) * 100f,
+		         Math.Clamp( 1f - h / bh, 0f, 1f ) * 100f );
+	}
+
+	// Centre of the valid range (top-left positioning, so this — not 50/50 — is the
+	// position that visually centres the button in the box).
+	(int, int) CenterPos()
+	{
+		var ( x, y ) = BoxRange();
+		return ( (int)(x / 2f), (int)(y / 2f) );
+	}
+
+	// A uniformly-random in-box position within the valid range.
+	(int, int) RandomPos()
+	{
+		var ( x, y ) = BoxRange();
+		var r = System.Random.Shared;
+		return ( (int)(r.NextSingle() * x), (int)(r.NextSingle() * y) );
 	}
 
 	async Task RefreshHourly()
@@ -697,37 +898,62 @@
 		return $"{s / 3600:D2}:{(s % 3600) / 60:D2}:{s % 60:D2}";
 	}
 
-	bool Armed => C?.CanClick ?? false;
-
-	void OnPress() => ClickController.Instance?.SendClick();
-
-	// ── music mute toggle ──
-	static bool IsMuted => MusicController.Instance?.Muted ?? false;
-	void ToggleMute() => MusicController.Instance?.ToggleMute();
-	// Label states the action a click performs.
-	static string MuteLabel() => IsMuted ? "UNMUTE MUSIC" : "MUTE MUSIC";
-
-	// Button/center state class drives the colour:
-	//   armed  → green (a valid click can score)
-	//   wait   → yellow-orange (arming)
-	//   result → yellow-orange fading to black over 3s
-	//   ""     → red base (connecting / disconnected / game over)
-	// Armed takes precedence so the green only shows while a click can actually score.
-	string StateClass()
+	// Every click sends the click AND teleports the button to a fresh random spot in
+	// the box — armed or not. A fixed-position autoclicker therefore lands at most one
+	// click per position; a human re-aims. The button stays where it lands until the
+	// next click (it is not recentred between rounds/games).
+	void OnPress()
 	{
-		if ( Armed ) return "armed";
-		return C?.Phase switch
+		// The button is about to teleport — capture where it was clicked so the
+		// "+ PENALTY" pops from that spot. SendClick returns true when the click was a
+		// penalised bad click (idle / wrong phase); spawn a popup for each one, so
+		// rapid mashing stacks several on screen at once.
+		int px = _btnLeftPct, py = _btnTopPct;
+		bool bad = ClickController.Instance?.SendClick() ?? false;
+		if ( bad )
 		{
-			GamePhase.Pending => "wait",
-			GamePhase.Result => "result",
-			_ => "",
-		};
+			_pops.Add( new PenaltyPop { Left = px, Top = py, Since = 0f } );
+			_popSeq++;
+		}
+		( _btnLeftPct, _btnTopPct ) = RandomPos();
+		StateHasChanged();
 	}
+
+	// ── "+ PENALTY" popups: one per bad click, each floats up and fades over PopLife
+	//    seconds (CSS keyframe), then is pruned. Several can be live at once. Left/Top
+	//    are the box-relative % the button sat at when clicked (same space as the
+	//    button), so the text rises from where the player hit it. ──
+	class PenaltyPop { public int Left; public int Top; public RealTimeSince Since; }
+	readonly List<PenaltyPop> _pops = new();
+	int _popSeq; // bumps on every spawn so BuildHash rebuilds and the new popup renders
+	const float PopLife = 1f;
+
+	// ── music panel toggle ──
+	// The panel (mute/volume + genre/vibe knobs + seed sharing) is a child Panel of this
+	// root; the MUSIC button just opens/closes it.
+	MusicPanel _music;
+	bool MusicOpen => _music?.IsOpen ?? false;
+	void ToggleMusic() { _music?.Toggle(); StateHasChanged(); }
+
+	// Button/center colour class — three states:
+	//   go   → green, applied with no colour transition so it snaps on in one frame
+	//          (Pending/arming AND Armed/live — the whole playable window is green)
+	//   fade → fades red→black over the round/game-over display (Result + GameOver)
+	//   ""   → solid red (Waiting, Connecting, Disconnected)
+	// Only `.game-btn.go`/`.game-btn.fade` are styled, so the same class landing on
+	// the (transparent) bounding box is a no-op.
+	string StateClass() => C?.Phase switch
+	{
+		GamePhase.Pending or GamePhase.Armed => "go",
+		GamePhase.Result or GamePhase.GameOver => "fade",
+		_ => "",
+	};
 
 	string PhaseText() => C?.Phase switch
 	{
 		GamePhase.Armed => "CLICK!",
 		GamePhase.Pending => "WAIT…",
+		GamePhase.Waiting => "STAND BY…",
 		GamePhase.Result => "ROUND OVER",
 		GamePhase.GameOver => "GAME OVER",
 		GamePhase.Disconnected => "RECONNECTING…",
@@ -749,6 +975,7 @@
 			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
-		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), IsMuted,
-			_skinUrl, _winnerLockMs, WinnerLockPassed() ) );
+		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), MusicOpen,
+			_skinUrl, _winnerLockMs, WinnerLockPassed() ),
+		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count ) );
 }

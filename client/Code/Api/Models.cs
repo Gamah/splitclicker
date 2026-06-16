@@ -46,7 +46,10 @@ public record HelloGame(
 	[property: JsonPropertyName( "players" )] int Players,
 	[property: JsonPropertyName( "clicks" )] int Clicks,
 	[property: JsonPropertyName( "arm_min" )] int ArmMin,
-	[property: JsonPropertyName( "arm_max" )] int ArmMax
+	[property: JsonPropertyName( "arm_max" )] int ArmMax,
+	[property: JsonPropertyName( "penalty_base_ms" )] int PenaltyBaseMs,
+	[property: JsonPropertyName( "penalty_step_ms" )] int PenaltyStepMs,
+	[property: JsonPropertyName( "dev_note" )] string DevNote
 );
 
 public record HelloMsg(
@@ -86,13 +89,24 @@ public record RoundResultMsg(
 	[property: JsonPropertyName( "you" )] YouResult You
 );
 
+// points_delta/round_id carry the FINAL round's score (the last round folds into
+// game_over with no round_result of its own) so the client can drive its `points`
+// stat once, guarded by round_id like a normal round.
 public record YouGameOver(
 	[property: JsonPropertyName( "placement" )] int Placement,
 	[property: JsonPropertyName( "won" )] bool Won,
-	[property: JsonPropertyName( "game_id" )] string GameId
+	[property: JsonPropertyName( "game_id" )] string GameId,
+	[property: JsonPropertyName( "points_delta" )] int PointsDelta,
+	[property: JsonPropertyName( "round_id" )] string RoundId
 );
 
 public record GameOverMsg(
 	[property: JsonPropertyName( "standings" )] List<Standing> Standings,
 	[property: JsonPropertyName( "you" )] YouGameOver You
+);
+
+// note is the host-editable broadcast message (orange line under the throttle);
+// empty clears it. Pushed once per game and carried in hello for mid-game joiners.
+public record DevNoteMsg(
+	[property: JsonPropertyName( "note" )] string Note
 );

@@ -106,11 +106,16 @@ type ResultFrame struct {
 
 // GameOverFrame is the final standings. Placements/Won are per-SteamID, merged
 // per connection by the hub (drives placement/win achievements); GameID dedupes.
+// Deltas/RoundID carry the FINAL round's points (per-SteamID) and its round id:
+// the last round folds straight into game_over with no separate round_result, so
+// the client still needs these here to drive its `points` stat exactly once.
 type GameOverFrame struct {
 	Standings  []Standing
 	GameID     string
 	Placements map[string]int
 	Won        map[string]bool
+	Deltas     map[string]int
+	RoundID    string
 }
 
 // Broadcaster is how the engine reaches connected clients. All methods are
@@ -121,6 +126,9 @@ type Broadcaster interface {
 	Armed(ArmedFrame)
 	Result(ResultFrame)
 	GameOver(GameOverFrame)
+	// DevNote pushes the current host-editable broadcast note to every client
+	// (empty string clears it). Sent once per game.
+	DevNote(note string)
 	PlayerCount() int
 }
 
@@ -159,18 +167,35 @@ type Engine struct {
 	rngMu sync.Mutex
 	rng   *rand.Rand
 
-	mu    sync.RWMutex // guards phase/round (read by Snapshot)
-	phase Phase
-	round int
+	mu      sync.RWMutex // guards phase/round/devNote (read by Snapshot)
+	phase   Phase
+	round   int
+	devNote string // current broadcast note, refreshed once per game
+
+	// badClicks counts non-scoring ("idle") clicks per SteamID accumulated since the
+	// last arm, across EVERY phase — arming, the live window, result display, game
+	// over and intermission. Touched only from the Run goroutine (pending/race/drain),
+	// so it needs no lock. It is read and reset at each arm to delay that connection's
+	// armed frame (the spam deterrent); see idlePenalty.
+	badClicks map[string]int
 
 	// gameEndHook, if set, runs after each game_over (post session-win write);
 	// used to refresh the leaderboard cache once per "session". Optional.
 	gameEndHook func(context.Context)
+
+	// devNoteFn, if set, supplies the host-editable broadcast note; it is called
+	// once at the start of each game (so config edits apply on the next game).
+	// Optional — nil means no note is ever sent. Call SetDevNoteFn before Run.
+	devNoteFn func() string
 }
 
 // SetGameEndHook registers a callback run after every game_over, once the
 // session win has been persisted. Call before Run; nil clears it.
 func (e *Engine) SetGameEndHook(fn func(context.Context)) { e.gameEndHook = fn }
+
+// SetDevNoteFn registers the source of the per-game dev note. Call before Run;
+// nil clears it.
+func (e *Engine) SetDevNoteFn(fn func() string) { e.devNoteFn = fn }
 
 // New builds an Engine. store may be nil (scoring still works, just not
 // persisted). log may be nil (falls back to a no-op logger).
@@ -183,9 +208,10 @@ func New(cfg Config, bc Broadcaster, store Store, log *zap.Logger) *Engine {
 		bc:     bc,
 		store:  store,
 		log:    log,
-		clicks: make(chan ClickEvent, 4096),
-		rng:    rand.New(rand.NewSource(seedFromCrypto())),
-		phase:  PhaseIntermission,
+		clicks:    make(chan ClickEvent, 4096),
+		rng:       rand.New(rand.NewSource(seedFromCrypto())),
+		phase:     PhaseIntermission,
+		badClicks: map[string]int{},
 	}
 }
 
@@ -209,11 +235,18 @@ type Snapshot struct {
 	Clicks    int
 	ArmMinSec int // arming-window bounds (the per-round delay itself stays secret)
 	ArmMaxSec int
+	// Bad-click penalty escalation, sent on connect so the client mirrors the live
+	// throttle estimate without hardcoding the formula (see idlePenalty).
+	PenaltyBaseMs int
+	PenaltyStepMs int
+	// DevNote is the current host-editable broadcast note (empty = none); carried
+	// in hello so a mid-game joiner sees it without waiting for the next game.
+	DevNote string
 }
 
 func (e *Engine) Snapshot() Snapshot {
 	e.mu.RLock()
-	phase, round := e.phase, e.round
+	phase, round, devNote := e.phase, e.round, e.devNote
 	e.mu.RUnlock()
 	players := 0
 	if e.bc != nil {
@@ -223,6 +256,8 @@ func (e *Engine) Snapshot() Snapshot {
 		Phase: phase, Round: round, Of: e.cfg.RoundsPerGame,
 		Players: players, Clicks: e.clicksFor(players),
 		ArmMinSec: int(e.cfg.ArmMin / time.Second), ArmMaxSec: int(e.cfg.ArmMax / time.Second),
+		PenaltyBaseMs: e.cfg.PenaltyBaseMs, PenaltyStepMs: e.cfg.PenaltyStepMs,
+		DevNote: devNote,
 	}
 }
 
@@ -246,6 +281,12 @@ func (e *Engine) setPhase(p Phase, round int) {
 	e.mu.Unlock()
 }
 
+func (e *Engine) setDevNote(note string) {
+	e.mu.Lock()
+	e.devNote = note
+	e.mu.Unlock()
+}
+
 // Run drives games until ctx is cancelled. Blocks; call in its own goroutine.
 func (e *Engine) Run(ctx context.Context) {
 	for ctx.Err() == nil {
@@ -264,15 +305,32 @@ func (e *Engine) playGame(ctx context.Context) {
 	info := map[string]playerInfo{} // latest display info by SteamID
 	x := e.cfg.RoundsPerGame
 
+	// Refresh the host-editable broadcast note once per game and push it to every
+	// client (empty clears it on the client — "shows until an empty note is sent").
+	note := ""
+	if e.devNoteFn != nil {
+		note = e.devNoteFn()
+	}
+	e.setDevNote(note)
+	e.bc.DevNote(note)
+
+	// The final round's points + round id, carried into game_over (the last round
+	// has no separate round_result — see race/final).
+	var finalDeltas map[string]int
+	var finalRoundID string
 	for round := 1; round <= x && ctx.Err() == nil; round++ {
 		// Size the round to the crowd at arm time: N scales with connected players.
 		players := e.bc.PlayerCount()
 		n := e.clicksFor(players)
-		penalties := e.pending(ctx, round, x, players, n, info)
+		e.pending(ctx, round, x, players, n, info)
 		if ctx.Err() != nil {
 			return
 		}
-		e.race(ctx, round, x, players, n, penalties, scores, info)
+		final := round == x
+		deltas, roundID := e.race(ctx, round, x, players, n, scores, info, final)
+		if final {
+			finalDeltas, finalRoundID = deltas, roundID
+		}
 	}
 	if ctx.Err() != nil {
 		return
@@ -290,6 +348,8 @@ func (e *Engine) playGame(ctx context.Context) {
 		GameID:     gameID,
 		Placements: placements,
 		Won:        won,
+		Deltas:     finalDeltas,
+		RoundID:    finalRoundID,
 	})
 
 	// Post-game work runs off the hot path (we're entering intermission) in one
@@ -316,36 +376,45 @@ func (e *Engine) afterGame(final []Standing) {
 }
 
 // pending is the IDLE/arming phase: announce the round, then wait the secret
-// delay. Clicks during this phase score nothing but accrue a per-connection arm
-// delay (the spam deterrent), returned keyed by SteamID for the hub to apply.
-func (e *Engine) pending(ctx context.Context, round, of, players, n int, info map[string]playerInfo) map[string]time.Duration {
+// delay. Idle clicks during it score nothing but accrue this connection's
+// cross-phase bad-click tally (e.badClicks), applied as an arm-delay penalty at
+// the next arm.
+func (e *Engine) pending(ctx context.Context, round, of, players, n int, info map[string]playerInfo) {
 	e.setPhase(PhasePending, round)
 	e.bc.Pending(PendingFrame{Round: round, Of: of, Players: players, Clicks: n})
 
-	penalties := map[string]time.Duration{}
-	counts := map[string]int{} // idle clicks this round, per connection
 	timer := time.NewTimer(e.randArmDelay())
 	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return penalties
+			return
 		case ev := <-e.clicks:
 			recordInfo(info, ev)
-			counts[ev.SteamID]++
-			penalties[ev.SteamID] = idlePenalty(counts[ev.SteamID])
+			e.recordBad(ev)
 		case <-timer.C:
-			return penalties
+			return
 		}
 	}
 }
 
 // race is the ARMED phase: arm with a fresh nonce, accept the first N valid
-// clicks (by arrival), then publish the result. Closes the instant click N lands.
-func (e *Engine) race(ctx context.Context, round, of, players, n int, penalties map[string]time.Duration, scores map[string]int, info map[string]playerInfo) {
+// clicks (by arrival), then score them. Closes the instant click N lands. It
+// returns the round's per-SteamID points deltas and its round id.
+//
+// On a non-final round it then publishes round_result and pauses for the result
+// display. On the FINAL round (final==true) it scores and returns but publishes
+// nothing — playGame folds straight into game_over (which carries the returned
+// deltas/roundID), so the last round shows the final standings once instead of a
+// redundant ROUND OVER → GAME OVER pair.
+func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, final bool) (map[string]int, string) {
 	nonce := newNonce()
+	penalties := e.penaltiesFrom(e.badClicks)
 	e.setPhase(PhaseArmed, round)
 	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: nonce, Players: players, Clicks: n, Penalties: penalties})
+	// Each arm forgives the bad clicks accrued since the previous arm: the penalty
+	// above already reflects them, and the tally now restarts for the next arm.
+	e.badClicks = map[string]int{}
 
 	rs := newRaceState(nonce, n)
 	timer := time.NewTimer(e.cfg.RaceMax)
@@ -355,16 +424,16 @@ raceLoop:
 	for !rs.full() {
 		select {
 		case <-ctx.Done():
-			return
+			return nil, ""
 		case ev := <-e.clicks:
 			recordInfo(info, ev)
-			rs.offer(ev)
+			if !rs.offer(ev) {
+				e.recordBad(ev) // an idle click during the live window still penalises
+			}
 		case <-timer.C:
 			break raceLoop // safety: fewer than N clicks arrived
 		}
 	}
-
-	e.setPhase(PhaseResult, round)
 
 	deltas := map[string]int{}
 	for _, ev := range rs.scored {
@@ -374,6 +443,15 @@ raceLoop:
 	if len(deltas) > 0 && e.store != nil {
 		e.persist(deltas)
 	}
+	roundID := newID()
+
+	// Final round: no separate round_result or result-display pause — playGame
+	// emits game_over next, carrying these deltas/roundID.
+	if final {
+		return deltas, roundID
+	}
+
+	e.setPhase(PhaseResult, round)
 
 	// One entry per scoring player in first-arrival order; a masher who took
 	// several slots still shows once, with their cumulative game points.
@@ -392,11 +470,12 @@ raceLoop:
 		Of:        of,
 		Winners:   winners,
 		Standings: topK(standingsOf(scores, info), e.cfg.BoardSize),
-		RoundID:   newID(),
+		RoundID:   roundID,
 		Deltas:    deltas,
 	})
 
 	e.drain(ctx, e.cfg.ResultDisplay)
+	return deltas, roundID
 }
 
 // persist writes the round's points to the hourly board off the hot path, so DB
@@ -429,7 +508,8 @@ func (e *Engine) drain(ctx context.Context, d time.Duration) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-e.clicks:
+		case ev := <-e.clicks:
+			e.recordBad(ev) // result/intermission/game-over clicks still accrue toward the next arm
 		case <-timer.C:
 			return
 		}
@@ -482,17 +562,38 @@ func (rs *raceState) offer(ev ClickEvent) bool {
 	return true
 }
 
-// idlePenaltyStep is the base escalation unit: the Nth idle click in a round adds
-// N×step, so the running penalty after n clicks is step × n(n+1)/2 — the
-// 5,15,30,50,75,105… pattern. Fixed (not env-configurable) by design.
-const idlePenaltyStep = 5 * time.Millisecond
-
-// idlePenalty is the accumulated arm-delay penalty after n idle clicks this round.
-func idlePenalty(n int) time.Duration {
+// idlePenalty is the accumulated arm-delay penalty after n bad clicks accrued
+// since the last arm: sum_{k=1..n}(base + step·(k−1)) = base·n + step·n(n−1)/2,
+// where base/step are the configured PenaltyBaseMs/PenaltyStepMs (default
+// 500/100 → totals 500,1100,1800,2600… ms).
+func (e *Engine) idlePenalty(n int) time.Duration {
 	if n <= 0 {
 		return 0
 	}
-	return idlePenaltyStep * time.Duration(n*(n+1)/2)
+	ms := e.cfg.PenaltyBaseMs*n + e.cfg.PenaltyStepMs*n*(n-1)/2
+	return time.Duration(ms) * time.Millisecond
+}
+
+// penaltiesFrom turns the accrued bad-click tally into per-connection arm-delay
+// penalties for the hub to hold back. nil when nobody's earned one (the common case).
+func (e *Engine) penaltiesFrom(bad map[string]int) map[string]time.Duration {
+	if len(bad) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Duration, len(bad))
+	for sid, n := range bad {
+		out[sid] = e.idlePenalty(n)
+	}
+	return out
+}
+
+// recordBad bumps a connection's cross-phase bad-click tally for an idle (zero-
+// nonce) click — one that can never score in any phase. Non-zero-nonce clicks are
+// race attempts (handled by the race), never penalised even when they lose.
+func (e *Engine) recordBad(ev ClickEvent) {
+	if ev.Nonce == 0 {
+		e.badClicks[ev.SteamID]++
+	}
 }
 
 func recordInfo(info map[string]playerInfo, ev ClickEvent) {

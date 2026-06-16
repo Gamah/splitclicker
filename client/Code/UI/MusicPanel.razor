@@ -1,0 +1,469 @@
+@using System
+@using System.Collections.Generic
+@using System.Linq
+@using Sandbox
+@using Sandbox.UI
+@using Splitclicker.Audio
+@using Skafinity
+@namespace Splitclicker.UI
+
+@*
+	The music panel — the full procedural-music settings board, ported from rotaliate's
+	MusicScreen and adapted to splitclicker: it's a child Panel (not a wall-mounted
+	PanelComponent), opened/closed by the HUD's MUSIC button rather than by engaging a
+	station, with rotaliate's admin-DJ follow + world-settings rows replaced by a native
+	mute toggle and volume strip. Lives as a child of the single HUD root (a PanelComponent
+	can't be nested, but a Panel can — see ../sbox-docs/docs/ui/razor-panels).
+
+	Each player's tag seeds an infinite sequence of songs; songs fade in, play a couple of
+	loops, and crossfade into the next pre-generated one. n auto-advances and persists. The
+	"vibe" encodes the important generator knobs into a short string, so the full shareable
+	seed is "vibe:tag:n".
+
+	The vibe editor is driven entirely from the Skafinity library's VibeCodec field metadata
+	for the current genre: each field reports its voice (matrix row, or null for a GLOBAL knob)
+	and column (0 volume / 1 tone / 2 character / 3 extra). A new genre — or a new knob — is a
+	pure library change; there is no field table here. s&box has no slider widget, so each knob
+	is a strip of tick cells (one per base-36 level the seed encodes); each change re-encodes +
+	restarts on a debounce.
+*@
+
+<root class="@( IsOpen ? "open" : "" )">
+	@if ( IsOpen )
+	{
+	@{ var cfg = Mc?.EffectiveConfig(); int genre = cfg?.Genre ?? 0; }
+	<div class="music">
+		<div class="header">
+			<div class="title">MUSIC</div>
+			<div class="close" onclick="@Close">✕</div>
+		</div>
+		<div class="divider"></div>
+
+		<div class="top">
+			<div class="row">
+				<div class="label">NOW PLAYING</div>
+				<div class="play-row">
+					<div class="seed-box">@Seed()</div>
+					<div class="btn" onclick="@CopySeed">@_copyLabel</div>
+				</div>
+			</div>
+
+			<div class="row">
+				<div class="label">SONG</div>
+				<div class="play-row">
+					<div class="btn wide" onclick="@( () => Step( -1 ) )">◀ Prev</div>
+					<div class="num">@( Mc?.N ?? 0 )</div>
+					<div class="btn wide" onclick="@( () => Step( 1 ) )">Next ▶</div>
+				</div>
+			</div>
+
+			<div class="row">
+				<div class="label">PLAY A SEED</div>
+				<div class="play-row">
+					<TextEntry @ref="_tagEntry" placeholder="Paste vibe:tag:n (or a tag — blank = yours)" class="tag-input" />
+					<div class="btn" onclick="@Play">Play</div>
+					<div class="btn" onclick="@UseMine">Use mine</div>
+				</div>
+			</div>
+
+			<div class="row">
+				<div class="label">MUTE</div>
+				<div class="play-row">
+					<div class="btn toggle @( Mc?.Muted == true ? "on" : "" )" onclick="@ToggleMute">@( Mc?.Muted == true ? "MUTED" : "PLAYING" )</div>
+				</div>
+			</div>
+
+			<div class="row">
+				<div class="label">VOLUME</div>
+				<div class="cells">
+					@foreach ( var v in VolumeSteps )
+					{
+						var vv = v;
+						<div class="cell @( ( Mc?.Volume ?? 1f ) >= vv - 0.001f ? "filled" : "" )"
+							 onclick="@( () => SetVolume( vv ) )">@VolLabel( vv )</div>
+					}
+				</div>
+			</div>
+		</div>
+
+		<div class="divider"></div>
+
+		<div class="row genre-row">
+			<div class="label">GENRE</div>
+			<div class="cells">
+				@for ( int g = 0; g < VibeCodec.GenreCount; g++ )
+				{
+					var gg = g;
+					<div class="cell choice @( g == genre ? "selected" : "" )"
+						 onclick="@( () => SetGenre( gg ) )">@VibeCodec.Genres[g]</div>
+				}
+				<div class="btn reroll" onclick="@Reroll">🎲 Reroll</div>
+				<div class="btn reroll toggle @( Mc?.RandomEverySong == true ? "on" : "" )"
+					 onclick="@ToggleRandomEverySong">🎲 Random every song: @( Mc?.RandomEverySong == true ? "ON" : "OFF" )</div>
+				<div class="btn" onclick="@Save">Save .wav</div>
+			</div>
+		</div>
+
+		<div class="label">VIBE — per-instrument mixer (tweak, then share the seed)</div>
+		<div class="matrix">
+			<div class="mrow mhead">
+				<div class="mvoice"></div>
+				@foreach ( var h in ColHeaders )
+				{
+					<div class="mcell mlabel">@h</div>
+				}
+			</div>
+			@foreach ( var (voice, cells) in InstrumentRows( genre ) )
+			{
+				<div class="mrow">
+					<div class="mvoice">@voice</div>
+					@for ( int col = 0; col < ColHeaders.Length; col++ )
+					{
+						var f = cells[col];
+						<div class="mcell">
+							@if ( f != null )
+							{
+								@Knob( f, cfg, f.Name == ColHeaders[col] ? "" : f.Name )
+							}
+						</div>
+					}
+				</div>
+			}
+		</div>
+
+		<div class="divider"></div>
+		<div class="label">GLOBAL</div>
+		<div class="vibe-grid">
+			@foreach ( var f in GlobalRows( genre ) )
+			{
+				<div class="vibe">@Knob( f, cfg, f.Name )</div>
+			}
+		</div>
+
+		@if ( _msg != null )
+		{
+			<div class="hint ok">@_msg</div>
+		}
+	</div>
+	}
+</root>
+
+<style>
+	/* Overlay anchored to the parent .center box (the same box that centres the game
+	   button), flex-centring the modal inside it. pointer-events:none so a closed panel
+	   never blocks anything; only the modal itself takes pointer events. */
+	root {
+		position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+		justify-content: center; align-items: center;
+		pointer-events: none;
+	}
+
+	/* The modal itself — flex-centred by the root. It sizes to its own content (no height
+	   cap, no overflow), so the box is always exactly as tall as the knobs it holds and
+	   there is never a scroll range to drag-pan. The content is compact enough to fit the
+	   screen at the 1080-tall reference; if it ever grew past the viewport it would extend
+	   past the box rather than scroll, so keep it lean. */
+	.music {
+		flex-shrink: 0;
+		width: 96%; max-width: 1320px;
+		flex-direction: column;
+		align-items: stretch;
+		padding: 14px 32px;
+		background-color: #07051a;
+		border: 1.5px solid rgba(255,255,255,0.12);
+		border-radius: 16px;
+		gap: 6px;
+		pointer-events: all;
+	}
+
+	.music > div { flex-shrink: 0; }
+
+	.header { flex-direction: row; align-items: center; justify-content: space-between; }
+
+	.title {
+		justify-content: center; white-space: nowrap;
+		font-size: 26px; font-weight: bold; letter-spacing: 6px; color: white;
+	}
+
+	.close {
+		width: 34px; height: 34px; justify-content: center; align-items: center;
+		font-size: 20px; font-weight: bold; color: rgba(255,255,255,0.6);
+		background-color: rgba(255,255,255,0.08); border-radius: 8px;
+		cursor: pointer; pointer-events: all;
+	}
+	.close:hover { color: #ffffff; background-color: rgba(255,255,255,0.2); }
+
+	.divider { height: 2px; background-color: rgba(255,255,255,0.1); margin: 0; }
+
+	.top { flex-direction: row; flex-wrap: wrap; gap: 6px 32px; }
+	.top > .row { width: 46%; }
+
+	.row { flex-direction: column; gap: 3px; }
+	.genre-row .cells { gap: 6px; }
+
+	.label {
+		font-size: 14px; letter-spacing: 2px;
+		color: rgba(255,255,255,0.45); white-space: nowrap;
+	}
+
+	.play-row { flex-direction: row; align-items: center; gap: 8px; }
+
+	.seed-box, .num {
+		justify-content: center; align-items: center; height: 32px; padding: 0 14px;
+		font-size: 15px; letter-spacing: 1px; color: white;
+		background-color: rgba(255,255,255,0.07); border-radius: 6px;
+	}
+	.num { min-width: 60px; font-weight: bold; }
+
+	.tag-input {
+		width: 360px; height: 32px; padding: 0 12px; font-size: 15px; color: white;
+		background-color: rgba(255,255,255,0.07);
+		border: 2px solid rgba(255,255,255,0.15); border-radius: 6px; pointer-events: all;
+	}
+
+	.cells { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 4px; }
+
+	.btn {
+		justify-content: center; align-items: center; height: 32px; padding: 0 16px;
+		font-size: 14px; color: rgba(255,255,255,0.85);
+		/* dark blue, deeper than the panel's #07051a background (not a gray overlay) */
+		background-color: #03021a;
+		border: 2px solid transparent; border-radius: 6px; cursor: pointer; pointer-events: all;
+	}
+	.btn.wide { min-width: 96px; }
+	.btn.reroll { height: 28px; padding: 0 12px; font-size: 13px; margin-left: 12px; }
+	.btn:hover { background-color: #0a1052; border: 2px solid rgba(120,150,255,0.6); }
+	.btn.toggle.on { background-color: rgba(88,232,122,0.25); border: 2px solid rgba(88,232,122,0.7); color: #d6ffe2; }
+
+	.cell {
+		justify-content: center; align-items: center; height: 19px;
+		font-size: 13px; color: rgba(255,255,255,0.8);
+		/* same dark blue as the buttons, deeper than the panel background */
+		background-color: #03021a;
+		border: 2px solid transparent; border-radius: 5px; cursor: pointer; pointer-events: all;
+	}
+	.cell:hover { background-color: #0a1052; border: 2px solid rgba(120,150,255,0.6); }
+	.cell.choice { padding: 0 10px; height: 28px; }
+	.cell.tick { width: 11px; }
+	/* filled ticks/cells read as a brighter blue against the dark blue base */
+	.cell.tick.filled { background-color: #2a3aa8; }
+	.cell.filled { background-color: #2a3aa8; }
+	.cell.selected { border: 2px solid rgba(255,255,255,0.85); }
+
+	/* GLOBAL knobs: four compact columns. */
+	.vibe-grid { flex-direction: row; flex-wrap: wrap; gap: 6px 16px; }
+	.vibe { width: 22%; flex-direction: column; gap: 2px; }
+	.vibe-head { flex-direction: row; justify-content: flex-start; align-items: center; gap: 6px; }
+	.vibe-name { font-size: 12px; letter-spacing: 1px; color: rgba(255,255,255,0.55); white-space: nowrap; }
+	.vibe-val { font-size: 12px; color: white; white-space: nowrap; }
+
+	/* instrument mixer matrix: rows = voices, Volume leftmost */
+	.matrix { flex-direction: column; gap: 3px; }
+	.mrow { flex-direction: row; align-items: flex-start; gap: 12px; }
+	.mvoice { width: 76px; flex-shrink: 0; align-items: flex-start; justify-content: flex-start;
+		font-size: 13px; font-weight: bold; letter-spacing: 1px; color: white; }
+	.mhead .mlabel { font-size: 11px; letter-spacing: 2px; color: rgba(255,255,255,0.4); }
+	.mcell { width: 0; flex-grow: 1; flex-direction: column; gap: 3px; }
+
+	.hint { font-size: 14px; letter-spacing: 1px; color: rgba(255,255,255,0.4); white-space: nowrap; }
+	.hint.ok { color: #58e87a; }
+</style>
+
+@code
+{
+	// One tick cell per base-36 level the seed encodes (VibeCodec.Levels).
+	static int UiTicks => VibeCodec.Levels;
+	static readonly string[] ColHeaders = { "VOLUME", "TONE", "CHARACTER", "EXTRA" };
+
+	// Volume control steps (0..1.5, matching PlayerData.MusicVolume's range).
+	static readonly float[] VolumeSteps = { 0f, 0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f };
+
+	/// <summary>Whether the panel is showing. Toggled by the HUD's MUSIC button.</summary>
+	public bool IsOpen { get; private set; }
+
+	TextEntry _tagEntry;
+	bool _tagInit;
+	string _copyLabel = "Copy";
+	string _msg;
+
+	MusicController Mc => MusicController.Instance;
+
+	string Seed() => Mc?.CurrentSeed ?? "—";
+
+	/// <summary>Open/close the panel (HUD MUSIC button). The connection stays open; the HUD
+	/// just stops drawing the game button + status while we're up (Hud's @if(!MusicOpen)).</summary>
+	public void Toggle()
+	{
+		IsOpen = !IsOpen;
+		if ( !IsOpen ) _tagInit = false;
+		StateHasChanged();
+	}
+
+	void Close()
+	{
+		IsOpen = false;
+		_tagInit = false;
+		StateHasChanged();
+	}
+
+	static string VolLabel( float v ) => v <= 0f ? "0" : $"{(int)Math.Round( v * 100 )}%";
+
+	// Instrument rows for the genre: each voice with its [vol, tone, character, extra] cells
+	// (null where a genre leaves a column empty). Order = the library's display/wire order.
+	static IEnumerable<(string Voice, VibeCodec.Field[] Cells)> InstrumentRows( int genre )
+	{
+		var order = new List<string>();
+		var byVoice = new Dictionary<string, VibeCodec.Field[]>();
+		foreach ( var f in VibeCodec.Fields( genre ) )
+		{
+			if ( f.Voice == null ) continue;
+			if ( !byVoice.TryGetValue( f.Voice, out var cells ) )
+			{
+				cells = new VibeCodec.Field[ColHeaders.Length];
+				byVoice[f.Voice] = cells;
+				order.Add( f.Voice );
+			}
+			if ( f.Column >= 0 && f.Column < cells.Length ) cells[f.Column] = f;
+		}
+		foreach ( var v in order ) yield return (v, byVoice[v]);
+	}
+
+	static IEnumerable<VibeCodec.Field> GlobalRows( int genre ) =>
+		VibeCodec.Fields( genre ).Where( f => f.Voice == null );
+
+	// Index of a field within the current genre's field list (what Mc.SetVibe expects).
+	static int FieldIndex( int genre, VibeCodec.Field field )
+	{
+		var fields = VibeCodec.Fields( genre );
+		for ( int i = 0; i < fields.Count; i++ )
+			if ( ReferenceEquals( fields[i], field ) ) return i;
+		return -1;
+	}
+
+	// One knob: a name/value header over a strip of tick cells (or labeled choice cells).
+	RenderFragment Knob( VibeCodec.Field f, MusicGen.Config cfg, string label )
+	{
+		return @<text>
+		<div class="vibe-head">
+			<div class="vibe-name">@label</div>
+			<div class="vibe-val">@( cfg != null ? f.Display( cfg ) : "" )</div>
+		</div>
+		<div class="cells">
+			@{
+				int genre = cfg?.Genre ?? 0;
+				int idx = FieldIndex( genre, f );
+			}
+			@if ( f.Choices != null )
+			{
+				int sel = cfg != null ? (int)MathF.Round( f.GetNorm( cfg ) * (f.Choices.Length - 1) ) : 0;
+				@for ( int k = 0; k < f.Choices.Length; k++ )
+				{
+					var kk = k; var n = f.Choices.Length;
+					<div class="cell choice @( k == sel ? "selected" : "" )"
+						 onclick="@( () => SetVibe( idx, kk / (float)(n - 1) ) )">@f.Choices[k]</div>
+				}
+			}
+			else
+			{
+				int sel = cfg != null ? (int)MathF.Round( f.GetNorm( cfg ) * (UiTicks - 1) ) : 0;
+				@for ( int k = 0; k < UiTicks; k++ )
+				{
+					var kk = k;
+					<div class="cell tick @( k <= sel ? "filled" : "" ) @( k == sel ? "selected" : "" )"
+						 onclick="@( () => SetVibe( idx, kk / (float)(UiTicks - 1) ) )"></div>
+				}
+			}
+		</div>
+	</text>;
+	}
+
+	public override void Tick()
+	{
+		if ( !IsOpen ) { _tagInit = false; return; }
+		if ( !_tagInit && _tagEntry != null ) { _tagEntry.Text = Mc?.TagField ?? ""; _tagInit = true; }
+	}
+
+	void Step( int d )
+	{
+		Mc?.StepN( d );
+		_msg = null;
+		StateHasChanged();
+	}
+
+	void ToggleMute()
+	{
+		Mc?.ToggleMute();
+		StateHasChanged();
+	}
+
+	void SetVolume( float v )
+	{
+		Mc?.SetVolume( v );
+		StateHasChanged();
+	}
+
+	void SetVibe( int index, float norm )
+	{
+		if ( index < 0 ) return;
+		Mc?.SetVibe( index, norm );
+		_msg = null;
+		StateHasChanged();
+	}
+
+	void SetGenre( int genre )
+	{
+		Mc?.SetGenre( genre );
+		_msg = null;
+		StateHasChanged();
+	}
+
+	void Play()
+	{
+		Mc?.PlaySeed( _tagEntry?.Text );
+		_msg = Mc != null ? $"Playing {Mc.CurrentSeed}" : null;
+		StateHasChanged();
+	}
+
+	void UseMine()
+	{
+		Mc?.UseOwn();
+		if ( _tagEntry != null ) _tagEntry.Text = "";
+		_msg = "Back to your own tag and vibe";
+		StateHasChanged();
+	}
+
+	void CopySeed()
+	{
+		try { Clipboard.SetText( Seed() ); _copyLabel = "Copied!"; }
+		catch { _copyLabel = "—"; }
+		StateHasChanged();
+	}
+
+	void Save()
+	{
+		var name = Mc?.SaveCurrentToFile();
+		_msg = string.IsNullOrEmpty( name ) ? "Couldn't save song" : $"Saved {name} to your s&box data folder";
+		StateHasChanged();
+	}
+
+	void Reroll()
+	{
+		Mc?.RerollVibe();
+		_msg = "Rerolled every knob but the volumes";
+		StateHasChanged();
+	}
+
+	void ToggleRandomEverySong()
+	{
+		if ( Mc == null ) return;
+		bool on = !Mc.RandomEverySong;
+		Mc.SetRandomEverySong( on );
+		_msg = on ? "Shuffle: every new song randomizes every knob" : "Shuffle off";
+		StateHasChanged();
+	}
+
+	protected override int BuildHash() =>
+		HashCode.Combine(
+			IsOpen, Mc?.CurrentSeed, Mc?.CurrentVibe, Mc?.Muted ?? false, Mc?.Volume ?? 1f,
+			Mc?.RandomEverySong ?? false, _msg, _copyLabel );
+}

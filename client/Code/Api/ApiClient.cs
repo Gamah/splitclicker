@@ -16,13 +16,25 @@ public static class ApiClient
 	/// <summary>Backend root. Mutable so a dev build can point at localhost.</summary>
 	public static string BaseUrl { get; set; } = ProdUrl;
 
+	/// <summary>API version segment used in every REST path and the WS path
+	/// (/api/{ver}/… and /ws/{ver}). "v2" is the current build; set it to "v1" to
+	/// exercise the legacy/troll path the new server gives outdated clients. An
+	/// EMPTY string means no segment at all — raw /api/… and /ws — for talking to a
+	/// legacy/unversioned backend (e.g. the live old master, whose socket is bare
+	/// /ws). Mutable so the scene's ClickController can override it for testing.</summary>
+	public static string ApiVersion { get; set; } = "v2";
+
+	/// <summary>The version path segment, e.g. "/v2", or "" when <see cref="ApiVersion"/>
+	/// is blank (raw, unversioned paths). Inserted into both REST and WS URLs.</summary>
+	static string VerSeg => string.IsNullOrWhiteSpace( ApiVersion ) ? "" : "/" + ApiVersion.Trim().Trim( '/' );
+
 	/// <summary>WebSocket URL for the given ticket, derived from BaseUrl
 	/// (https→wss, http→ws). The ticket is the only thing on the URL.</summary>
 	public static string WsUrl( string ticket )
 	{
 		var scheme = BaseUrl.StartsWith( "https" ) ? "wss" : "ws";
 		var host = BaseUrl.Substring( BaseUrl.IndexOf( "://" ) + 3 );
-		return $"{scheme}://{host}/ws?ticket={Uri.EscapeDataString( ticket )}";
+		return $"{scheme}://{host}/ws{VerSeg}?ticket={Uri.EscapeDataString( ticket )}";
 	}
 
 	static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
@@ -76,7 +88,7 @@ public static class ApiClient
 
 		try
 		{
-			var resp = await Http.RequestAsync( BaseUrl + "/api/v1/auth", "POST", Http.CreateJsonContent( body ) );
+			var resp = await Http.RequestAsync( BaseUrl + $"/api{VerSeg}/auth", "POST", Http.CreateJsonContent( body ) );
 			if ( !resp.IsSuccessStatusCode )
 			{
 				Log.Warning( $"[Splitclicker] auth failed: HTTP {(int)resp.StatusCode}" );
@@ -106,7 +118,7 @@ public static class ApiClient
 	{
 		try
 		{
-			var resp = await Http.RequestAsync( BaseUrl + "/api/v1/config", "GET", null );
+			var resp = await Http.RequestAsync( BaseUrl + $"/api{VerSeg}/config", "GET", null );
 			if ( !resp.IsSuccessStatusCode ) return null;
 			return JsonSerializer.Deserialize<ConfigResponse>( await resp.Content.ReadAsStringAsync(), JsonOpts );
 		}
@@ -135,7 +147,7 @@ public static class ApiClient
 	{
 		try
 		{
-			var resp = await Http.RequestAsync( BaseUrl + $"/api/v1/leaderboard/{board}?limit={limit}", "GET", null );
+			var resp = await Http.RequestAsync( BaseUrl + $"/api{VerSeg}/leaderboard/{board}?limit={limit}", "GET", null );
 			if ( !resp.IsSuccessStatusCode ) return new List<Standing>();
 			return JsonSerializer.Deserialize<List<Standing>>( await resp.Content.ReadAsStringAsync(), JsonOpts )
 				?? new List<Standing>();

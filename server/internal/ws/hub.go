@@ -66,6 +66,12 @@ type Client struct {
 	Tag      string
 	Username string
 
+	// Legacy marks a connection from an OUTDATED client build. It still rides the
+	// normal broadcast loop (so its UI behaves), but the hub ignores its clicks,
+	// leaves it out of the live player count, and swaps its leaderboards for the
+	// "UPDATE UPDATE / 67" troll board nudging a restart. See wsConnectLegacy.
+	Legacy bool
+
 	smu        sync.Mutex // guards sendClosed + the send channel
 	sendClosed bool
 }
@@ -126,7 +132,12 @@ func (h *Hub) clientList() []*Client {
 // game.Broadcaster so the engine can size each round's N to the crowd.
 func (h *Hub) PlayerCount() int {
 	h.mu.RLock()
-	n := len(h.clients)
+	n := 0
+	for c := range h.clients {
+		if !c.Legacy { // outdated clients don't count toward the live crowd
+			n++
+		}
+	}
 	h.mu.RUnlock()
 	return n
 }
@@ -159,31 +170,61 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 	}
 }
 
-func (h *Hub) Result(r game.ResultFrame) {
+// DevNote fans out the host-editable broadcast note to every client (empty
+// clears it). Legacy clients receive it too — it's just a status line.
+func (h *Hub) DevNote(note string) {
+	msg := mustJSON(devNoteWire{T: "dev_note", Note: note})
 	for _, c := range h.clientList() {
+		c.trySend(msg)
+	}
+}
+
+func (h *Hub) Result(r game.ResultFrame) {
+	troll := LegacyBoard()
+	for _, c := range h.clientList() {
+		winners, standings, delta := r.Winners, r.Standings, r.Deltas[c.SteamID]
+		if c.Legacy { // outdated client: feed it the troll board, never a real delta
+			winners, standings, delta = troll, troll, 0
+		}
 		c.trySend(mustJSON(resultWire{
 			T:         "round_result",
 			Round:     r.Round,
 			Of:        r.Of,
-			Winners:   r.Winners,
-			Standings: r.Standings,
-			You:       youResult{PointsDelta: r.Deltas[c.SteamID], RoundID: r.RoundID},
+			Winners:   winners,
+			Standings: standings,
+			You:       youResult{PointsDelta: delta, RoundID: r.RoundID},
 		}))
 	}
 }
 
 func (h *Hub) GameOver(g game.GameOverFrame) {
+	troll := LegacyBoard()
 	for _, c := range h.clientList() {
-		c.trySend(mustJSON(gameOverWire{
-			T:         "game_over",
-			Standings: g.Standings,
-			You: youGameOver{
-				Placement: g.Placements[c.SteamID],
-				Won:       g.Won[c.SteamID],
-				GameID:    g.GameID,
-			},
-		}))
+		standings := g.Standings
+		you := youGameOver{
+			Placement:   g.Placements[c.SteamID],
+			Won:         g.Won[c.SteamID],
+			GameID:      g.GameID,
+			PointsDelta: g.Deltas[c.SteamID],
+			RoundID:     g.RoundID,
+		}
+		if c.Legacy { // outdated client: troll board, never placed/won/scored
+			standings, you = troll, youGameOver{}
+		}
+		c.trySend(mustJSON(gameOverWire{T: "game_over", Standings: standings, You: you}))
 	}
+}
+
+// LegacyBoard is the troll leaderboard shown to outdated (v1) clients: 15 rows of
+// "UPDATE UPDATE" / 67, nudging the player to fully restart s&box to pick up the
+// new build. Used both for their round_result/game_over standings (above) and by
+// the v1 HTTP leaderboard endpoints (package api).
+func LegacyBoard() []game.Standing {
+	out := make([]game.Standing, 15)
+	for i := range out {
+		out[i] = game.Standing{Username: "UPDATE UPDATE", Points: 67}
+	}
+	return out
 }
 
 func (h *Hub) hello(c *Client) {
@@ -198,6 +239,8 @@ func (h *Hub) hello(c *Client) {
 			Round: snap.Round, Of: snap.Of, Phase: snap.Phase.String(),
 			Players: snap.Players, Clicks: snap.Clicks,
 			ArmMin: snap.ArmMinSec, ArmMax: snap.ArmMaxSec,
+			PenaltyBase: snap.PenaltyBaseMs, PenaltyStep: snap.PenaltyStepMs,
+			DevNote: snap.DevNote,
 		},
 	}))
 }
@@ -261,6 +304,9 @@ func (c *Client) readPump() {
 		}
 		switch in.T {
 		case "click":
+			if c.Legacy {
+				continue // outdated client: its clicks never reach the game
+			}
 			nonce, _ := strconv.ParseUint(in.Nonce, 16, 64) // bad/empty → 0, scores nothing
 			if c.hub.engine != nil {
 				c.hub.engine.Submit(game.ClickEvent{
