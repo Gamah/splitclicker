@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Sandbox;
 using Splitclicker.Api;
+using Splitclicker.Audio;
 using Splitclicker.Ws;
 
 namespace Splitclicker.Game;
@@ -98,6 +99,12 @@ public sealed class ClickController : Component
 	// phases send nothing.
 	public void SendClick()
 	{
+		// Local audio feedback, independent of socket state and mirroring exactly what the
+		// button shows: the "click" blip only while the race is live (the CLICK! window),
+		// the "throttle" nope in every other state. Plays even while disconnected.
+		if ( CanClick ) SoundPlayer.PlayClick();
+		else SoundPlayer.PlayThrottle();
+
 		if ( _ws == null || !_ws.Connected ) return;
 		if ( Phase == GamePhase.Armed && !string.IsNullOrEmpty( _nonce ) )
 		{
@@ -211,6 +218,7 @@ public sealed class ClickController : Component
 					_idleClicks = 0;
 					Phase = GamePhase.Pending;
 					_nonce = null;
+					SoundPlayer.PlayArming();
 					break;
 
 				case "armed":
@@ -222,6 +230,7 @@ public sealed class ClickController : Component
 					ClicksSent = 0; // fresh CLICK! phase: start the sent tally over
 					_nonce = a.Nonce;
 					Phase = GamePhase.Armed;
+					SoundPlayer.PlayArmed();
 					break;
 
 				case "round_result":
@@ -232,6 +241,7 @@ public sealed class ClickController : Component
 					Standings = r.Standings ?? new();
 					Phase = GamePhase.Result;
 					_nonce = null;
+					SoundPlayer.PlayDisarm();
 					AchievementTracker.OnRoundResult( r.You.PointsDelta, r.You.RoundId );
 					break;
 
@@ -240,6 +250,7 @@ public sealed class ClickController : Component
 					Standings = g.Standings ?? new();
 					Phase = GamePhase.GameOver;
 					_nonce = null;
+					SoundPlayer.PlayDisarm();
 					AchievementTracker.OnGameOver( g.You.Placement, g.You.Won, g.You.GameId );
 					break;
 			}
