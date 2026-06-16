@@ -50,8 +50,11 @@
 		}
 	</div>
 
-	@* ── mute toggle: bottom edge, just right of the session list ── *@
-	<div class="mute-btn @(IsMuted ? "muted" : "")" onclick="@ToggleMute">@MuteLabel()</div>
+	@* ── music button: bottom edge, just right of the session list. Opens the music
+	     panel (genre / vibe knobs / seed sharing / mute + volume), which is a child of
+	     this single root (a PanelComponent can't be nested, but a Panel can). ── *@
+	<div class="music-btn @(MusicOpen ? "open" : "")" onclick="@ToggleMusic">MUSIC</div>
+	<MusicPanel @ref="_music" />
 
 	@* ── the one global button, dead-center, with the status HUD over it ── *@
 	@* StateClass also lands on .center so the HUD text can flip to black on the
@@ -209,8 +212,8 @@
 
 	.board.session { left: 14px; }
 
-	/* mute toggle: bottom edge, just right of the session list's column. */
-	.mute-btn {
+	/* music button: bottom edge, just right of the session list's column. */
+	.music-btn {
 		position: absolute;
 		bottom: 18px;
 		left: 308px; /* 14 (session edge) + 280 (session width) + 14 (gap) */
@@ -229,8 +232,8 @@
 		color: rgba(255, 255, 255, 0.78);
 	}
 
-	.mute-btn:hover { color: #ffffff; border-color: rgba(255, 255, 255, 0.3); }
-	.mute-btn.muted { color: #ffd166; }
+	.music-btn:hover { color: #ffffff; border-color: rgba(255, 255, 255, 0.3); }
+	.music-btn.open { color: #ffd166; border-color: rgba(255, 209, 102, 0.4); }
 	.board.hourly { right: 308px; } /* 14 (edge) + 280 (hours-won) + 14 (gap) */
 	.board.hourswon { right: 14px; }
 	/* sessions-won pins to the free bottom-right corner (top:auto cancels the
@@ -763,11 +766,12 @@
 
 	void OnPress() => ClickController.Instance?.SendClick();
 
-	// ── music mute toggle ──
-	static bool IsMuted => MusicController.Instance?.Muted ?? false;
-	void ToggleMute() => MusicController.Instance?.ToggleMute();
-	// Label states the action a click performs.
-	static string MuteLabel() => IsMuted ? "UNMUTE MUSIC" : "MUTE MUSIC";
+	// ── music panel toggle ──
+	// The panel (mute/volume + genre/vibe knobs + seed sharing) is a child Panel of this
+	// root; the MUSIC button just opens/closes it.
+	MusicPanel _music;
+	bool MusicOpen => _music?.IsOpen ?? false;
+	void ToggleMusic() { _music?.Toggle(); StateHasChanged(); }
 
 	// Button/center state class drives the colour:
 	//   armed  → green (a valid click can score)
@@ -811,7 +815,7 @@
 			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
-		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), IsMuted,
+		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), MusicOpen,
 			_skinUrl, _winnerLockMs, WinnerLockPassed() ),
 		HashCode.Combine( _btnLeftPct, _btnTopPct ) );
 }
