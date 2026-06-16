@@ -412,6 +412,11 @@
 		border: 4px solid rgba(255, 255, 255, 0.14);
 		/* only the press scale transitions; colour is per-state (instant green / keyframed fade). */
 		transition: transform 0.08s ease-out;
+		/* No animation by default. Only .fade adds one (more specific, so it wins). This
+		   matters: the fade holds black via fill-mode:forwards, so when the phase later
+		   leaves .fade we must cancel the animation here or the held black would stick and
+		   the button would never repaint green/red again. */
+		animation-name: none;
 		pointer-events: all;
 		/* the button is always pressable — idle clicks are a real (penalised) input. */
 		cursor: pointer;
