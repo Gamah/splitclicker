@@ -25,6 +25,16 @@ type helloGame struct {
 	// estimate without hardcoding the formula.
 	PenaltyBase int `json:"penalty_base_ms"`
 	PenaltyStep int `json:"penalty_step_ms"`
+	// DevNote is the current host-editable broadcast note (empty = none), so a
+	// mid-game joiner shows it without waiting for the next game's dev_note frame.
+	DevNote string `json:"dev_note"`
+}
+
+// devNoteWire pushes the host-editable broadcast note. An empty note clears it
+// on the client. Sent once per game (and whenever it changes between games).
+type devNoteWire struct {
+	T    string `json:"t"`
+	Note string `json:"note"`
 }
 
 type helloWire struct {

@@ -56,6 +56,12 @@ public sealed class ClickController : Component
 	/// updates live; the armed frame's authoritative value then overwrites it.</summary>
 	public int PenaltyMs { get; private set; }
 
+	/// <summary>Host-editable broadcast note (shown orange under the throttle line);
+	/// empty = none. Set from the dev_note frame (once per game) and the hello
+	/// snapshot, and only ever changed by those — it persists across rounds and
+	/// reconnects until the server sends an empty note.</summary>
+	public string DevNote { get; private set; } = "";
+
 	/// <summary>Click frames actually sent to the API during the current/just-ended
 	/// CLICK! phase. Reset on each arm; shown under the button.</summary>
 	public int ClicksSent { get; private set; }
@@ -225,6 +231,7 @@ public sealed class ClickController : Component
 					// didn't send one) so the local throttle estimate matches the authority.
 					if ( h.Game.PenaltyBaseMs > 0 ) _penaltyBaseMs = h.Game.PenaltyBaseMs;
 					if ( h.Game.PenaltyStepMs > 0 ) _penaltyStepMs = h.Game.PenaltyStepMs;
+					DevNote = h.Game.DevNote ?? "";
 					Phase = PhaseFrom( h.Game.Phase );
 					break;
 
@@ -277,6 +284,11 @@ public sealed class ClickController : Component
 					// credit that round's points here too — same once-per-round-id guard.
 					AchievementTracker.OnRoundResult( g.You.PointsDelta, g.You.RoundId );
 					AchievementTracker.OnGameOver( g.You.Placement, g.You.Won, g.You.GameId );
+					break;
+
+				case "dev_note":
+					var dn = Deser<DevNoteMsg>( json );
+					DevNote = dn.Note ?? "";
 					break;
 			}
 		}

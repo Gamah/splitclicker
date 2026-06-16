@@ -170,6 +170,15 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 	}
 }
 
+// DevNote fans out the host-editable broadcast note to every client (empty
+// clears it). Legacy clients receive it too — it's just a status line.
+func (h *Hub) DevNote(note string) {
+	msg := mustJSON(devNoteWire{T: "dev_note", Note: note})
+	for _, c := range h.clientList() {
+		c.trySend(msg)
+	}
+}
+
 func (h *Hub) Result(r game.ResultFrame) {
 	troll := LegacyBoard()
 	for _, c := range h.clientList() {
@@ -231,6 +240,7 @@ func (h *Hub) hello(c *Client) {
 			Players: snap.Players, Clicks: snap.Clicks,
 			ArmMin: snap.ArmMinSec, ArmMax: snap.ArmMaxSec,
 			PenaltyBase: snap.PenaltyBaseMs, PenaltyStep: snap.PenaltyStepMs,
+			DevNote: snap.DevNote,
 		},
 	}))
 }

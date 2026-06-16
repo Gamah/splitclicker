@@ -48,7 +48,8 @@ public record HelloGame(
 	[property: JsonPropertyName( "arm_min" )] int ArmMin,
 	[property: JsonPropertyName( "arm_max" )] int ArmMax,
 	[property: JsonPropertyName( "penalty_base_ms" )] int PenaltyBaseMs,
-	[property: JsonPropertyName( "penalty_step_ms" )] int PenaltyStepMs
+	[property: JsonPropertyName( "penalty_step_ms" )] int PenaltyStepMs,
+	[property: JsonPropertyName( "dev_note" )] string DevNote
 );
 
 public record HelloMsg(
@@ -102,4 +103,10 @@ public record YouGameOver(
 public record GameOverMsg(
 	[property: JsonPropertyName( "standings" )] List<Standing> Standings,
 	[property: JsonPropertyName( "you" )] YouGameOver You
+);
+
+// note is the host-editable broadcast message (orange line under the throttle);
+// empty clears it. Pushed once per game and carried in hello for mid-game joiners.
+public record DevNoteMsg(
+	[property: JsonPropertyName( "note" )] string Note
 );

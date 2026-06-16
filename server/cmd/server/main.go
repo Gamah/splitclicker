@@ -117,6 +117,8 @@ func main() {
 	hub := ws.NewHub(log)
 	engine := game.New(gameConfig(), hub, st, log)
 	hub.SetEngine(engine)
+	// Re-read the host-editable dev note from config.json once per game.
+	engine.SetDevNoteFn(func() string { return runtimecfg.Load().DevNote })
 	engine.SetGameEndHook(func(ctx context.Context) {
 		if err := cache.Refresh(ctx); err != nil {
 			log.Error("refresh leaderboard cache", zap.Error(err))

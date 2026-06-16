@@ -22,6 +22,10 @@ type File struct {
 	SkinImage      string `json:"skin_image"`
 	WinnerLockTime string `json:"winner_lock_time"`
 
+	// DevNote is a host-editable broadcast message; when non-empty, clients show
+	// it (orange) under the throttle line until it is cleared. Read once per game.
+	DevNote string `json:"dev_note"`
+
 	// Game tunables (applied at startup; a `restart` reloads them). Units are in
 	// the field names. See game.Config for meaning.
 	ArmMinSec       *int `json:"arm_min_sec"`

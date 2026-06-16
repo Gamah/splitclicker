@@ -110,6 +110,13 @@
 				{
 					<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
 				}
+				@* dev note: a host-pushed broadcast message, orange, directly under the
+				   throttle line. Independent of round phase; shows until the server
+				   sends an empty note. *@
+				@if ( c != null && !string.IsNullOrEmpty( c.DevNote ) )
+				{
+					<div class="dev-note">@c.DevNote</div>
+				}
 			</div>
 
 			<div class="clicks-sent">@($"clicks sent: {c?.ClicksSent ?? 0}")</div>
@@ -591,6 +598,14 @@
 		font-size: 32px;
 		font-weight: bold;
 		color: #ffffff;
+	}
+
+	/* Host-pushed broadcast note: same size as the throttle line, orange, sits
+	   directly underneath it. */
+	.dev-note {
+		font-size: 32px;
+		font-weight: bold;
+		color: #ff8c00;
 	}
 
 	/* The status HUD now floats centred on the dark box (the button roams away from

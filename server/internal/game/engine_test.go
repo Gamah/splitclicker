@@ -126,6 +126,7 @@ func (b *captureBC) Pending(PendingFrame)     {}
 func (b *captureBC) Armed(a ArmedFrame)       { b.armed <- a }
 func (b *captureBC) Result(r ResultFrame)     { b.result <- r }
 func (b *captureBC) GameOver(g GameOverFrame) { b.gameOver <- g }
+func (b *captureBC) DevNote(string)           {}
 func (b *captureBC) PlayerCount() int         { return 1 }
 
 // TestEngineLoopScores runs the real timed loop with tiny delays: one round

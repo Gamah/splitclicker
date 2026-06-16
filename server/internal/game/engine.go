@@ -126,6 +126,9 @@ type Broadcaster interface {
 	Armed(ArmedFrame)
 	Result(ResultFrame)
 	GameOver(GameOverFrame)
+	// DevNote pushes the current host-editable broadcast note to every client
+	// (empty string clears it). Sent once per game.
+	DevNote(note string)
 	PlayerCount() int
 }
 
@@ -164,9 +167,10 @@ type Engine struct {
 	rngMu sync.Mutex
 	rng   *rand.Rand
 
-	mu    sync.RWMutex // guards phase/round (read by Snapshot)
-	phase Phase
-	round int
+	mu      sync.RWMutex // guards phase/round/devNote (read by Snapshot)
+	phase   Phase
+	round   int
+	devNote string // current broadcast note, refreshed once per game
 
 	// badClicks counts non-scoring ("idle") clicks per SteamID accumulated since the
 	// last arm, across EVERY phase — arming, the live window, result display, game
@@ -178,11 +182,20 @@ type Engine struct {
 	// gameEndHook, if set, runs after each game_over (post session-win write);
 	// used to refresh the leaderboard cache once per "session". Optional.
 	gameEndHook func(context.Context)
+
+	// devNoteFn, if set, supplies the host-editable broadcast note; it is called
+	// once at the start of each game (so config edits apply on the next game).
+	// Optional — nil means no note is ever sent. Call SetDevNoteFn before Run.
+	devNoteFn func() string
 }
 
 // SetGameEndHook registers a callback run after every game_over, once the
 // session win has been persisted. Call before Run; nil clears it.
 func (e *Engine) SetGameEndHook(fn func(context.Context)) { e.gameEndHook = fn }
+
+// SetDevNoteFn registers the source of the per-game dev note. Call before Run;
+// nil clears it.
+func (e *Engine) SetDevNoteFn(fn func() string) { e.devNoteFn = fn }
 
 // New builds an Engine. store may be nil (scoring still works, just not
 // persisted). log may be nil (falls back to a no-op logger).
@@ -226,11 +239,14 @@ type Snapshot struct {
 	// throttle estimate without hardcoding the formula (see idlePenalty).
 	PenaltyBaseMs int
 	PenaltyStepMs int
+	// DevNote is the current host-editable broadcast note (empty = none); carried
+	// in hello so a mid-game joiner sees it without waiting for the next game.
+	DevNote string
 }
 
 func (e *Engine) Snapshot() Snapshot {
 	e.mu.RLock()
-	phase, round := e.phase, e.round
+	phase, round, devNote := e.phase, e.round, e.devNote
 	e.mu.RUnlock()
 	players := 0
 	if e.bc != nil {
@@ -241,6 +257,7 @@ func (e *Engine) Snapshot() Snapshot {
 		Players: players, Clicks: e.clicksFor(players),
 		ArmMinSec: int(e.cfg.ArmMin / time.Second), ArmMaxSec: int(e.cfg.ArmMax / time.Second),
 		PenaltyBaseMs: e.cfg.PenaltyBaseMs, PenaltyStepMs: e.cfg.PenaltyStepMs,
+		DevNote: devNote,
 	}
 }
 
@@ -264,6 +281,12 @@ func (e *Engine) setPhase(p Phase, round int) {
 	e.mu.Unlock()
 }
 
+func (e *Engine) setDevNote(note string) {
+	e.mu.Lock()
+	e.devNote = note
+	e.mu.Unlock()
+}
+
 // Run drives games until ctx is cancelled. Blocks; call in its own goroutine.
 func (e *Engine) Run(ctx context.Context) {
 	for ctx.Err() == nil {
@@ -281,6 +304,15 @@ func (e *Engine) playGame(ctx context.Context) {
 	scores := map[string]int{}      // cumulative game points by SteamID
 	info := map[string]playerInfo{} // latest display info by SteamID
 	x := e.cfg.RoundsPerGame
+
+	// Refresh the host-editable broadcast note once per game and push it to every
+	// client (empty clears it on the client — "shows until an empty note is sent").
+	note := ""
+	if e.devNoteFn != nil {
+		note = e.devNoteFn()
+	}
+	e.setDevNote(note)
+	e.bc.DevNote(note)
 
 	// The final round's points + round id, carried into game_over (the last round
 	// has no separate round_result — see race/final).
