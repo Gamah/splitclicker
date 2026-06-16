@@ -64,9 +64,9 @@
 		<div class="line penalty-note">Clicking while not live is allowed but delays your button becoming live behind other players.</div>
 	</div>
 
-	@* ── music button: bottom edge, just right of the session list. Opens the music
-	     panel (genre / vibe knobs / seed sharing / mute + volume), which is a child of
-	     this single root (a PanelComponent can't be nested, but a Panel can). ── *@
+	@* ── music button: bottom-left, directly below the how-to-play card. Opens the
+	     music panel (genre / vibe knobs / seed sharing / mute + volume), which is a child
+	     of this single root (a PanelComponent can't be nested, but a Panel can). ── *@
 	<div class="music-btn @(MusicOpen ? "open" : "")" onclick="@ToggleMusic">MUSIC</div>
 
 	@* ── the one global button (roams the box; centred only on first load) with the
@@ -247,10 +247,11 @@
 
 	.board.session { left: 14px; }
 
-	/* how-to-play card: pinned to the bottom-left corner (top:auto cancels the
-	   shared top:18px), under the session board. Same board chrome, but a column
-	   of explanatory text rather than a leaderboard. */
-	.board.howto { top: auto; bottom: 18px; left: 14px; width: 300px; }
+	/* how-to-play card: pinned to the bottom-left (top:auto cancels the shared
+	   top:18px), under the session board. Lifted clear of the bottom edge so the
+	   MUSIC button can sit beneath it. Same board chrome, but a column of
+	   explanatory text rather than a leaderboard. */
+	.board.howto { top: auto; bottom: 66px; left: 14px; width: 300px; }
 
 	.board.howto .line {
 		font-size: 12px;
@@ -289,11 +290,13 @@
 		white-space: normal;
 	}
 
-	/* music button: bottom edge, just right of the session list's column. */
+	/* music button: bottom-left corner, directly beneath the how-to-play card and
+	   matching its column width. */
 	.music-btn {
 		position: absolute;
 		bottom: 18px;
-		left: 308px; /* 14 (session edge) + 280 (session width) + 14 (gap) */
+		left: 14px;
+		width: 300px;
 		pointer-events: all;
 		cursor: pointer;
 		flex-direction: row;
