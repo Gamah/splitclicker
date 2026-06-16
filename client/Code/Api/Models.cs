@@ -86,10 +86,15 @@ public record RoundResultMsg(
 	[property: JsonPropertyName( "you" )] YouResult You
 );
 
+// points_delta/round_id carry the FINAL round's score (the last round folds into
+// game_over with no round_result of its own) so the client can drive its `points`
+// stat once, guarded by round_id like a normal round.
 public record YouGameOver(
 	[property: JsonPropertyName( "placement" )] int Placement,
 	[property: JsonPropertyName( "won" )] bool Won,
-	[property: JsonPropertyName( "game_id" )] string GameId
+	[property: JsonPropertyName( "game_id" )] string GameId,
+	[property: JsonPropertyName( "points_delta" )] int PointsDelta,
+	[property: JsonPropertyName( "round_id" )] string RoundId
 );
 
 public record GameOverMsg(
