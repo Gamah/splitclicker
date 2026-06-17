@@ -20,7 +20,7 @@ public static class AchievementTracker
 		// "Ahead of the Curve": more than 5 scoring clicks in a single round. Manual
 		// Unlock is idempotent, so it's safe to attempt on every delivery (no round_id
 		// guard needed) — unlike the `points` increment below.
-		if ( pointsDelta > 5 ) Unlock( "ahead_of_the_curve" );
+		if ( pointsDelta > 5 ) Unlock( "aotc" );
 
 		var pd = PlayerData.Load();
 		if ( pd.LastPointsRoundId == roundId ) return; // duplicate delivery / reconnect replay
@@ -37,7 +37,7 @@ public static class AchievementTracker
 		if ( placement >= 1 && placement <= 5 ) Unlock( "top_5" );
 		if ( placement >= 1 && placement <= 3 ) Unlock( "top_3" );
 		// "Chicken Dinner": win a session (finish #1 in the game's final standings).
-		if ( won ) Unlock( "chicken_dinner" );
+		if ( won ) Unlock( "firstwin" );
 
 		if ( !won || string.IsNullOrEmpty( gameId ) ) return;
 		var pd = PlayerData.Load();
