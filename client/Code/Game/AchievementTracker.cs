@@ -16,6 +16,16 @@ public static class AchievementTracker
 	public static void OnRoundResult( int pointsDelta, string roundId )
 	{
 		if ( pointsDelta <= 0 || string.IsNullOrEmpty( roundId ) ) return;
+
+		// "Ahead of the Curve": more than 5 scoring clicks in a single round. Manual
+		// Unlock is idempotent, so it's safe to attempt on every delivery (no round_id
+		// guard needed) — unlike the `points` increment below.
+		if ( pointsDelta > 5 )
+		{
+			try { Sandbox.Services.Achievements.Unlock( "ahead_of_the_curve" ); }
+			catch ( Exception e ) { Log.Warning( $"[Splitclicker] unlock failed: {e.Message}" ); }
+		}
+
 		var pd = PlayerData.Load();
 		if ( pd.LastPointsRoundId == roundId ) return; // duplicate delivery / reconnect replay
 		pd.LastPointsRoundId = roundId;
@@ -32,6 +42,8 @@ public static class AchievementTracker
 		{
 			if ( placement >= 1 && placement <= 5 ) Sandbox.Services.Achievements.Unlock( "top_5" );
 			if ( placement >= 1 && placement <= 3 ) Sandbox.Services.Achievements.Unlock( "top_3" );
+			// "Chicken Dinner": win a session (finish #1 in the game's final standings).
+			if ( won ) Sandbox.Services.Achievements.Unlock( "chicken_dinner" );
 		}
 		catch ( Exception e ) { Log.Warning( $"[Splitclicker] unlock failed: {e.Message}" ); }
 
