@@ -20,11 +20,7 @@ public static class AchievementTracker
 		// "Ahead of the Curve": more than 5 scoring clicks in a single round. Manual
 		// Unlock is idempotent, so it's safe to attempt on every delivery (no round_id
 		// guard needed) — unlike the `points` increment below.
-		if ( pointsDelta > 5 )
-		{
-			try { Sandbox.Services.Achievements.Unlock( "ahead_of_the_curve" ); }
-			catch ( Exception e ) { Log.Warning( $"[Splitclicker] unlock failed: {e.Message}" ); }
-		}
+		if ( pointsDelta > 5 ) Unlock( "ahead_of_the_curve" );
 
 		var pd = PlayerData.Load();
 		if ( pd.LastPointsRoundId == roundId ) return; // duplicate delivery / reconnect replay
@@ -38,14 +34,10 @@ public static class AchievementTracker
 	// once per unseen game (drives first_win / wins_5 / wins_10).
 	public static void OnGameOver( int placement, bool won, string gameId )
 	{
-		try
-		{
-			if ( placement >= 1 && placement <= 5 ) Sandbox.Services.Achievements.Unlock( "top_5" );
-			if ( placement >= 1 && placement <= 3 ) Sandbox.Services.Achievements.Unlock( "top_3" );
-			// "Chicken Dinner": win a session (finish #1 in the game's final standings).
-			if ( won ) Sandbox.Services.Achievements.Unlock( "chicken_dinner" );
-		}
-		catch ( Exception e ) { Log.Warning( $"[Splitclicker] unlock failed: {e.Message}" ); }
+		if ( placement >= 1 && placement <= 5 ) Unlock( "top_5" );
+		if ( placement >= 1 && placement <= 3 ) Unlock( "top_3" );
+		// "Chicken Dinner": win a session (finish #1 in the game's final standings).
+		if ( won ) Unlock( "chicken_dinner" );
 
 		if ( !won || string.IsNullOrEmpty( gameId ) ) return;
 		var pd = PlayerData.Load();
@@ -54,5 +46,15 @@ public static class AchievementTracker
 		pd.Save();
 		try { Sandbox.Services.Stats.Increment( "wins", 1 ); }
 		catch ( Exception e ) { Log.Warning( $"[Splitclicker] wins stat failed: {e.Message}" ); }
+	}
+
+	// Idempotent achievement unlock with a console trace. Manual unlocks give no
+	// visible feedback in the editor (the ident must be defined on the published
+	// package to actually pop), so the log line is how we confirm it fired.
+	static void Unlock( string ident )
+	{
+		Log.Info( $"[Splitclicker] fired achievement {ident}" );
+		try { Sandbox.Services.Achievements.Unlock( ident ); }
+		catch ( Exception e ) { Log.Warning( $"[Splitclicker] unlock {ident} failed: {e.Message}" ); }
 	}
 }
