@@ -368,8 +368,10 @@ unlocks. We never let achievement state feed back into scoring.
 | `wins_10` | Stat | `wins` ≥ 10 | 100 |
 | `aotc` | Manual | `round_result` `you.points_delta` > 5 (more than 5 scoring clicks in one round; "Ahead of the Curve") | 30 |
 | `firstwin` | Manual | `game_over` `you.won` (finish #1 in a session; "Chicken Dinner") | 25 |
+| `fart` | Manual (server-pushed) | hit the backend on an unknown path and got a 404 | 10 |
+| `hackerman` | Manual (server-pushed) | got the password wrong on the admin login page | 10 |
 
-Total = 340, well under the **1000** per-game cap — leaves headroom for the "more to add
+Total = 360, well under the **1000** per-game cap — leaves headroom for the "more to add
 later" set. (Stat-based threshold achievements are configured with Target Stat / Aggregation
 `Sum` / Min 0 / Max threshold / Show Progress. Manual achievements just need the ident defined
 in the s&box project — the client unlocks them via `Achievements.Unlock`.)
@@ -377,6 +379,13 @@ in the s&box project — the client unlocks them via `Achievements.Unlock`.)
 > **Ahead of the Curve / Chicken Dinner** are *manual* (single-event) unlocks driven straight
 > from `round_result` / `game_over`; both are idempotent, so they need no `round_id`/`game_id`
 > dedupe (re-unlocking is a no-op).
+
+> **fart / hackerman** are *server-pushed*: the feats happen over plain HTTP (a 404 on an
+> unknown path; a wrong admin password), off the game socket. The server matches the requester
+> to any open game connection by IP — `clientIP(r)` (the X-Forwarded-For hop, same as the rate
+> limiter and the WS upgrade) — and fans an `{"t":"achievement","ident":…}` frame to those
+> sockets; the client just calls `Achievements.Unlock(ident)`. If nobody at that IP has a game
+> client open, the feat is silent. The `achievement` frame's `Unlock` is idempotent.
 
 ### Client implementation
 - A small `Code/Game/Achievements.cs` helper (or fold into `ClickController`) handles the
@@ -426,6 +435,9 @@ Server → client:
 - `{"t":"game_over","standings":[…],"you":{"placement":p,"won":bool,"game_id":"…"}}`
   — `you.placement`/`won` drive placement + win achievements; `game_id` dedupes.
 - `{"t":"too_late"}` / `{"t":"rejected","reason":…}` — per-click feedback (optional).
+- `{"t":"achievement","ident":"…"}` — fire a manual achievement unlock; pushed out-of-band
+  (off the round loop) when the server detects a feat over HTTP and matches the requester to
+  this socket by IP (e.g. `fart`, `hackerman`). The client calls `Achievements.Unlock(ident)`.
 
 (Mirror rotaliate's `ws/hub.go` message-type switch.) Seeds/large ints as **JSON strings**
 if any are added later (rotaliate's hard-won lesson re JS precision — relevant if a web

@@ -293,6 +293,12 @@ public sealed class ClickController : Component
 					var dn = Deser<DevNoteMsg>( json );
 					DevNote = dn.Note ?? "";
 					break;
+
+				case "achievement":
+					// Out-of-band unlock the server pushed for a feat it detected off the
+					// game socket (e.g. fart / hackerman), matched to us by IP.
+					AchievementTracker.OnAchievement( Deser<AchievementMsg>( json ).Ident );
+					break;
 			}
 		}
 		catch ( Exception e )

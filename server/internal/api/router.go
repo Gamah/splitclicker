@@ -92,6 +92,13 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 
 	mux.HandleFunc("GET /health", h.health)
 
+	// Catch-all for any unmatched path: 404 like the default mux would, but first
+	// award the "fart" achievement (poking the backend into a 404 is a feat). The
+	// pop rides the socket of any game client open from the same IP. Registered
+	// last by pattern specificity — Go 1.22's ServeMux still prefers the routes
+	// below this for their exact paths.
+	mux.HandleFunc("/", h.notFound)
+
 	// Admin (server-rendered HTML, gated by a login form + session cookie).
 	// Disabled unless ADMIN_PASSWORD is set; login POST is rate-limited to blunt
 	// password guessing.
@@ -130,6 +137,17 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// notFound is the catch-all for any unmatched path: a plain 404, but it first
+// tries to award the requester the "fart" achievement. We can only pop it for
+// someone who also has a game client open from the same IP (the unlock rides
+// their socket); for everyone else the feat is silent.
+func (h *handler) notFound(w http.ResponseWriter, r *http.Request) {
+	if ip := clientIP(r); h.hub.FireAchievement(ip, "fart") > 0 {
+		h.log.Info("fired achievement fart", zap.String("ip", ip))
+	}
+	http.NotFound(w, r)
 }
 
 // steamIDRe matches a SteamID64 (1–20 digits). Stored as TEXT, never used in
@@ -245,7 +263,7 @@ func (h *handler) wsConnect(w http.ResponseWriter, r *http.Request) {
 		h.log.Warn("ws upgrade failed", zap.Error(err))
 		return
 	}
-	h.hub.ServeClient(ws.NewClient(conn, id.SteamID, id.Tag, id.Username, h.hub))
+	h.hub.ServeClient(ws.NewClient(conn, id.SteamID, id.Tag, id.Username, clientIP(r), h.hub))
 }
 
 // GET /ws — the legacy game socket for OUTDATED clients (the new build uses
@@ -263,7 +281,7 @@ func (h *handler) wsConnectLegacy(w http.ResponseWriter, r *http.Request) {
 		h.log.Warn("legacy ws upgrade failed", zap.Error(err))
 		return
 	}
-	c := ws.NewClient(conn, id.SteamID, id.Tag, id.Username, h.hub)
+	c := ws.NewClient(conn, id.SteamID, id.Tag, id.Username, clientIP(r), h.hub)
 	c.Legacy = true
 	h.hub.ServeClient(c)
 }

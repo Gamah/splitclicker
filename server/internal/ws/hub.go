@@ -65,6 +65,7 @@ type Client struct {
 	SteamID  string
 	Tag      string
 	Username string
+	IP       string // client address (X-Forwarded-For hop), for IP-matched troll achievements
 
 	// Legacy marks a connection from an OUTDATED client build. It still rides the
 	// normal broadcast loop (so its UI behaves), but the hub ignores its clicks,
@@ -76,7 +77,7 @@ type Client struct {
 	sendClosed bool
 }
 
-func NewClient(conn *websocket.Conn, steamID, tag, username string, hub *Hub) *Client {
+func NewClient(conn *websocket.Conn, steamID, tag, username, ip string, hub *Hub) *Client {
 	return &Client{
 		hub:      hub,
 		conn:     conn,
@@ -84,6 +85,7 @@ func NewClient(conn *websocket.Conn, steamID, tag, username string, hub *Hub) *C
 		SteamID:  steamID,
 		Tag:      tag,
 		Username: username,
+		IP:       ip,
 	}
 }
 
@@ -183,6 +185,27 @@ func (h *Hub) DevNote(note string) {
 	for _, c := range h.clientList() {
 		c.trySend(msg)
 	}
+}
+
+// FireAchievement pushes a manual achievement unlock to every open connection
+// from the given IP (a player may have several). It backs the out-of-band troll
+// achievements — poking the backend into a 404, fumbling the admin password —
+// which happen over plain HTTP, off the game socket, so we fan the unlock back to
+// whatever game clients share that address. Returns the number of connections
+// notified (0 when nobody at that IP has a socket open, so the feat is silent).
+func (h *Hub) FireAchievement(ip, ident string) int {
+	if ip == "" || ident == "" {
+		return 0
+	}
+	msg := mustJSON(achievementWire{T: "achievement", Ident: ident})
+	n := 0
+	for _, c := range h.clientList() {
+		if c.IP == ip {
+			c.trySend(msg)
+			n++
+		}
+	}
+	return n
 }
 
 func (h *Hub) Result(r game.ResultFrame) {
