@@ -4,30 +4,172 @@ import (
 	"crypto/subtle"
 	"html/template"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gamah/splitclicker/internal/store"
 	"go.uber.org/zap"
 )
 
-// adminAuth gates the admin views behind the ADMIN_PASSWORD set in the
-// environment. When that password is unset the whole admin surface is disabled
-// (404) so a misconfigured deploy can never expose an open admin. Otherwise it
-// requires HTTP Basic auth (any username; the password must match, compared in
-// constant time) and prompts the browser on failure. Returns true when the
-// request may proceed.
-func (h *handler) adminAuth(w http.ResponseWriter, r *http.Request) bool {
-	if h.adminPassword == "" {
-		http.NotFound(w, r) // feature disabled — don't reveal it exists
+// adminSessionTTL bounds how long an admin login lasts before re-auth is needed.
+const adminSessionTTL = 12 * time.Hour
+
+// adminCookieName is the session cookie set after a successful login.
+const adminCookieName = "admin_session"
+
+// sessionStore is the set of live admin session tokens (token → expiry). It is
+// in-memory, so a server restart logs admins out — fine for this tiny surface.
+// Each write opportunistically sweeps expired tokens (volume here is trivial).
+type sessionStore struct {
+	mu sync.Mutex
+	m  map[string]time.Time
+}
+
+func newSessionStore() *sessionStore { return &sessionStore{m: map[string]time.Time{}} }
+
+// create mints a new session token valid for adminSessionTTL.
+func (s *sessionStore) create() string {
+	tok := randToken()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for k, exp := range s.m {
+		if now.After(exp) {
+			delete(s.m, k)
+		}
+	}
+	s.m[tok] = now.Add(adminSessionTTL)
+	return tok
+}
+
+// valid reports whether tok is a live (unexpired) session.
+func (s *sessionStore) valid(tok string) bool {
+	if tok == "" {
 		return false
 	}
-	_, pass, ok := r.BasicAuth()
-	if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(h.adminPassword)) != 1 {
-		w.Header().Set("WWW-Authenticate", `Basic realm="splitclicker admin"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exp, ok := s.m[tok]
+	if !ok {
+		return false
+	}
+	if time.Now().After(exp) {
+		delete(s.m, tok)
 		return false
 	}
 	return true
+}
+
+func (s *sessionStore) delete(tok string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, tok)
+}
+
+// adminEnabled reports whether the admin surface is configured. When
+// ADMIN_PASSWORD is unset the whole surface is disabled (404) so a misconfigured
+// deploy can never expose an open admin — and 404 (not 403) so it doesn't even
+// reveal the surface exists.
+func (h *handler) adminEnabled(w http.ResponseWriter, r *http.Request) bool {
+	if h.adminPassword == "" {
+		http.NotFound(w, r)
+		return false
+	}
+	return true
+}
+
+// adminAuth gates the admin views: enabled + a valid session cookie. An
+// unauthenticated request is redirected to the login page. Returns true when the
+// request may proceed.
+func (h *handler) adminAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !h.adminEnabled(w, r) {
+		return false
+	}
+	if h.adminSessions.valid(sessionCookie(r)) {
+		return true
+	}
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+	return false
+}
+
+// GET /admin/login — the password form (a single password field + Login button).
+// Already-authenticated requests skip straight to the dashboard.
+func (h *handler) adminLoginForm(w http.ResponseWriter, r *http.Request) {
+	if !h.adminEnabled(w, r) {
+		return
+	}
+	if h.adminSessions.valid(sessionCookie(r)) {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+	h.renderAdmin(w, loginTmpl, loginData{})
+}
+
+// POST /admin/login — verify the password (constant-time), mint a session, set
+// the cookie, and redirect to the dashboard. Re-renders the form on failure.
+func (h *handler) adminLoginSubmit(w http.ResponseWriter, r *http.Request) {
+	if !h.adminEnabled(w, r) {
+		return
+	}
+	pass := r.PostFormValue("password")
+	if subtle.ConstantTimeCompare([]byte(pass), []byte(h.adminPassword)) != 1 {
+		h.renderAdmin(w, loginTmpl, loginData{Error: "Incorrect password."})
+		return
+	}
+	setAdminCookie(w, r, h.adminSessions.create())
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+// GET /admin/logout — drop the session and clear the cookie.
+func (h *handler) adminLogout(w http.ResponseWriter, r *http.Request) {
+	if !h.adminEnabled(w, r) {
+		return
+	}
+	if c, err := r.Cookie(adminCookieName); err == nil {
+		h.adminSessions.delete(c.Value)
+	}
+	clearAdminCookie(w, r)
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+}
+
+// sessionCookie reads the admin session token from the request ("" if absent).
+func sessionCookie(r *http.Request) string {
+	if c, err := r.Cookie(adminCookieName); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
+func setAdminCookie(w http.ResponseWriter, r *http.Request, tok string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminCookieName,
+		Value:    tok,
+		Path:     "/admin",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+		MaxAge:   int(adminSessionTTL / time.Second),
+	})
+}
+
+func clearAdminCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminCookieName,
+		Value:    "",
+		Path:     "/admin",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+		MaxAge:   -1,
+	})
+}
+
+// requestIsHTTPS marks the cookie Secure when the original request was TLS —
+// either direct or via Caddy's X-Forwarded-Proto (it terminates TLS and proxies
+// plain HTTP to us). Plain-HTTP local dev stays non-Secure so the cookie works.
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // GET /admin — dashboard: history counts, the live leaderboards, and the most
@@ -98,6 +240,18 @@ func (h *handler) renderAdmin(w http.ResponseWriter, t *template.Template, data 
 	}
 }
 
+type loginData struct{ Error string }
+
+var loginTmpl = template.Must(template.New("login").Parse(`<!doctype html>
+<html><head><meta charset="utf-8"><title>splitclicker admin · login</title><style>` + adminCSS + `</style></head><body>
+<form class="login" method="post" action="/admin/login">
+  <h1>admin</h1>
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  <input type="password" name="password" placeholder="password" autofocus autocomplete="current-password">
+  <button type="submit">Login</button>
+</form>
+</body></html>`))
+
 type dashboardData struct {
 	Stats       store.AdminStats
 	Games       []store.AdminGame
@@ -153,10 +307,16 @@ th{background:#f0f0f0}
 .card .n{font-size:1.6rem;font-weight:700}
 .cols{display:flex;gap:2rem;flex-wrap:wrap}.cols>div{flex:1;min-width:18rem}
 .muted{color:#888}.mono{font-family:ui-monospace,monospace}
+.err{color:#b00020;margin:.5rem 0}
+.login{max-width:20rem;margin:6rem auto;background:#fff;border:1px solid #e2e2e2;border-radius:8px;padding:1.5rem}
+.login input{width:100%;padding:.5rem;margin:.4rem 0;box-sizing:border-box;font-size:1rem}
+.login button{width:100%;padding:.5rem;font-size:1rem;cursor:pointer}
+.logout{float:right;font-size:.85rem}
 `
 
 var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><title>splitclicker admin</title><style>` + adminCSS + `</style></head><body>
+<a class="logout" href="/admin/logout">log out</a>
 <h1>splitclicker admin</h1>
 <div class="cards">
   <div class="card"><div class="n">{{.Players}}</div>players online</div>

@@ -34,7 +34,8 @@ type handler struct {
 	log           *zap.Logger
 	tickets       *ticketStore
 	upgrader      websocket.Upgrader
-	adminPassword string // ADMIN_PASSWORD; empty disables the /admin surface
+	adminPassword string        // ADMIN_PASSWORD; empty disables the /admin surface
+	adminSessions *sessionStore // live admin login sessions (cookie tokens)
 }
 
 // allowedOrigins is the cross-origin allowlist for the REST CORS middleware and
@@ -81,6 +82,7 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 		log:           log,
 		tickets:       newTicketStore(),
 		adminPassword: os.Getenv("ADMIN_PASSWORD"),
+		adminSessions: newSessionStore(),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -90,8 +92,12 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 
 	mux.HandleFunc("GET /health", h.health)
 
-	// Admin (password-gated, server-rendered HTML). Disabled unless ADMIN_PASSWORD
-	// is set; rate-limited to blunt password guessing.
+	// Admin (server-rendered HTML, gated by a login form + session cookie).
+	// Disabled unless ADMIN_PASSWORD is set; login POST is rate-limited to blunt
+	// password guessing.
+	mux.HandleFunc("GET /admin/login", h.adminLoginForm)
+	mux.HandleFunc("POST /admin/login", rl.wrap(h.adminLoginSubmit))
+	mux.HandleFunc("GET /admin/logout", h.adminLogout)
 	mux.HandleFunc("GET /admin", rl.wrap(h.adminDashboard))
 	mux.HandleFunc("GET /admin/game", rl.wrap(h.adminGame))
 
