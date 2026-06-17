@@ -37,6 +37,15 @@ type devNoteWire struct {
 	Note string `json:"note"`
 }
 
+// achievementWire tells the client to fire a manual achievement unlock by ident.
+// It carries out-of-band feats the server detects off the game socket (e.g.
+// poking the backend into a 404, fumbling the admin password) and matches back to
+// a game client by IP — see Hub.FireAchievement.
+type achievementWire struct {
+	T     string `json:"t"`
+	Ident string `json:"ident"`
+}
+
 type helloWire struct {
 	T    string    `json:"t"`
 	You  helloYou  `json:"you"`

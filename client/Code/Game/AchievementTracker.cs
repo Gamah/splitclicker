@@ -48,6 +48,17 @@ public static class AchievementTracker
 		catch ( Exception e ) { Log.Warning( $"[Splitclicker] wins stat failed: {e.Message}" ); }
 	}
 
+	// Out-of-band achievement push from the server (the `achievement` WS frame):
+	// fire the named unlock straight through. Used for feats the server detects off
+	// the game socket — `fart` (poked the backend into a 404) and `hackerman`
+	// (fumbled the admin password) — matched back to this client by IP. The Unlock
+	// is idempotent, so a repeat push is a harmless no-op.
+	public static void OnAchievement( string ident )
+	{
+		if ( string.IsNullOrEmpty( ident ) ) return;
+		Unlock( ident );
+	}
+
 	// Idempotent achievement unlock with a console trace. Manual unlocks give no
 	// visible feedback in the editor (the ident must be defined on the published
 	// package to actually pop), so the log line is how we confirm it fired.

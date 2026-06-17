@@ -110,3 +110,10 @@ public record GameOverMsg(
 public record DevNoteMsg(
 	[property: JsonPropertyName( "note" )] string Note
 );
+
+// ident is a server-pushed manual achievement unlock for an out-of-band feat
+// (e.g. poking the backend into a 404, fumbling the admin password); it must
+// match an achievement defined in the s&box project.
+public record AchievementMsg(
+	[property: JsonPropertyName( "ident" )] string Ident
+);

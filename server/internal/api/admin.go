@@ -114,6 +114,11 @@ func (h *handler) adminLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	pass := r.PostFormValue("password")
 	if subtle.ConstantTimeCompare([]byte(pass), []byte(h.adminPassword)) != 1 {
+		// Fumbling the admin password earns the "hackerman" achievement — popped on
+		// any game client open from the same IP (silent if there's none).
+		if ip := clientIP(r); h.hub.FireAchievement(ip, "hackerman") > 0 {
+			h.log.Info("fired achievement hackerman", zap.String("ip", ip))
+		}
 		h.renderAdmin(w, loginTmpl, loginData{Error: "Incorrect password."})
 		return
 	}

@@ -165,7 +165,9 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
 - Hot-path frames (`armed` out, `click` in) should be **binary** at scale; the rest JSON.
 - Client→server: `click {seq}`, `ping`.
 - Server→client: `hello`, `round_pending`, `armed`, `round_result` (with `you.points_delta`,
-  `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`), `too_late`/`rejected`.
+  `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`), `too_late`/`rejected`,
+  `achievement` (`{ident}` — out-of-band manual unlock for an HTTP feat matched by IP: `fart`,
+  `hackerman`).
 
 ---
 
