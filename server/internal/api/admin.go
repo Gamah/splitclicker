@@ -47,9 +47,15 @@ func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		h.adminError(w, "load recent games", err)
 		return
 	}
+	fastest, err := h.store.FastestClickers(ctx, 15)
+	if err != nil {
+		h.adminError(w, "load fastest clickers", err)
+		return
+	}
 	data := dashboardData{
 		Stats:       stats,
 		Games:       games,
+		Fastest:     fastest,
 		Hourly:      h.cache.Hourly(15),
 		HoursWon:    h.cache.HoursWon(15),
 		SessionsWon: h.cache.SessionsWon(15),
@@ -95,6 +101,7 @@ func (h *handler) renderAdmin(w http.ResponseWriter, t *template.Template, data 
 type dashboardData struct {
 	Stats       store.AdminStats
 	Games       []store.AdminGame
+	Fastest     []store.FastestClicker
 	Hourly      []store.LeaderboardEntry
 	HoursWon    []store.LeaderboardEntry
 	SessionsWon []store.LeaderboardEntry
@@ -118,6 +125,20 @@ var adminFuncs = template.FuncMap{
 		return s
 	},
 	"add1": func(i int) int { return i + 1 }, // 0-based range index → 1-based rank
+	// plink renders a player name as a link to their public Steam profile. The
+	// name (a user-controlled display string) is HTML-escaped; an empty steam id
+	// or name degrades gracefully. Returns template.HTML so it isn't re-escaped.
+	"plink": func(steamID, name string) template.HTML {
+		if name == "" {
+			name = "anon"
+		}
+		safeName := template.HTMLEscapeString(name)
+		if steamID == "" {
+			return template.HTML(safeName)
+		}
+		url := "https://steamcommunity.com/profiles/" + template.HTMLEscapeString(steamID)
+		return template.HTML(`<a href="` + url + `" target="_blank" rel="noopener">` + safeName + `</a>`)
+	},
 }
 
 const adminCSS = `
@@ -156,10 +177,20 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
     <td>{{.Rounds}}</td>
     <td>{{.Scorers}}</td>
     <td>{{.Clicks}}</td>
-    <td>{{if .WinnerName}}{{.WinnerName}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{if .WinnerID}}{{plink .WinnerID .WinnerName}}{{else}}<span class="muted">—</span>{{end}}</td>
   </tr>
   {{else}}
   <tr><td colspan="7" class="muted">no games recorded yet</td></tr>
+  {{end}}
+</table>
+
+<h2>Fastest clickers <span class="muted">· mean arm&rarr;click delta, min 10 clicks, refreshed ~10 min</span></h2>
+<table>
+  <tr><th>#</th><th>player</th><th>clicks</th><th>avg delta (ms)</th></tr>
+  {{range $i, $e := .Fastest}}
+  <tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Name}}</td><td>{{$e.Clicks}}</td><td>{{printf "%.1f" $e.AvgDeltaMs}}</td></tr>
+  {{else}}
+  <tr><td colspan="4" class="muted">no players with 10+ scoring clicks yet</td></tr>
   {{end}}
 </table>
 
@@ -167,19 +198,19 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
   <div>
     <h2>Hourly points</h2>
     <table><tr><th>#</th><th>player</th><th>points</th></tr>
-    {{range $i, $e := .Hourly}}<tr><td>{{add1 $i}}</td><td>{{$e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
+    {{range $i, $e := .Hourly}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
     </table>
   </div>
   <div>
     <h2>Hours won</h2>
     <table><tr><th>#</th><th>player</th><th>hours</th></tr>
-    {{range $i, $e := .HoursWon}}<tr><td>{{add1 $i}}</td><td>{{$e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
+    {{range $i, $e := .HoursWon}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
     </table>
   </div>
   <div>
     <h2>Games won</h2>
     <table><tr><th>#</th><th>player</th><th>wins</th></tr>
-    {{range $i, $e := .SessionsWon}}<tr><td>{{add1 $i}}</td><td>{{$e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
+    {{range $i, $e := .SessionsWon}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
     </table>
   </div>
 </div>
@@ -195,7 +226,7 @@ var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doc
 <table>
   <tr><th>click N</th><th>player</th><th>steam id</th><th>offset (ms)</th></tr>
   {{range .Clicks}}
-  <tr><td>{{.SlotNo}}</td><td>{{if .Name}}{{.Name}}{{else}}<span class="muted">anon</span>{{end}}</td>
+  <tr><td>{{.SlotNo}}</td><td>{{plink .SteamID .Name}}</td>
       <td class="mono">{{.SteamID}}</td><td>{{.OffsetMs}}</td></tr>
   {{else}}
   <tr><td colspan="4" class="muted">no scoring clicks (race timed out)</td></tr>

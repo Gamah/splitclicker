@@ -281,6 +281,8 @@ then — design the state machine behind an interface so this is a later swap.
 - `round_scores (round_id, slot_no, steam_id, offset_ms)` — one row per scoring
   click: `slot_no` is "click N", `offset_ms` its arrival latency from `armed_at`.
 - `game_standings` — VIEW deriving per-game points (`COUNT(*)` of slots) + placement.
+- `fastest_clickers` — MATERIALIZED VIEW of each player's mean click delta
+  (`AVG(offset_ms)`, 10-click floor), refreshed ~every 10 min for the admin board.
   Game history is accumulated in-memory by the engine and flushed in one batched
   `RecordGame` transaction off the hot path; it never touches a WS frame.
 - `hourly_scores (steam_id, hour_bucket, points)` — the authoritative per-hour tally,

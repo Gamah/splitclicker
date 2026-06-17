@@ -162,6 +162,52 @@ func (s *Store) GameDetail(ctx context.Context, gameID string) (d AdminGameDetai
 	return d, true, rows.Err()
 }
 
+// FastestClicker is one row of the fastest-clickers board: a player's mean click
+// delta (arm-to-arrival ms) over all their scoring clicks, and how many qualified.
+type FastestClicker struct {
+	SteamID    string
+	Name       string
+	Clicks     int
+	AvgDeltaMs float64
+}
+
+// FastestClickers reads the materialized fastest_clickers board, lowest average
+// delta (fastest) first, joining player names. Cheap — it reads the precomputed
+// matview, refreshed on a timer by RefreshFastestClickers.
+func (s *Store) FastestClickers(ctx context.Context, limit int) ([]FastestClicker, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT fc.steam_id, p.username, p.display_name, fc.clicks, fc.avg_delta_ms
+		FROM fastest_clickers fc
+		LEFT JOIN players p ON p.steam_id = fc.steam_id
+		ORDER BY fc.avg_delta_ms ASC, fc.steam_id ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []FastestClicker{}
+	for rows.Next() {
+		var f FastestClicker
+		var name, disp *string
+		if err := rows.Scan(&f.SteamID, &name, &disp, &f.Clicks, &f.AvgDeltaMs); err != nil {
+			return nil, err
+		}
+		f.Name = pickName(name, disp)
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// RefreshFastestClickers recomputes the fastest_clickers materialized view. Run
+// on a timer (~10 min). CONCURRENTLY (enabled by the view's unique index) so it
+// never blocks concurrent admin reads; it cannot run inside a transaction.
+func (s *Store) RefreshFastestClickers(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, `REFRESH MATERIALIZED VIEW CONCURRENTLY fastest_clickers`)
+	return err
+}
+
 // pickName mirrors Player.Name(): the claimed username if set, else the Steam
 // display name, else "" (anonymous).
 func pickName(name, disp *string) string {
