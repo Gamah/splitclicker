@@ -344,7 +344,7 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
   {{end}}
 </table>
 
-<h2>Fastest clickers <span class="muted">· mean arm&rarr;click delta, min 10 clicks, refreshed ~10 min</span></h2>
+<h2>Fastest clickers <span class="muted">· mean gap between clicks per round (first measured from arm), min 10 clicks, refreshed ~10 min</span></h2>
 <table>
   <tr><th>#</th><th>player</th><th>clicks</th><th>avg delta (ms)</th></tr>
   {{range $i, $e := .Fastest}}

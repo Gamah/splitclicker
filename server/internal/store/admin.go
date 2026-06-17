@@ -162,8 +162,9 @@ func (s *Store) GameDetail(ctx context.Context, gameID string) (d AdminGameDetai
 	return d, true, rows.Err()
 }
 
-// FastestClicker is one row of the fastest-clickers board: a player's mean click
-// delta (arm-to-arrival ms) over all their scoring clicks, and how many qualified.
+// FastestClicker is one row of the fastest-clickers board: a player's mean
+// per-round click delta in ms (gap from their previous click that arm; their
+// first click of a round measured from the arm) and how many clicks qualified.
 type FastestClicker struct {
 	SteamID    string
 	Name       string
