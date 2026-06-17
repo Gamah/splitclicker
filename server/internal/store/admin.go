@@ -42,8 +42,9 @@ type AdminGame struct {
 }
 
 // RecentGames returns the most recently ended games, newest first, each with
-// its scorer/click counts and placement-1 winner. (Empty, no-player games are
-// never written — the engine pauses on an empty server — so none appear here.)
+// its scorer/click counts and placement-1 winner. No-player games are filtered
+// out: the engine no longer writes them, but this also hides the empty games an
+// idle server recorded before that change shipped.
 func (s *Store) RecentGames(ctx context.Context, limit int) ([]AdminGame, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT g.id, g.started_at, g.ended_at, g.rounds,
@@ -61,6 +62,11 @@ func (s *Store) RecentGames(ctx context.Context, limit int) ([]AdminGame, error)
 			WHERE gs.game_id = g.id AND gs.placement = 1
 			ORDER BY gs.steam_id LIMIT 1
 		) w ON true
+		WHERE EXISTS (
+			-- Hide no-player games (an idle server's, written before the engine
+			-- paused on empty): keep only games a player was connected for at arm.
+			SELECT 1 FROM game_rounds r WHERE r.game_id = g.id AND r.players > 0
+		)
 		ORDER BY g.ended_at DESC
 		LIMIT $1
 	`, limit)
