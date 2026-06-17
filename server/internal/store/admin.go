@@ -42,7 +42,9 @@ type AdminGame struct {
 }
 
 // RecentGames returns the most recently ended games, newest first, each with
-// its scorer/click counts and placement-1 winner.
+// its scorer/click counts and placement-1 winner. Games no one was connected
+// for (every round had players=0, i.e. the idle server running on its own) are
+// skipped.
 func (s *Store) RecentGames(ctx context.Context, limit int) ([]AdminGame, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT g.id, g.started_at, g.ended_at, g.rounds,
@@ -60,6 +62,11 @@ func (s *Store) RecentGames(ctx context.Context, limit int) ([]AdminGame, error)
 			WHERE gs.game_id = g.id AND gs.placement = 1
 			ORDER BY gs.steam_id LIMIT 1
 		) w ON true
+		WHERE EXISTS (
+			-- Skip empty games an idle server still runs: keep only games where at
+			-- least one round had a player connected at arm.
+			SELECT 1 FROM game_rounds r WHERE r.game_id = g.id AND r.players > 0
+		)
 		ORDER BY g.ended_at DESC
 		LIMIT $1
 	`, limit)
