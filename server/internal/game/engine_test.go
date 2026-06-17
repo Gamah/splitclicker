@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -170,6 +171,55 @@ func TestEngineLoopScores(t *testing.T) {
 		t.Fatal("final round must fold into game_over, not emit round_result")
 	case <-time.After(3 * time.Second):
 		t.Fatal("no game_over frame")
+	}
+}
+
+// pausableBC is a captureBC whose player count is settable, to drive the
+// engine's pause-when-empty behaviour.
+type pausableBC struct {
+	*captureBC
+	players atomic.Int32
+}
+
+func (b *pausableBC) PlayerCount() int { return int(b.players.Load()) }
+
+// TestEnginePausesWithoutPlayers: with no players connected the engine arms
+// nothing and writes no history; once a client connects (and wakes it) a game
+// starts promptly.
+func TestEnginePausesWithoutPlayers(t *testing.T) {
+	cfg := Config{
+		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
+		MinClicks: 1, RoundsPerGame: 1,
+		RaceMax: 2 * time.Second, ResultDisplay: 5 * time.Millisecond,
+		Intermission: 5 * time.Millisecond, BoardSize: 20,
+	}
+	bc := &pausableBC{captureBC: newCaptureBC()} // players starts at 0
+	st := &fakeStore{}
+	e := New(cfg, bc, st, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	// Paused: no round arms while nobody is connected.
+	select {
+	case <-bc.armed:
+		t.Fatal("engine armed a round with no players connected")
+	case <-time.After(200 * time.Millisecond):
+	}
+	st.mu.Lock()
+	n := len(st.logs)
+	st.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("expected no games recorded while paused, got %d", n)
+	}
+
+	// A client connects and wakes the engine — a game should start at once.
+	bc.players.Store(1)
+	e.Wake()
+	select {
+	case <-bc.armed:
+	case <-time.After(time.Second):
+		t.Fatal("engine did not start a game after a player connected")
 	}
 }
 

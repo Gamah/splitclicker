@@ -170,6 +170,17 @@ type GameLog struct {
 	RoundLogs []RoundLog
 }
 
+// hadPlayers reports whether anyone was connected for any round of the game —
+// the gate for persisting it (an empty server's games aren't recorded).
+func (l GameLog) hadPlayers() bool {
+	for _, r := range l.RoundLogs {
+		if r.Players > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // Store persists scoring. bucket is the UTC clock-hour the points belong to.
 // AddSessionWin credits one game ("session") win to the steamID that topped a
 // completed game's final standings. RecordGame writes the full game history
@@ -195,6 +206,11 @@ type Engine struct {
 	log   *zap.Logger
 
 	clicks chan ClickEvent
+
+	// wake nudges Run to re-check the player count, sent by the hub when a client
+	// connects so a paused (empty-server) engine starts a game immediately.
+	// Buffered (1) so a connect that races the engine's check isn't lost.
+	wake chan struct{}
 
 	rngMu sync.Mutex
 	rng   *rand.Rand
@@ -241,6 +257,7 @@ func New(cfg Config, bc Broadcaster, store Store, log *zap.Logger) *Engine {
 		store:  store,
 		log:    log,
 		clicks:    make(chan ClickEvent, 4096),
+		wake:      make(chan struct{}, 1),
 		rng:       rand.New(rand.NewSource(seedFromCrypto())),
 		phase:     PhaseIntermission,
 		badClicks: map[string]int{},
@@ -320,8 +337,14 @@ func (e *Engine) setDevNote(note string) {
 }
 
 // Run drives games until ctx is cancelled. Blocks; call in its own goroutine.
+// It pauses while no one is connected (see waitForPlayers) so an idle server
+// neither runs games nor writes empty history; a connecting client starts a
+// fresh game at once.
 func (e *Engine) Run(ctx context.Context) {
 	for ctx.Err() == nil {
+		if !e.waitForPlayers(ctx) {
+			return
+		}
 		e.playGame(ctx)
 		if ctx.Err() != nil {
 			return
@@ -329,6 +352,39 @@ func (e *Engine) Run(ctx context.Context) {
 		e.setPhase(PhaseIntermission, 0)
 		e.drain(ctx, e.cfg.Intermission)
 	}
+}
+
+// Wake nudges the engine to re-check the player count. The hub calls it when a
+// client connects, so a paused (empty-server) engine starts a game immediately.
+// Non-blocking and safe from any goroutine.
+func (e *Engine) Wake() {
+	select {
+	case e.wake <- struct{}{}:
+	default:
+	}
+}
+
+// waitForPlayers blocks until at least one (non-legacy) client is connected, so
+// the engine doesn't run games — and write empty game history — on an empty
+// server. A connecting client wakes it via Wake(); it returns false only if ctx
+// is cancelled while waiting. With no Broadcaster wired (unit tests) it never
+// pauses.
+func (e *Engine) waitForPlayers(ctx context.Context) bool {
+	if e.bc == nil {
+		return true
+	}
+	for e.bc.PlayerCount() == 0 {
+		e.setPhase(PhaseIntermission, 0)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-e.wake:
+			// A client connected (or churned) — loop and re-check the count.
+		case <-e.clicks:
+			// Stray click with nobody counted; discard so the channel can't back up.
+		}
+	}
+	return true
 }
 
 func (e *Engine) playGame(ctx context.Context) {
@@ -411,7 +467,10 @@ func (e *Engine) afterGame(final []Standing, log GameLog) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if e.store != nil {
+	// Don't persist a game nobody was present for. Run pauses on an empty server,
+	// but a client can still connect and drop between the player-count check and
+	// the first arm, yielding an all-empty game — skip those.
+	if e.store != nil && log.hadPlayers() {
 		if err := e.store.RecordGame(ctx, log); err != nil {
 			e.log.Error("persist game history", zap.Error(err))
 		}
