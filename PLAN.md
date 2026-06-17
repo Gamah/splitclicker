@@ -366,17 +366,25 @@ unlocks. We never let achievement state feed back into scoring.
 | `first_win` | Stat | `wins` ≥ 1 | 25 |
 | `wins_5`  | Stat | `wins` ≥ 5 | 50 |
 | `wins_10` | Stat | `wins` ≥ 10 | 100 |
+| `ahead_of_the_curve` | Manual | `round_result` `you.points_delta` > 5 (more than 5 scoring clicks in one round) | 30 |
+| `chicken_dinner` | Manual | `game_over` `you.won` (finish #1 in a session) | 25 |
 
-Total = 285, well under the **1000** per-game cap — leaves headroom for the "more to add
+Total = 340, well under the **1000** per-game cap — leaves headroom for the "more to add
 later" set. (Stat-based threshold achievements are configured with Target Stat / Aggregation
-`Sum` / Min 0 / Max threshold / Show Progress.)
+`Sum` / Min 0 / Max threshold / Show Progress. Manual achievements just need the ident defined
+in the s&box project — the client unlocks them via `Achievements.Unlock`.)
+
+> **Ahead of the Curve / Chicken Dinner** are *manual* (single-event) unlocks driven straight
+> from `round_result` / `game_over`; both are idempotent, so they need no `round_id`/`game_id`
+> dedupe (re-unlocking is a no-op).
 
 ### Client implementation
 - A small `Code/Game/Achievements.cs` helper (or fold into `ClickController`) handles the
   two WS events:
   - `round_result` → `Stats.Increment("points", you.points_delta)` (stat-based achievements
-    fire automatically).
-  - `game_over` → if `you.won` then `Stats.Increment("wins", 1)`; then
+    fire automatically); plus `if (you.points_delta > 5) Achievements.Unlock("ahead_of_the_curve")`.
+  - `game_over` → if `you.won` then `Stats.Increment("wins", 1)` and
+    `Achievements.Unlock("chicken_dinner")`; then
     `if (you.placement <= 5) Achievements.Unlock("top_5"); if (you.placement <= 3)
     Achievements.Unlock("top_3");` (`Unlock` is idempotent — re-unlocking is a no-op).
 - **Increment exactly once per event.** Stat increments are *not* idempotent, so guard
