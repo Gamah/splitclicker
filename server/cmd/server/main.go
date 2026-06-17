@@ -90,6 +90,30 @@ func runHourlyFinalizer(ctx context.Context, st *store.Store, log *zap.Logger) {
 	}
 }
 
+// runFastestClickersRefresh recomputes the fastest_clickers materialized view
+// (the admin "fastest clickers" board) once at startup and then every 10 minutes,
+// so that admin page reads stay cheap and the board is at most ~10 min stale.
+func runFastestClickersRefresh(ctx context.Context, st *store.Store, log *zap.Logger) {
+	refresh := func() {
+		rctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		if err := st.RefreshFastestClickers(rctx); err != nil {
+			log.Error("refresh fastest clickers", zap.Error(err))
+		}
+	}
+	refresh()
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			refresh()
+		}
+	}
+}
+
 func main() {
 	log, _ := zap.NewProduction()
 	defer log.Sync()
@@ -138,6 +162,7 @@ func main() {
 	defer cancel()
 	go engine.Run(ctx)
 	go runHourlyFinalizer(ctx, st, log)
+	go runFastestClickersRefresh(ctx, st, log)
 
 	mux := api.NewRouter(st, cache, hub, engine, log)
 

@@ -3,9 +3,12 @@
 # wipedb.sh — reset the competition boards so a fresh winner can be set.
 #
 # Truncates the score/win tables (hourly_scores, hourly_wins, finalized_hours,
-# session_wins) in the running Postgres container, then restarts the app so its
-# in-memory leaderboard cache reloads from the now-empty tables. Player rows
-# (claimed usernames / Steam identities) are KEPT unless --all is given.
+# session_wins) AND the game-history tables (games, game_rounds, round_scores —
+# which also back the admin recent-games and fastest-clickers views) in the
+# running Postgres container, then restarts the app so its in-memory leaderboard
+# cache reloads and the fastest_clickers materialized view re-refreshes from the
+# now-empty tables. Player rows (claimed usernames / Steam identities) are KEPT
+# unless --all is given.
 #
 # Usage (run from server/):
 #   ./scripts/wipedb.sh            # wipe boards, keep players, confirm first
@@ -30,7 +33,9 @@ for arg in "$@"; do
   esac
 done
 
-TABLES="hourly_scores, hourly_wins, finalized_hours, session_wins"
+# round_scores/game_rounds/games are listed together so their FKs are satisfied
+# within the one TRUNCATE (round_scores → game_rounds → games).
+TABLES="hourly_scores, hourly_wins, finalized_hours, session_wins, round_scores, game_rounds, games"
 if [ "$WIPE_PLAYERS" -eq 1 ]; then
   TABLES="$TABLES, players"
 fi
@@ -44,7 +49,8 @@ fi
 
 $COMPOSE exec -T postgres \
   psql -U splitclicker -d splitclicker -v ON_ERROR_STOP=1 \
-  -c "TRUNCATE $TABLES RESTART IDENTITY;"
+  -c "TRUNCATE $TABLES RESTART IDENTITY;" \
+  -c "REFRESH MATERIALIZED VIEW fastest_clickers;"
 
 echo "boards wiped — restarting app so its leaderboard cache reloads empty…"
 $COMPOSE restart app

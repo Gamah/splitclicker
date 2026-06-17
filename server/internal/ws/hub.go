@@ -105,6 +105,12 @@ func (h *Hub) register(c *Client) {
 	h.bySteam[c.SteamID] = c
 	h.mu.Unlock()
 
+	// Wake a paused engine so it starts a game now that someone's here. Legacy
+	// clients don't count toward the crowd, so they don't wake it.
+	if !c.Legacy && h.engine != nil {
+		h.engine.Wake()
+	}
+
 	h.hello(c)
 }
 

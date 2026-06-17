@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -170,6 +171,147 @@ func TestEngineLoopScores(t *testing.T) {
 		t.Fatal("final round must fold into game_over, not emit round_result")
 	case <-time.After(3 * time.Second):
 		t.Fatal("no game_over frame")
+	}
+}
+
+// pausableBC is a captureBC whose player count is settable, to drive the
+// engine's pause-when-empty behaviour.
+type pausableBC struct {
+	*captureBC
+	players atomic.Int32
+}
+
+func (b *pausableBC) PlayerCount() int { return int(b.players.Load()) }
+
+// TestEnginePausesWithoutPlayers: with no players connected the engine arms
+// nothing and writes no history; once a client connects (and wakes it) a game
+// starts promptly.
+func TestEnginePausesWithoutPlayers(t *testing.T) {
+	cfg := Config{
+		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
+		MinClicks: 1, RoundsPerGame: 1,
+		RaceMax: 2 * time.Second, ResultDisplay: 5 * time.Millisecond,
+		Intermission: 5 * time.Millisecond, BoardSize: 20,
+	}
+	bc := &pausableBC{captureBC: newCaptureBC()} // players starts at 0
+	st := &fakeStore{}
+	e := New(cfg, bc, st, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	// Paused: no round arms while nobody is connected.
+	select {
+	case <-bc.armed:
+		t.Fatal("engine armed a round with no players connected")
+	case <-time.After(200 * time.Millisecond):
+	}
+	st.mu.Lock()
+	n := len(st.logs)
+	st.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("expected no games recorded while paused, got %d", n)
+	}
+
+	// A client connects and wakes the engine — a game should start at once.
+	bc.players.Store(1)
+	e.Wake()
+	select {
+	case <-bc.armed:
+	case <-time.After(time.Second):
+		t.Fatal("engine did not start a game after a player connected")
+	}
+}
+
+// fakeStore captures the GameLog handed to RecordGame so a test can assert the
+// per-click history a completed game produces. Implements game.Store.
+type fakeStore struct {
+	mu   sync.Mutex
+	logs []GameLog
+}
+
+func (s *fakeStore) AddHourlyPoints(context.Context, time.Time, []HourlyDelta) error { return nil }
+func (s *fakeStore) AddSessionWin(context.Context, string) error                     { return nil }
+func (s *fakeStore) RecordGame(_ context.Context, log GameLog) error {
+	s.mu.Lock()
+	s.logs = append(s.logs, log)
+	s.mu.Unlock()
+	return nil
+}
+
+// TestEngineRecordsGameHistory: a 2-round game (N=2) records exactly one GameLog
+// whose rounds carry the scoring clicks in arrival order — contiguous SlotNo
+// 0..n-1, the expected SteamID per slot, and non-negative OffsetMs.
+func TestEngineRecordsGameHistory(t *testing.T) {
+	cfg := Config{
+		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
+		MinClicks: 2, RoundsPerGame: 2,
+		RaceMax: 2 * time.Second, ResultDisplay: 5 * time.Millisecond,
+		Intermission: 5 * time.Millisecond, BoardSize: 20,
+	}
+	bc := newCaptureBC()
+	st := &fakeStore{}
+	e := New(cfg, bc, st, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Run(ctx)
+
+	// Fill both rounds' N=2 slots: "a" then "b" each round.
+	a1 := <-bc.armed
+	e.Submit(click("a", a1.Nonce))
+	e.Submit(click("b", a1.Nonce))
+	<-bc.result // round 1 done
+
+	a2 := <-bc.armed
+	e.Submit(click("a", a2.Nonce))
+	e.Submit(click("b", a2.Nonce))
+	<-bc.gameOver // final round folds into game_over; afterGame runs next
+
+	// afterGame is a detached goroutine — wait briefly for the RecordGame write.
+	var log GameLog
+	deadline := time.After(2 * time.Second)
+	for {
+		st.mu.Lock()
+		n := len(st.logs)
+		if n > 0 {
+			log = st.logs[0]
+		}
+		st.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("no GameLog recorded")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	if log.GameID == "" || log.StartedAt.IsZero() || log.EndedAt.IsZero() {
+		t.Fatalf("game metadata not populated: %+v", log)
+	}
+	if len(log.RoundLogs) != 2 {
+		t.Fatalf("expected 2 rounds logged, got %d", len(log.RoundLogs))
+	}
+	for i, r := range log.RoundLogs {
+		if r.RoundNo != i+1 {
+			t.Fatalf("round %d has RoundNo %d", i, r.RoundNo)
+		}
+		if len(r.Clicks) != 2 {
+			t.Fatalf("round %d expected 2 scoring clicks, got %d", r.RoundNo, len(r.Clicks))
+		}
+		wantSID := []string{"a", "b"}
+		for slot, c := range r.Clicks {
+			if c.SlotNo != slot {
+				t.Fatalf("round %d slot %d has SlotNo %d", r.RoundNo, slot, c.SlotNo)
+			}
+			if c.SteamID != wantSID[slot] {
+				t.Fatalf("round %d slot %d: want %s, got %s", r.RoundNo, slot, wantSID[slot], c.SteamID)
+			}
+			if c.OffsetMs < 0 {
+				t.Fatalf("round %d slot %d: negative OffsetMs %d", r.RoundNo, slot, c.OffsetMs)
+			}
+		}
 	}
 }
 
