@@ -331,6 +331,6 @@
 
 	protected override int BuildHash() =>
 		HashCode.Combine(
-			IsOpen, ShowFab, FabLabel, WideFab, Player?.CurrentSeed, Player?.CurrentVibe, Player?.Enabled ?? true,
+			IsOpen, Player?.CurrentSeed, Player?.CurrentVibe, Player?.Enabled ?? true,
 			Player?.Volume ?? 1f, Player?.RandomEverySong ?? false, _msg, _copyLabel );
 }
