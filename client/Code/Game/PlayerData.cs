@@ -18,27 +18,9 @@ public sealed class PlayerData
 	/// <summary>game_id whose win we last counted toward the `wins` stat.</summary>
 	public string LastWinGameId { get; set; } = "";
 
-	/// <summary>Index of the procedural music track currently playing, persisted so the
-	/// endless song sequence resumes where it left off (see Audio/MusicController).</summary>
-	public int MusicN { get; set; }
-
-	/// <summary>Whether the player has muted the background music (persisted choice).</summary>
-	public bool MusicMuted { get; set; }
-
-	/// <summary>Music master volume the user picks in the music panel (0–1.5, multiplies the
-	/// fixed baseline). 1 = baseline.</summary>
-	public float MusicVolume { get; set; } = 1f;
-
-	/// <summary>Seed tag override for the music sequence ("" = use the player's own tag). The
-	/// music panel writes this when a shared seed/tag is played.</summary>
-	public string MusicTag { get; set; } = "";
-
-	/// <summary>Base-36 "vibe" override encoding the generator knobs ("" = defaults). Edited
-	/// live by the music panel's knob grid; part of the shareable <c>vibe:tag:n</c> seed.</summary>
-	public string MusicVibe { get; set; } = "";
-
-	/// <summary>Shuffle mode: re-randomise every knob when each new song begins (persisted).</summary>
-	public bool MusicRandomEverySong { get; set; }
+	// Music persistence (track index / mute / volume / seed) lives in the Skafinity library
+	// now — the SkafinityPlayer persists its own song index (PersistProgress), and the
+	// library's SkafinityMusicPanel drives it. The game keeps no music state.
 
 	const string FileName = "player.json";
 	static PlayerData _cache;

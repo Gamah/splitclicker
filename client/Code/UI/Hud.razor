@@ -5,7 +5,7 @@
 @using Sandbox.UI
 @using Splitclicker.Api
 @using Splitclicker.Game
-@using Splitclicker.Audio
+@using Skafinity
 @namespace Splitclicker.UI
 @inherits PanelComponent
 
@@ -65,16 +65,16 @@
 	</div>
 
 	@* ── music button: bottom-left, directly below the how-to-play card. Opens the
-	     music panel (genre / vibe knobs / seed sharing / mute + volume), which is a child
-	     of this single root (a PanelComponent can't be nested, but a Panel can). ── *@
+	     Skafinity library's SkafinityMusicPanel (genre / vibe knobs / seed sharing / mute +
+	     volume), which lives on its own ScreenPanel GameObject (see ToggleMusic). ── *@
 	<div class="music-btn @(MusicOpen ? "open" : "")" onclick="@ToggleMusic">MUSIC</div>
 
 	@* ── the one global button (roams the box; centred only on first load) with the
 	   status HUD over it ── *@
 	@* StateClass also lands on .center (harmless; only the button reads it for colour).
-	   The music panel lives in here too: it's centred on this same box, and while it's
-	   open the button + status + "clicks sent" stop drawing (the connection stays open
-	   — we just don't paint the game). *@
+	   While the music board is open (MusicOpen) the button + status + "clicks sent" stop
+	   drawing — the panel overlays from its own ScreenPanel, and the connection stays open
+	   (we just don't paint the game underneath it). *@
 	<div class="center @StateClass()" @ref="_box">
 		@if ( !MusicOpen )
 		{
@@ -121,8 +121,6 @@
 
 			<div class="clicks-sent">@($"clicks sent: {c?.ClicksSent ?? 0}")</div>
 		}
-
-		<MusicPanel @ref="_music" />
 	</div>
 
 	@* ── hourly board: Postgres "most clicks this hour", pinned right (inner) ── *@
@@ -721,6 +719,14 @@
 
 	protected override void OnUpdate()
 	{
+		// The library panel's own ✕ only flips its IsOpen; collapse that to our closed state
+		// (disable it) so its ♪ button doesn't reappear and the game button returns.
+		if ( _music is { Enabled: true, IsOpen: false } )
+		{
+			_music.Enabled = false;
+			StateHasChanged();
+		}
+
 		// Drop finished "+ PENALTY" popups (the CSS animation runs for PopLife). While
 		// any are live, re-render every frame so removals take effect on time.
 		if ( _pops.Count > 0 )
@@ -929,11 +935,26 @@
 	const float PopLife = 1f;
 
 	// ── music panel toggle ──
-	// The panel (mute/volume + genre/vibe knobs + seed sharing) is a child Panel of this
-	// root; the MUSIC button just opens/closes it.
-	MusicPanel _music;
-	bool MusicOpen => _music?.IsOpen ?? false;
-	void ToggleMusic() { _music?.Toggle(); StateHasChanged(); }
+	// The settings board is the Skafinity library's own SkafinityMusicPanel (the green
+	// drop-in), mounted on its OWN ScreenPanel GameObject — a PanelComponent can't be a
+	// sibling child of this HUD's single root (see CLAUDE.md ScreenPanel note). It starts
+	// DISABLED in the scene so its built-in ♪ button never shows; this HUD's MUSIC button is
+	// the sole opener. Resolved include-disabled (GetAllComponents skips disabled GOs).
+	SkafinityMusicPanel _music;
+	SkafinityMusicPanel Music =>
+		_music ??= Scene?.Components.Get<SkafinityMusicPanel>( FindMode.EverythingInSelfAndDescendants );
+
+	// "Open" = the panel is enabled (we only ever enable it already-open, below).
+	bool MusicOpen => Music is { Enabled: true };
+
+	void ToggleMusic()
+	{
+		var m = Music;
+		if ( m == null ) return;
+		if ( m.Enabled ) m.Enabled = false;                      // close: hides the panel + its ♪
+		else { m.Enabled = true; if ( !m.IsOpen ) m.Toggle(); }  // open straight to the board
+		StateHasChanged();
+	}
 
 	// Button/center colour class — three states:
 	//   go   → green, applied with no colour transition so it snaps on in one frame
