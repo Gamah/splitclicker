@@ -28,9 +28,9 @@
 *@
 
 <root class="@( IsOpen ? "open" : "" )">
-	@if ( !IsOpen )
+	@if ( !IsOpen && ShowFab )
 	{
-		<div class="fab" onclick="@Toggle">♪</div>
+		<div class="fab @( WideFab ? "wide" : "" )" onclick="@Toggle">@FabLabel</div>
 	}
 	else
 	{
@@ -166,6 +166,18 @@
 
 	/// <summary>Whether the settings board is showing (toggled by the ♪ button).</summary>
 	public bool IsOpen { get; private set; }
+
+	/// <summary>Show the built-in toggle button when the board is closed. Set false when a host
+	/// UI provides its own opener and drives the board via <see cref="Toggle"/>.</summary>
+	[Property] public bool ShowFab { get; set; } = true;
+
+	/// <summary>Label on the closed-state toggle button. Defaults to the ♪ glyph; a host can set
+	/// e.g. "MUSIC" to make it read as a labelled bar (pair with <see cref="WideFab"/>).</summary>
+	[Property] public string FabLabel { get; set; } = "♪";
+
+	/// <summary>Render the toggle button as a wide labelled bar (host chrome) instead of the
+	/// compact square glyph.</summary>
+	[Property] public bool WideFab { get; set; }
 
 	TextEntry _tagEntry;
 	bool _tagInit;

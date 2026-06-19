@@ -1,11 +1,12 @@
 @using System
 @using System.Collections.Generic
+@using System.Linq
 @using System.Threading.Tasks
 @using Sandbox
 @using Sandbox.UI
 @using Splitclicker.Api
 @using Splitclicker.Game
-@using Splitclicker.Audio
+@using Skafinity
 @namespace Splitclicker.UI
 @inherits PanelComponent
 
@@ -64,17 +65,18 @@
 		<div class="line penalty-note">Clicking while not live is allowed but delays your button becoming live behind other players.</div>
 	</div>
 
-	@* ── music button: bottom-left, directly below the how-to-play card. Opens the
-	     music panel (genre / vibe knobs / seed sharing / mute + volume), which is a child
-	     of this single root (a PanelComponent can't be nested, but a Panel can). ── *@
-	<div class="music-btn @(MusicOpen ? "open" : "")" onclick="@ToggleMusic">MUSIC</div>
+	@* ── the music opener is the Skafinity library's own toggle button: it lives on the
+	     MusicUI ScreenPanel and is styled (ShowFab/WideFab/FabLabel in the scene) into the
+	     wide "MUSIC" bar pinned bottom-left under the how-to-play card, opening/closing its
+	     own board. This HUD only reads MusicOpen (the panel's IsOpen) to stop painting the
+	     game while the board is up. ── *@
 
 	@* ── the one global button (roams the box; centred only on first load) with the
 	   status HUD over it ── *@
 	@* StateClass also lands on .center (harmless; only the button reads it for colour).
-	   The music panel lives in here too: it's centred on this same box, and while it's
-	   open the button + status + "clicks sent" stop drawing (the connection stays open
-	   — we just don't paint the game). *@
+	   While the music board is open (MusicOpen) the button + status + "clicks sent" stop
+	   drawing — the panel overlays from its own ScreenPanel, and the connection stays open
+	   (we just don't paint the game underneath it). *@
 	<div class="center @StateClass()" @ref="_box">
 		@if ( !MusicOpen )
 		{
@@ -121,8 +123,6 @@
 
 			<div class="clicks-sent">@($"clicks sent: {c?.ClicksSent ?? 0}")</div>
 		}
-
-		<MusicPanel @ref="_music" />
 	</div>
 
 	@* ── hourly board: Postgres "most clicks this hour", pinned right (inner) ── *@
@@ -238,7 +238,7 @@
 		top: 18px;
 		width: 280px;
 		flex-direction: column;
-		background-color: rgba(7, 5, 26, 0.82);
+		background-color: rgba(3, 13, 7, 0.85);
 		border: 1.5px solid rgba(255, 255, 255, 0.12);
 		border-radius: 10px;
 		padding: 12px 14px;
@@ -290,30 +290,8 @@
 		white-space: normal;
 	}
 
-	/* music button: bottom-left corner, directly beneath the how-to-play card and
-	   matching its column width. */
-	.music-btn {
-		position: absolute;
-		bottom: 18px;
-		left: 14px;
-		width: 300px;
-		pointer-events: all;
-		cursor: pointer;
-		flex-direction: row;
-		align-items: center;
-		justify-content: center;
-		background-color: rgba(7, 5, 26, 0.82);
-		border: 1.5px solid rgba(255, 255, 255, 0.12);
-		border-radius: 8px;
-		padding: 8px 14px;
-		font-size: 13px;
-		font-weight: bold;
-		letter-spacing: 1px;
-		color: rgba(255, 255, 255, 0.78);
-	}
-
-	.music-btn:hover { color: #ffffff; border-color: rgba(255, 255, 255, 0.3); }
-	.music-btn.open { color: #ffd166; border-color: rgba(255, 209, 102, 0.4); }
+	/* The music opener lives on the Skafinity panel's own ScreenPanel (see scene
+	   ShowFab/WideFab/FabLabel), not here. */
 	.board.hourly { right: 308px; } /* 14 (edge) + 280 (hours-won) + 14 (gap) */
 	.board.hourswon { right: 14px; }
 	/* sessions-won pins to the free bottom-right corner (top:auto cancels the
@@ -379,7 +357,7 @@
 		width: 200px;
 		flex-direction: column;
 		align-items: center;
-		background-color: rgba(7, 5, 26, 0.82);
+		background-color: rgba(3, 13, 7, 0.85);
 		border: 1.5px solid rgba(255, 255, 255, 0.12);
 		border-radius: 10px;
 		padding: 10px;
@@ -929,11 +907,20 @@
 	const float PopLife = 1f;
 
 	// ── music panel toggle ──
-	// The panel (mute/volume + genre/vibe knobs + seed sharing) is a child Panel of this
-	// root; the MUSIC button just opens/closes it.
-	MusicPanel _music;
-	bool MusicOpen => _music?.IsOpen ?? false;
-	void ToggleMusic() { _music?.Toggle(); StateHasChanged(); }
+	// The settings board is the Skafinity library's own SkafinityMusicPanel (the green
+	// drop-in), mounted on its OWN ScreenPanel GameObject — a PanelComponent can't be a
+	// sibling child of this HUD's single root (see CLAUDE.md ScreenPanel note). It owns its
+	// own opener (the wide "MUSIC" bar — ShowFab/WideFab/FabLabel in the scene) and its own
+	// close, so the HUD never toggles it; it only READS IsOpen to stop painting the game
+	// while the board is up. The optional inspector ref is just a fast-path; we fall back to
+	// a scene lookup so a blank field can't leave the HUD blind to the board's state.
+	[Property] public SkafinityMusicPanel MusicBoard { get; set; }
+
+	SkafinityMusicPanel Board => MusicBoard ??= Scene?.GetAllComponents<SkafinityMusicPanel>().FirstOrDefault();
+
+	// "Open" = the panel's board is showing. MusicOpen feeds BuildHash, so the panel's own
+	// open/close (which flips IsOpen) re-renders the HUD and shows/hides the game beneath it.
+	bool MusicOpen => Board?.IsOpen ?? false;
 
 	// Button/center colour class — three states:
 	//   go   → green, applied with no colour transition so it snaps on in one frame
