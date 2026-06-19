@@ -1,0 +1,287 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>package.gamah.skafinity</name>
+    </assembly>
+    <members>
+        <member name="T:Skafinity.MusicGen">
+             <summary>
+             Deterministic procedural ska / reggae-rock track generator (issue: procedural music).
+            
+             A player's 8-hex <c>player_tag</c> seeds a portable PRNG (xmur3 → mulberry32);
+             the PRNG drives every musical choice (tempo, key, progression, bass / skank /
+             organ / lead / drum patterns) so the SAME tag always produces the SAME song.
+             Output is interleaved stereo 16-bit PCM (for SoundStream) or a WAV (debug).
+            
+             PORTABILITY (web parity): the *composition* is whatever the PRNG emits — a web
+             client reproduces the same arrangement by mirroring xmur3 + mulberry32 and this
+             file's note-selection order, using the same <see cref="T:Skafinity.MusicGen.Config"/> values. Synthesis
+             (oscillators/filters below) only needs matching for bit-identical audio.
+            
+             Synthesis: subtractive — unison-detuned oscillators through a resonant low-pass
+             state-variable filter with a cutoff envelope (warm, not "8-bit"); full synth drum
+             kit (kick/snare/toms/hats/crash + fills). Default voicing aims for a Sublime vibe:
+             laid-back reggae-rock tempo, bass-forward, prominent clean skank + organ bubble.
+             </summary>
+        </member>
+        <member name="M:Skafinity.MusicGen.FinishStereo">
+            <summary>Master-normalize and interleave to stereo 16-bit PCM. Call after every
+            <see cref="M:Skafinity.MusicGen.RenderPitchedRange(System.Int32,System.Int32)"/> window has finished.</summary>
+        </member>
+        <member name="M:Skafinity.MusicGen.RenderPitchedRange(System.Int32,System.Int32)">
+            <summary>Synthesize every pitched event whose span overlaps <c>[from, to)</c>,
+            writing ONLY samples inside that window. Safe to call concurrently for disjoint
+            windows: each output index is owned by exactly one window, a boundary-spanning
+            note is re-rendered from its own start by each window (the SVF / high-pass state
+            can't be resumed mid-stream), and each window walks <c>_events</c> in order, so
+            writes never collide and the per-index sum order is deterministic.</summary>
+        </member>
+        <member name="M:Skafinity.MusicGen.WavFromSamples(System.Int16[],System.Int32,System.Int32)">
+            <summary>Wrap already-rendered 16-bit samples in a WAV (for export). Mono or
+            interleaved stereo per <paramref name="channels"/>.</summary>
+        </member>
+        <member name="T:Skafinity.SkafinityPlayer">
+             <summary>
+             Streams an endless, deterministic procedural ska / reggae-rock track (see
+             <see cref="T:Skafinity.MusicGen"/>) through Web Audio-style scheduling over a <see cref="T:Sandbox.SoundStream"/>.
+            
+             Drop this <see cref="T:Sandbox.Component"/> on any GameObject. It generates a ~80s loop from the
+             seed <c>tag:n</c>, plays it <see cref="P:Skafinity.SkafinityPlayer.LoopsPerSong"/> times, then equal-power crossfades
+             into the pre-generated next song (<c>tag:n+1</c>), forever. Every generator knob is an
+             inspector <c>[Property]</c>; with <see cref="P:Skafinity.SkafinityPlayer.LiveReload"/> on, tweaking one regenerates
+             after a short settle so you can dial in a vibe in play mode.
+            
+             A whole song is just its seed, so the arrangement is shareable: copy <see cref="P:Skafinity.SkafinityPlayer.CurrentSeed"/>
+             (<c>vibe:tag:n</c>) and anyone who calls <see cref="M:Skafinity.SkafinityPlayer.PlaySeed(System.String)"/> with it hears the same track.
+            
+             This is a self-contained extraction of the Rotaliate music engine with no game-specific
+             dependencies (no player data, networking, or UI). Persistence of the song index is opt-in
+             via <see cref="P:Skafinity.SkafinityPlayer.PersistProgress"/>.
+             </summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.Enabled">
+            <summary>Music master switch. 'new' so it's distinct from <see cref="P:Sandbox.Component.Enabled"/>.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.LiveReload">
+            <summary>Regenerate automatically a moment after any generator knob changes (editor tuning).</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.MixerName">
+            <summary>Optional mixer name to route the music to (e.g. "Music"). Empty = default mixer.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.AutoPlay">
+            <summary>Begin playing automatically in <see cref="M:Skafinity.SkafinityPlayer.OnStart"/>. Off = call <see cref="M:Skafinity.SkafinityPlayer.StartSequence"/> yourself.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.RandomEverySong">
+            <summary>Shuffle mode: re-randomise every knob (incl. genre + volumes) as each new song
+            begins, so the sequence keeps reinventing itself. Off = the seed's vibe stays put.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.Tag">
+            <summary>Seed tag — any string (a name, a word). Empty falls back to "skafinity".</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.StartN">
+            <summary>Song index in the infinite sequence (0,1,2…). <see cref="M:Skafinity.SkafinityPlayer.StepN(System.Int32)"/>/<see cref="M:Skafinity.SkafinityPlayer.NextSong"/> walk it.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.Vibe">
+            <summary>Optional base-36 vibe override (see <see cref="T:Skafinity.VibeCodec"/>). When set it overrides
+            the matching inspector knobs, so a shared vibe reproduces the same voicing on any client.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.PersistProgress">
+            <summary>Persist the current song index across sessions (FileSystem.Data, keyed by <see cref="P:Skafinity.SkafinityPlayer.SaveSlot"/>).</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.TargetSeconds">
+            <summary>Target track length; bar count adapts to tempo to hit this.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.RenderThreads">
+            <summary>Worker threads the pitched-voice synthesis is split across (composition + drums
+            stay single-threaded). Keeps each worker burst under s&amp;box's ~1000ms no-yield advisory.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.Crossfade">
+            <summary>Crossfade window (also the first song's fade-in from silence), seconds. The two
+            songs only both-audible for <see cref="P:Skafinity.SkafinityPlayer.CrossfadeOverlap"/> of this, centred.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.LoopsPerSong">
+            <summary>How many times each loop plays before crossfading on (2 = play through, loop once, switch).</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.AheadCount">
+            <summary>How many upcoming songs to keep pre-generated (built one-per-tick so the fill never stalls a frame).</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.ForceInstrument">
+            <summary>-1 = RNG; 0=Trumpet 1=Sax 2=Organ 3=Trombone.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.N">
+            <summary>Currently-playing song index.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.CurrentVibe">
+            <summary>The effective vibe — the override if set, else the encoded inspector knobs.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.CurrentSeed">
+            <summary>Shareable seed for the playing song: <c>vibe:tag:n</c>.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityPlayer.IsPlaying">
+            <summary>True once a stream handle is live and audible.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.ConfigureFlat">
+            <summary>Make the stream play as flat 2D (SpacialBlend=0, parented to the camera with
+            FollowParent so the listener can't pan/attenuate it). Optionally routes to a named mixer.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.EffectiveConfig">
+            <summary>The config currently in effect (inspector knobs with any <see cref="P:Skafinity.SkafinityPlayer.Vibe"/> applied).</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.FillAhead(System.Int32)">
+            <summary>Top the look-ahead buffer up to <see cref="P:Skafinity.SkafinityPlayer.AheadCount"/>, generating each song on
+            a worker thread. Fire-and-forget from OnUpdate; <paramref name="seq"/> guards against a
+            sequence restart landing a stale song in the buffer.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.WriteSongBody(System.Int16[],System.Int32,System.Int32,System.Int32)">
+            <summary>Write <see cref="P:Skafinity.SkafinityPlayer.LoopsPerSong"/> passes of interleaved-stereo <paramref name="raw"/>
+            to the stream, given the first <paramref name="headConsumed"/> frames of pass 0 were already
+            emitted, holding back the final <paramref name="reserve"/> frames for the next crossfade.
+            Optional fade-in over the first <paramref name="fadeIn"/> frames of pass 0. Returns frames
+            written.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.StartSequence">
+            <summary>(Re)start the infinite sequence at the current tag/n. Bumps the sequence token
+            (invalidating any in-flight generation), stops the current handle, then kicks the async
+            (worker-thread) start so the caller never blocks.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.PlaySeed(System.String)">
+            <summary>Play a shareable seed in any of the forms <c>vibe:tag:n</c>, <c>tag:n</c>, or
+            <c>tag</c>. Missing components are left unchanged; a vibe is only applied when present.
+            Restarts the sequence.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.SetTag(System.String)">
+            <summary>Set just the seed tag (empty = the default "skafinity" seed). Restarts.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.SetN(System.Int32)">
+            <summary>Jump to song index n in the sequence (clamped ≥ 0). Restarts.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.StepN(System.Int32)">
+            <summary>Step the song index by <paramref name="delta"/> (e.g. +1 / -1). Restarts.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.NextSong">
+            <summary>Skip to the next song in the sequence.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.PrevSong">
+            <summary>Step back to the previous song in the sequence.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.SetVibe(System.Int32,System.Single)">
+            <summary>Set vibe field <paramref name="index"/> (see <see cref="M:Skafinity.VibeCodec.Fields(System.Int32)"/>) from
+            a 0..1 fraction, store the re-encoded <see cref="P:Skafinity.SkafinityPlayer.Vibe"/>, and restart on a short debounce.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.SetGenre(System.Int32)">
+            <summary>Switch genre (rides in the vibe's first char): re-encode the effective config
+            with the new genre into <see cref="P:Skafinity.SkafinityPlayer.Vibe"/> so it sticks over the inspector knobs, then
+            restart. Use this rather than setting <see cref="P:Skafinity.SkafinityPlayer.Genre"/> directly — an existing
+            <see cref="P:Skafinity.SkafinityPlayer.Vibe"/> override otherwise wins and the change wouldn't take.</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.RerollVibe(System.Boolean,System.Boolean,System.Boolean)">
+            <summary>Randomize the vibe knobs and restart on a short debounce. By default the
+            per-instrument volumes (and genre) are left alone so a reroll re-voices without upending
+            the mix; pass <paramref name="includeVolumes"/> / <paramref name="includeGenre"/> for a
+            full shuffle. Pass <paramref name="restart"/> = false to re-voice without yanking the
+            playhead — the caller is then responsible for letting the change take effect (e.g. by
+            clearing the look-ahead so upcoming songs regenerate with the new vibe).</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityPlayer.SaveCurrentToFile">
+            <summary>Write the playing song's raw loop (no fade) to a WAV under FileSystem.Data.
+            Returns the filename written, or null on failure.</summary>
+        </member>
+        <member name="T:Skafinity.VibeCodec">
+             <summary>
+             Compact, shareable encoding of the "important" <see cref="T:Skafinity.MusicGen.Config"/> knobs — the
+             ones that define a song's vibe (genre, tempo, per-instrument mix/tone/character). Each
+             knob is quantised to one base-36 character (16 discrete levels, i.e. a hex digit) and the genre rides in
+             the first character, so the whole vibe is a short string that travels in the seed as
+             <c>vibe:tag:n</c>.
+            
+             WIRE FORMAT (genre-independent envelope, fixed positions):
+               <c>[genre char][global block][instrument grid]</c>
+             where the global block is <see cref="F:Skafinity.VibeCodec.GlobalFields"/> in order, and the instrument grid
+             reserves up to <see cref="F:Skafinity.VibeCodec.MaxInstruments"/> blocks of 4 columns
+             (volume / tone / character / extra). Column <c>c</c> of instrument <c>i</c> always lives
+             at position <c>1 + globals + i*4 + c</c>, so adding a genre, an instrument, or a 5th
+             column never shifts an existing position. APPEND-ONLY now means: append global knobs,
+             append instrument slots (≤ MaxInstruments), and only ever append columns past the 4th.
+             <see cref="M:Skafinity.VibeCodec.Apply(System.String,Skafinity.MusicGen.Config)"/> ignores trailing chars a shorter string lacks, so a vibe from a
+             client with fewer slots still parses (the missing knobs keep their config defaults).
+            
+             Lossy by design (16 levels/knob) but stable: Encode(Decode(s)) == s.
+             </summary>
+        </member>
+        <member name="F:Skafinity.VibeCodec.Field.Choices">
+            <summary>Discrete option labels (value = Min + index); null for a continuous knob.</summary>
+        </member>
+        <member name="F:Skafinity.VibeCodec.Field.Voice">
+            <summary>Instrument row this knob belongs to (null = a GLOBAL knob).</summary>
+        </member>
+        <member name="F:Skafinity.VibeCodec.Field.Column">
+            <summary>Matrix column: 0 volume, 1 tone, 2 character, 3 extra (ignored for globals).</summary>
+        </member>
+        <member name="F:Skafinity.VibeCodec.Field.InSeed">
+            <summary>Whether this knob travels in the shareable vibe seed. Per-instrument VOLUME knobs
+            set this false: volume is a local mix preference persisted per-voice (see
+            <see cref="M:Skafinity.VibeCodec.ReadVolumes(System.Int32,Skafinity.MusicGen.Config)"/>), not part of the song's identity. The grid slot is still
+            reserved on the wire (filler char) so the other columns keep their fixed positions.</summary>
+        </member>
+        <member name="M:Skafinity.VibeCodec.Field.GetNorm(Skafinity.MusicGen.Config)">
+            <summary>Current value as a 0..1 fraction of the range.</summary>
+        </member>
+        <member name="M:Skafinity.VibeCodec.Field.SetNorm(Skafinity.MusicGen.Config,System.Single)">
+            <summary>Set from a 0..1 fraction (rounded for integer/discrete knobs).</summary>
+        </member>
+        <member name="M:Skafinity.VibeCodec.Field.Display(Skafinity.MusicGen.Config)">
+            <summary>Human-readable current value for the row header.</summary>
+        </member>
+        <!-- Badly formed XML comment ignored for member "M:Skafinity.VibeCodec.ApplyAdvanced(System.Collections.Generic.IReadOnlyDictionary{System.String,System.Single},Skafinity.MusicGen.Config)" -->
+        <member name="M:Skafinity.VibeCodec.Fields(System.Int32)">
+            <summary>Flat list (globals then the genre's instrument grid, row-major, skipping empty
+            cells) — the source the music panel iterates to build its controls. Each field carries
+            its <see cref="F:Skafinity.VibeCodec.Field.Voice"/>/<see cref="F:Skafinity.VibeCodec.Field.Column"/> so the UI can lay out the
+            matrix without a second table.</summary>
+        </member>
+        <member name="M:Skafinity.VibeCodec.IsVolume(Skafinity.VibeCodec.Field)">
+            <summary>True if <paramref name="f"/> is a per-instrument VOLUME knob — column 0 of an
+            instrument row, kept out of the shareable seed and persisted per-voice instead.</summary>
+        </member>
+        <member name="M:Skafinity.VibeCodec.ReadVolumes(System.Int32,Skafinity.MusicGen.Config)">
+            <summary>Read the per-instrument volumes of <paramref name="genre"/> off
+            <paramref name="c"/> as a <c>voice → 0..1 level</c> map. The key is the instrument's voice
+            NAME (not its genre/position), so a voice that appears in several genres (e.g. BASS, DRUMS)
+            shares one persisted level. Merge this into a single store across genres.</summary>
+        </member>
+        <member name="M:Skafinity.VibeCodec.ApplyVolumes(System.Int32,System.Collections.Generic.IReadOnlyDictionary{System.String,System.Single},Skafinity.MusicGen.Config)">
+            <summary>Overlay a <c>voice → 0..1 level</c> map (from <see cref="M:Skafinity.VibeCodec.ReadVolumes(System.Int32,Skafinity.MusicGen.Config)"/> / storage)
+            onto <paramref name="c"/> for <paramref name="genre"/>. Voices absent from the map keep
+            their current/default level. Call this after <see cref="M:Skafinity.VibeCodec.Apply(System.String,Skafinity.MusicGen.Config)"/> so a song's saved mix
+            rides on top of the seed's voicing.</summary>
+        </member>
+        <member name="M:Skafinity.VibeCodec.Encode(Skafinity.MusicGen.Config)">
+            <summary>Encode the vibe-defining knobs of <paramref name="c"/> (including its genre)
+            to a base-36 string.</summary>
+        </member>
+        <member name="M:Skafinity.VibeCodec.Apply(System.String,Skafinity.MusicGen.Config)">
+            <summary>Apply a vibe string onto <paramref name="c"/> in place. Reads the genre from the
+            first char, then walks the fixed wire positions. Silently ignores empty/malformed input
+            and any trailing positions the string is too short to cover.</summary>
+        </member>
+        <member name="P:Skafinity.VibeCodec.MaxLength">
+            <summary>Largest possible well-formed vibe length: genre + globals + the full reserved
+            instrument grid.</summary>
+        </member>
+        <member name="M:Skafinity.VibeCodec.LooksLikeVibe(System.String)">
+            <summary>True if <paramref name="s"/> looks like a vibe token: all base-36 and within
+            the vibe length band. The floor stays well above an 8-char player tag (and the 9-char
+            default "rotaliate") so the two never collide in <c>vibe:tag:n</c>.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityMusicPanel.Player">
+            <summary>The player this panel drives. Leave unset to auto-find a <see cref="T:Skafinity.SkafinityPlayer"/>
+            in the scene on start.</summary>
+        </member>
+        <member name="P:Skafinity.SkafinityMusicPanel.IsOpen">
+            <summary>Whether the settings board is showing (toggled by the ♪ button).</summary>
+        </member>
+        <member name="M:Skafinity.SkafinityMusicPanel.Toggle">
+            <summary>Open/close the settings board.</summary>
+        </member>
+    </members>
+</doc>

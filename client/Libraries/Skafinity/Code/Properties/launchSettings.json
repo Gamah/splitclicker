@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "Editor": {
+      "commandName": "Executable",
+      "executablePath": "../../../../../../../Steam/steamapps/common/sbox/sbox-dev.exe",
+      "commandLineArgs": "-project \u0022D:\\code\\splitclicker\\client\\Libraries\\Skafinity\\Skafinity.sbproj\u0022"
+    }
+  }
+}
