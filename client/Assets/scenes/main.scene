@@ -10,7 +10,7 @@
         {
           "__type": "Sandbox.CameraComponent",
           "__guid": "9e56bdbf-d0b2-4096-9dab-10dd3057b400",
-          "BackgroundColor": "0.027451,0.019608,0.101961,1",
+          "BackgroundColor": "0.011765,0.05098,0.027451,1",
           "ZNear": 1,
           "ZFar": 10000,
           "FieldOfView": 60,
