@@ -28,7 +28,7 @@
 *@
 
 <root class="@( IsOpen ? "open" : "" )">
-	@if ( !IsOpen )
+	@if ( !IsOpen && ShowFab )
 	{
 		<div class="fab" onclick="@Toggle">♪</div>
 	}
@@ -166,6 +166,10 @@
 
 	/// <summary>Whether the settings board is showing (toggled by the ♪ button).</summary>
 	public bool IsOpen { get; private set; }
+
+	/// <summary>Show the built-in floating ♪ button when the board is closed. Set false when a
+	/// host UI provides its own opener and drives the board via <see cref="Toggle"/>.</summary>
+	[Property] public bool ShowFab { get; set; } = true;
 
 	TextEntry _tagEntry;
 	bool _tagInit;
@@ -319,6 +323,6 @@
 
 	protected override int BuildHash() =>
 		HashCode.Combine(
-			IsOpen, Player?.CurrentSeed, Player?.CurrentVibe, Player?.Enabled ?? true,
+			IsOpen, ShowFab, Player?.CurrentSeed, Player?.CurrentVibe, Player?.Enabled ?? true,
 			Player?.Volume ?? 1f, Player?.RandomEverySong ?? false, _msg, _copyLabel );
 }

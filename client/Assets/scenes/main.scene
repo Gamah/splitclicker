@@ -68,7 +68,7 @@
         {
           "__type": "Skafinity.SkafinityMusicPanel",
           "__guid": "97398265-f259-48bd-af91-5af583f6e138",
-          "__enabled": false,
+          "ShowFab": false,
           "Player": null
         }
       ]

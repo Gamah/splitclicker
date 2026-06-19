@@ -719,14 +719,6 @@
 
 	protected override void OnUpdate()
 	{
-		// The library panel's own ✕ only flips its IsOpen; collapse that to our closed state
-		// (disable it) so its ♪ button doesn't reappear and the game button returns.
-		if ( MusicBoard is { Enabled: true, IsOpen: false } )
-		{
-			MusicBoard.Enabled = false;
-			StateHasChanged();
-		}
-
 		// Drop finished "+ PENALTY" popups (the CSS animation runs for PopLife). While
 		// any are live, re-render every frame so removals take effect on time.
 		if ( _pops.Count > 0 )
@@ -938,24 +930,18 @@
 	// The settings board is the Skafinity library's own SkafinityMusicPanel (the green
 	// drop-in), mounted on its OWN ScreenPanel GameObject — a PanelComponent can't be a
 	// sibling child of this HUD's single root (see CLAUDE.md ScreenPanel note). Drag that
-	// panel onto this field in the inspector (a serialized ref resolves it even though it
-	// starts DISABLED in the scene — disabled so its built-in ♪ button never shows; this
-	// HUD's MUSIC button is the sole opener).
+	// panel onto this field in the inspector. The panel stays ENABLED at all times; its
+	// ShowFab is set false in the scene so its built-in ♪ button never shows and this HUD's
+	// MUSIC button is the sole opener — we drive the board purely via its IsOpen.
 	[Property] public SkafinityMusicPanel MusicBoard { get; set; }
 
-	// "Open" = the panel is enabled (we only ever enable it already-open, below).
-	bool MusicOpen => MusicBoard is { Enabled: true };
+	// "Open" = the panel's board is showing. MusicOpen feeds BuildHash, so a close via the
+	// panel's own ✕ (which flips IsOpen) re-renders the HUD and brings the game button back.
+	bool MusicOpen => MusicBoard?.IsOpen ?? false;
 
 	void ToggleMusic()
 	{
-		if ( MusicBoard is null ) return;
-		if ( MusicBoard.Enabled )
-			MusicBoard.Enabled = false;                                            // close: hides the panel + its ♪
-		else
-		{
-			MusicBoard.Enabled = true;                                             // open straight to the board
-			if ( !MusicBoard.IsOpen ) MusicBoard.Toggle();
-		}
+		MusicBoard?.Toggle();
 		StateHasChanged();
 	}
 
