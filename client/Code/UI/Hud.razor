@@ -254,6 +254,24 @@
 	{
 		<div class="toast">@_toast</div>
 	}
+
+	@* ── anticheat test gate: shown when the player failed an end-of-round check and
+	     is benched. A full-screen dim overlay (captures input) with the question and
+	     an answer box; answering correctly un-benches them and the server arms them
+	     again. Every text line is a single literal or one interpolated expression
+	     (the mixed-text-node reorder bug). ── *@
+	@if ( C?.HasTest == true )
+	{
+		<div class="test-overlay">
+			<div class="test-card">
+				<div class="test-title">VERIFY YOU'RE HUMAN</div>
+				<div class="test-sub">Anticheat flagged your last round. Answer to keep playing.</div>
+				<div class="test-prompt">@($"{C.TestPrompt} = ?")</div>
+				<TextEntry @ref="_testEntry" placeholder="answer" class="test-input" maxlength="12" />
+				<div class="test-submit" onclick="@SubmitTest">SUBMIT</div>
+			</div>
+		</div>
+	}
 </root>
 
 <style>
@@ -672,6 +690,81 @@
 		   the centred status HUD when both are near the top of the screen. */
 		z-index: 110;
 	}
+
+	/* ── anticheat test gate: a full-screen dim overlay that captures input (above
+	   everything else) with a centred card holding the question + answer box. ── */
+	.test-overlay {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		align-items: center;
+		justify-content: center;
+		background-color: rgba(0, 0, 0, 0.75);
+		pointer-events: all; /* block the game beneath while benched */
+		z-index: 200;
+	}
+
+	.test-card {
+		flex-direction: column;
+		align-items: center;
+		gap: 14px;
+		width: 420px;
+		padding: 28px 32px;
+		background-color: rgba(3, 13, 7, 0.98);
+		border: 2px solid #e63946;
+		border-radius: 14px;
+	}
+
+	.test-title {
+		font-size: 26px;
+		font-weight: bold;
+		color: #e63946;
+		letter-spacing: 2px;
+		justify-content: center;
+	}
+
+	.test-sub {
+		font-size: 14px;
+		color: rgba(255, 255, 255, 0.6);
+		text-align: center;
+		justify-content: center;
+		white-space: normal;
+	}
+
+	.test-prompt {
+		font-size: 40px;
+		font-weight: bold;
+		color: #ffffff;
+		letter-spacing: 2px;
+		justify-content: center;
+	}
+
+	.test-input {
+		width: 200px;
+		font-size: 24px;
+		color: #ffffff;
+		background-color: rgba(255, 255, 255, 0.08);
+		border: 1.5px solid rgba(255, 255, 255, 0.3);
+		border-radius: 8px;
+		padding: 8px 12px;
+		text-align: center;
+	}
+
+	.test-submit {
+		font-size: 18px;
+		font-weight: bold;
+		color: #030d07;
+		background-color: #06d6a0;
+		letter-spacing: 1px;
+		padding: 10px 28px;
+		border-radius: 8px;
+		cursor: pointer;
+		pointer-events: all;
+	}
+
+	.test-submit:hover { background-color: #08f0b4; }
 </style>
 
 @code {
@@ -724,6 +817,21 @@
 	// doesn't whitelist System.Globalization — the countdown is integer math.
 	long _winnerLockMs;
 	string _skinUrl = "";
+
+	// ── anticheat test gate: the answer box (captured by @ref so SubmitTest can read
+	//    it) shown in the overlay while the player is benched. ──
+	TextEntry _testEntry;
+
+	// Send the typed answer to the server and clear the box. The server replies with a
+	// `test` cleared frame (correct → un-benched) or a fresh `test` (wrong); either way
+	// ClickController updates HasTest/TestPrompt and the overlay re-renders.
+	void SubmitTest()
+	{
+		var ans = _testEntry?.Text?.Trim();
+		if ( string.IsNullOrEmpty( ans ) ) return;
+		ClickController.Instance?.SubmitTestAnswer( ans );
+		if ( _testEntry != null ) _testEntry.Text = "";
+	}
 
 	// ── "copied profile link" toast: shown for ToastDuration after a name click ──
 	const float ToastDuration = 1.2f;
@@ -1024,5 +1132,6 @@
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
 		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), MusicOpen,
 			_skinUrl, _winnerLockMs, WinnerLockPassed() ),
-		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count, _allTime.Count, _allTimeLoaded ) );
+		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count, _allTime.Count, _allTimeLoaded,
+			C?.HasTest ?? false, C?.TestPrompt ) );
 }

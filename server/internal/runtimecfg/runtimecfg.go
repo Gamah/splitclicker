@@ -30,6 +30,13 @@ type File struct {
 	// it (orange) under the throttle line until it is cleared. Read once per game.
 	DevNote string `json:"dev_note"`
 
+	// LiveVersion is the current "live" client API version. A client whose version
+	// is below this is treated as outdated (troll leaderboards + the out-of-date
+	// dev note); live-or-newer is respected — so a new build (e.g. v3) can be tested
+	// before the old one is disabled. Re-read per request, so it can be toggled live.
+	// Absent ⇒ the api package's built-in default.
+	LiveVersion *int `json:"live_version"`
+
 	// Game tunables (applied at startup; a `restart` reloads them). Units are in
 	// the field names. See game.Config for meaning.
 	ArmMinSec       *int `json:"arm_min_sec"`
@@ -43,6 +50,8 @@ type File struct {
 	BoardSize       *int `json:"board_size"`
 	PenaltyBaseMs   *int `json:"penalty_base_ms"`
 	PenaltyStepMs   *int `json:"penalty_step_ms"`
+	FastClickMs     *int `json:"fast_click_ms"`
+	MaxClickFactor  *int `json:"max_click_factor"`
 }
 
 // Dir is the host-mounted config+media directory.

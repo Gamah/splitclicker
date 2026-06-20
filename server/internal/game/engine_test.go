@@ -129,6 +129,8 @@ func (b *captureBC) Result(r ResultFrame)     { b.result <- r }
 func (b *captureBC) GameOver(g GameOverFrame) { b.gameOver <- g }
 func (b *captureBC) DevNote(string)           {}
 func (b *captureBC) PlayerCount() int         { return 1 }
+func (b *captureBC) SendTest(string, TestFrame) {}
+func (b *captureBC) TestCapable(string) bool    { return true }
 
 // TestEngineLoopScores runs the real timed loop with tiny delays: one round
 // (which is therefore the final round), N=1, fire a valid click on arm, assert it
@@ -238,6 +240,8 @@ func (s *fakeStore) RecordGame(_ context.Context, log GameLog) error {
 	s.mu.Unlock()
 	return nil
 }
+func (s *fakeStore) RecordTestSent(context.Context, TestRecord) error          { return nil }
+func (s *fakeStore) RecordTestAnswer(context.Context, string, string, bool) error { return nil }
 
 // TestEngineRecordsGameHistory: a 2-round game (N=2) records exactly one GameLog
 // whose rounds carry the scoring clicks in arrival order — contiguous SlotNo

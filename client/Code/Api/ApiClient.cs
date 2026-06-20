@@ -17,12 +17,12 @@ public static class ApiClient
 	public static string BaseUrl { get; set; } = ProdUrl;
 
 	/// <summary>API version segment used in every REST path and the WS path
-	/// (/api/{ver}/… and /ws/{ver}). "v2" is the current build; set it to "v1" to
-	/// exercise the legacy/troll path the new server gives outdated clients. An
-	/// EMPTY string means no segment at all — raw /api/… and /ws — for talking to a
-	/// legacy/unversioned backend (e.g. the live old master, whose socket is bare
-	/// /ws). Mutable so the scene's ClickController can override it for testing.</summary>
-	public static string ApiVersion { get; set; } = "v2";
+	/// (/api/{ver}/… and /ws/{ver}). "v3" is the current build (it understands the
+	/// anticheat test gate); set it to "v2"/"v1" to exercise the legacy/troll path
+	/// the server gives clients below its configured live version. An EMPTY string
+	/// means no segment at all — raw /ws — for the legacy/unversioned old master.
+	/// Mutable so the scene's ClickController can override it for testing.</summary>
+	public static string ApiVersion { get; set; } = "v3";
 
 	/// <summary>The version path segment, e.g. "/v2", or "" when <see cref="ApiVersion"/>
 	/// is blank (raw, unversioned paths). Inserted into both REST and WS URLs.</summary>

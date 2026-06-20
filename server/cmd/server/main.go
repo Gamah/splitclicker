@@ -51,6 +51,8 @@ func gameConfig() game.Config {
 	setInt(f.BoardSize, &c.BoardSize)
 	setInt(f.PenaltyBaseMs, &c.PenaltyBaseMs)
 	setInt(f.PenaltyStepMs, &c.PenaltyStepMs)
+	setInt(f.FastClickMs, &c.FastClickMs)
+	setInt(f.MaxClickFactor, &c.MaxClickFactor)
 	return c
 }
 
