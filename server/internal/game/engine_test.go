@@ -129,8 +129,9 @@ func (b *captureBC) Result(r ResultFrame)     { b.result <- r }
 func (b *captureBC) GameOver(g GameOverFrame) { b.gameOver <- g }
 func (b *captureBC) DevNote(string)           {}
 func (b *captureBC) PlayerCount() int         { return 1 }
-func (b *captureBC) SendTest(string, TestFrame) {}
-func (b *captureBC) TestCapable(string) bool    { return true }
+func (b *captureBC) ActivePlayerCount(map[string]bool) int { return 1 }
+func (b *captureBC) SendTest(string, TestFrame)            {}
+func (b *captureBC) TestCapable(string) bool               { return true }
 
 // TestEngineLoopScores runs the real timed loop with tiny delays: one round
 // (which is therefore the final round), N=1, fire a valid click on arm, assert it

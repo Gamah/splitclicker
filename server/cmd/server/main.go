@@ -183,6 +183,14 @@ func main() {
 	hub.SetEngine(engine)
 	// Re-read the host-editable dev note from config.json once per game.
 	engine.SetDevNoteFn(func() string { return runtimecfg.Load().DevNote })
+	// The solo_round anticheat check needs the current bounty leader; read it from
+	// the in-memory cache (games-won-this-skin #1) so it's free to call per round.
+	engine.SetBountyLeaderFn(func() string {
+		if sw := cache.SessionsWon(1); len(sw) > 0 {
+			return sw[0].SteamID
+		}
+		return ""
+	})
 	engine.SetGameEndHook(func(ctx context.Context) {
 		if err := cache.Refresh(ctx); err != nil {
 			log.Error("refresh leaderboard cache", zap.Error(err))

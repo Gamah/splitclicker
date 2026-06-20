@@ -135,6 +135,10 @@ type Broadcaster interface {
 	// (empty string clears it). Sent once per game.
 	DevNote(note string)
 	PlayerCount() int
+	// ActivePlayerCount is the connected players who can actually race this round:
+	// non-legacy and not currently benched (in the given set). Used to size N so
+	// benched players don't inflate the scoring slots. Safe from any goroutine.
+	ActivePlayerCount(benched map[string]bool) int
 	// SendTest pushes an anticheat test (or a clear) to a single player by SteamID.
 	SendTest(steamID string, f TestFrame)
 	// TestCapable reports whether the SteamID's connected client understands tests
@@ -161,8 +165,9 @@ type ScoredClick struct {
 }
 
 // CheckResult is one anticheat check a round flagged against a player. Type is
-// the rule that fired ('fast_clicks' | 'too_many_clicks'); Detail is a short
-// human-readable note ('delta=84ms' / 'clicks=37') for the audit record.
+// the rule that fired ('fast_clicks' | 'too_many_clicks' | 'solo_round' |
+// 'dominant_winner'); Detail is a short human-readable note ('delta=84ms' /
+// 'clicks=37' / 'clicks=12 vs 5') for the audit record.
 type CheckResult struct {
 	SteamID string
 	Type    string
@@ -291,6 +296,13 @@ type Engine struct {
 	// once at the start of each game (so config edits apply on the next game).
 	// Optional — nil means no note is ever sent. Call SetDevNoteFn before Run.
 	devNoteFn func() string
+
+	// bountyLeaderFn, if set, returns the SteamID currently leading the active
+	// bounty (the games-won-this-skin #1), or "" if none. Used by the solo_round
+	// check, which only flags a lone player when they're the one in the lead.
+	// Optional — nil disables that gating (solo_round then never fires). Read from
+	// the in-memory leaderboard cache, so it's cheap to call per round.
+	bountyLeaderFn func() string
 }
 
 // SetGameEndHook registers a callback run after every game_over, once the
@@ -300,6 +312,10 @@ func (e *Engine) SetGameEndHook(fn func(context.Context)) { e.gameEndHook = fn }
 // SetDevNoteFn registers the source of the per-game dev note. Call before Run;
 // nil clears it.
 func (e *Engine) SetDevNoteFn(fn func() string) { e.devNoteFn = fn }
+
+// SetBountyLeaderFn registers the source of the current bounty leader's SteamID
+// (used by the solo_round anticheat check). Call before Run; nil disables it.
+func (e *Engine) SetBountyLeaderFn(fn func() string) { e.bountyLeaderFn = fn }
 
 // New builds an Engine. store may be nil (scoring still works, just not
 // persisted). log may be nil (falls back to a no-op logger).
@@ -493,9 +509,11 @@ func (e *Engine) playGame(ctx context.Context) {
 	var finalDeltas map[string]int
 	var finalRoundID string
 	for round := 1; round <= x && ctx.Err() == nil; round++ {
-		// Size the round to the crowd at arm time: N scales with connected players.
+		// players is the full connected crowd (shown to clients + recorded); N is sized
+		// to the players who can actually race — benched players are excluded so they
+		// don't inflate the scoring slots.
 		players := e.bc.PlayerCount()
-		n := e.clicksFor(players)
+		n := e.clicksFor(e.bc.ActivePlayerCount(e.underTest))
 		e.pending(ctx, round, x, players, n, info)
 		if ctx.Err() != nil {
 			return
@@ -507,7 +525,11 @@ func (e *Engine) playGame(ctx context.Context) {
 		}
 		// Run the end-of-round anticheat checks against this round's scoring clicks.
 		// Checks are logged for everyone; only test-capable players get benched.
-		checks := e.runChecks(clicks)
+		leader := ""
+		if e.bountyLeaderFn != nil {
+			leader = e.bountyLeaderFn()
+		}
+		checks := e.runChecks(clicks, players, leader)
 		for _, ch := range checks {
 			if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
 				e.underTest[ch.SteamID] = true
@@ -821,7 +843,7 @@ func (e *Engine) recordBad(ev ClickEvent) {
 // round's scoring clicks (already in wire-arrival order):
 //   - fast_clicks:     two consecutive scoring clicks < FastClickMs apart.
 //   - too_many_clicks: more than MaxClickFactor × ClicksPerPlayer scoring slots.
-func (e *Engine) runChecks(clicks []ScoredClick) []CheckResult {
+func (e *Engine) runChecks(clicks []ScoredClick, players int, bountyLeader string) []CheckResult {
 	if len(clicks) == 0 {
 		return nil
 	}
@@ -851,6 +873,30 @@ func (e *Engine) runChecks(clicks []ScoredClick) []CheckResult {
 		// too_many_clicks: an implausible share of the round's slots.
 		if limit > 0 && len(offs) > limit {
 			out = append(out, CheckResult{SteamID: sid, Type: "too_many_clicks", Detail: fmt.Sprintf("clicks=%d", len(offs))})
+		}
+	}
+
+	// solo_round: the round had a single connected player (farming an empty lobby),
+	// but only counts when that lone player is the one currently LEADING the bounty —
+	// i.e. padding a lead nobody can contest. A lone player who isn't in the lead is
+	// left alone.
+	if players == 1 && bountyLeader != "" && order[0] == bountyLeader {
+		out = append(out, CheckResult{SteamID: order[0], Type: "solo_round", Detail: fmt.Sprintf("clicks=%d", len(offsets[order[0]]))})
+	}
+
+	// dominant_winner: the round's top scorer took MORE than 2× the runner-up's
+	// scoring clicks. Needs at least two distinct scorers; ties at the top don't fire.
+	if len(order) >= 2 {
+		topSID, topN, secondN := "", 0, 0
+		for _, sid := range order { // stable: first-arrival order breaks count ties
+			if n := len(offsets[sid]); n > topN {
+				topN, secondN, topSID = n, topN, sid
+			} else if n > secondN {
+				secondN = n
+			}
+		}
+		if secondN > 0 && topN > 2*secondN {
+			out = append(out, CheckResult{SteamID: topSID, Type: "dominant_winner", Detail: fmt.Sprintf("clicks=%d vs %d", topN, secondN)})
 		}
 	}
 	return out

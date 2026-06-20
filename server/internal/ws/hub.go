@@ -164,6 +164,21 @@ func (h *Hub) PlayerCount() int {
 	return n
 }
 
+// ActivePlayerCount is the connected, non-legacy players who can actually race:
+// the player count minus anyone in the benched set. Implements game.Broadcaster
+// so the engine sizes N to the players who can score, not the benched ones.
+func (h *Hub) ActivePlayerCount(benched map[string]bool) int {
+	h.mu.RLock()
+	n := 0
+	for c := range h.clients {
+		if !c.Legacy && !benched[c.SteamID] {
+			n++
+		}
+	}
+	h.mu.RUnlock()
+	return n
+}
+
 // --- game.Broadcaster ---
 
 func (h *Hub) Pending(p game.PendingFrame) {
