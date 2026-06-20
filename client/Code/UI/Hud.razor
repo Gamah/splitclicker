@@ -273,12 +273,12 @@
 
 				<div class="divider"></div>
 				<div class="howto-subtitle">ANTI-CHEAT</div>
-				<div class="line">Every round, the server inspects the scoring clicks for tell-tale bot behaviour. Get flagged and you're benched: you'll have to answer a quick math question before the button arms for you again.</div>
+				<div class="line">Every round, the server inspects the scoring clicks for tell-tale bot behaviour. The first flags just bench you behind a quick math question before the button arms again.</div>
 				<div class="state-row"><span class="tag over">TOO FAST</span><span class="desc">Two of your scoring clicks landed closer together than any human hand can manage.</span></div>
-				<div class="state-row"><span class="tag over">TOO MANY</span><span class="desc">You grabbed an implausible share of one round's limited click slots.</span></div>
-				<div class="state-row"><span class="tag over">SOLO FARM</span><span class="desc">Padding a bounty lead by clicking alone in an empty lobby.</span></div>
-				<div class="state-row"><span class="tag over">RUNAWAY</span><span class="desc">A round's top scorer took more than double the runner-up's clicks.</span></div>
-				<div class="line penalty-note">Play fair and none of this ever fires — these only catch automation.</div>
+				<div class="state-row"><span class="tag over">TOO MANY</span><span class="desc">In a busy round you took far more than your fair share of the clicks (solo rounds are exempt — there's no one to share with).</span></div>
+				<div class="state-row"><span class="tag over">SOLO FARM</span><span class="desc">Padding a runaway bounty lead by clicking alone, once that lead is already huge.</span></div>
+				<div class="state-row"><span class="tag over">RUNAWAY</span><span class="desc">You out-clicked a runner-up who was genuinely competing by an impossible margin (beating an idle player is fine).</span></div>
+				<div class="line penalty-note">Keep getting flagged in one bounty and it escalates: too many flags puts you on a timed cooldown, and a few more after that sidelines you until the skin is won. Play fair and none of this ever fires — these only catch automation.</div>
 			</div>
 		</div>
 	}
@@ -294,9 +294,30 @@
 			<div class="test-card">
 				<div class="test-title">Gamah Anti-Cheat v0.67.69.420</div>
 				<div class="test-sub">You probably know what you did so do some math now instead...</div>
+				@if ( !string.IsNullOrEmpty( C.TestMessage ) )
+				{
+					<div class="test-reason">@C.TestMessage</div>
+				}
 				<div class="test-prompt">@($"{C.TestPrompt} = ?")</div>
 				<TextEntry @ref="_testEntry" placeholder="answer" class="test-input" maxlength="12" />
 				<div class="test-submit" onclick="@SubmitTest">SUBMIT</div>
+			</div>
+		</div>
+	}
+
+	@* ── anticheat sanction gate: shown when the player is past the test rung — on a
+	     timed cooldown or ignored for the rest of the bounty. Same dim overlay, but no
+	     test to answer: just the reason and a countdown to when the state lifts (reuses
+	     the bounty-timer HH:MM:SS format). Each line is a single interpolated
+	     expression (the mixed-text-node reorder bug). ── *@
+	@if ( !string.IsNullOrEmpty( C?.SanctionState ) )
+	{
+		<div class="test-overlay">
+			<div class="test-card sanction">
+				<div class="test-title">Gamah Anti-Cheat v0.67.69.420</div>
+				<div class="test-reason">@(C.SanctionMessage)</div>
+				<div class="sanction-label">@(C.SanctionState == "ignored" ? "Back in the game when the skin is won" : "Cooldown ends in")</div>
+				<div class="sanction-time">@SanctionCountdown()</div>
 			</div>
 		</div>
 	}
@@ -861,6 +882,37 @@
 		white-space: normal;
 	}
 
+	/* the specific check (or sanction) reason, in the anticheat red. */
+	.test-reason {
+		font-size: 16px;
+		font-weight: bold;
+		color: #ff8c69;
+		text-align: center;
+		justify-content: center;
+		white-space: normal;
+	}
+
+	/* cooldown/ignored card: no answer box, just the reason + a countdown. The
+	   amber border separates it from the red math-test card. */
+	.test-card.sanction { border-color: #ffd166; }
+
+	.sanction-label {
+		font-size: 14px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.6);
+		text-align: center;
+		justify-content: center;
+		letter-spacing: 0.5px;
+	}
+
+	.sanction-time {
+		font-size: 40px;
+		font-weight: bold;
+		color: #ffd166;
+		letter-spacing: 2px;
+		justify-content: center;
+	}
+
 	.test-prompt {
 		font-size: 40px;
 		font-weight: bold;
@@ -1192,6 +1244,17 @@
 		return $"{s / 3600:D2}:{(s % 3600) / 60:D2}:{s % 60:D2}";
 	}
 
+	// Time left on the active anticheat sanction (cooldown end, or the bounty resolve
+	// time for "ignored"), as HH:MM:SS clamped at zero — same integer epoch-ms math
+	// as the winner countdown (sandbox-safe).
+	string SanctionCountdown()
+	{
+		long left = ( C?.SanctionUntilMs ?? 0 ) - NowMs();
+		if ( left < 0 ) left = 0;
+		long s = left / 1000;
+		return $"{s / 3600:D2}:{(s % 3600) / 60:D2}:{s % 60:D2}";
+	}
+
 	// Every click sends the click AND teleports the button to a fresh random spot in
 	// the box — armed or not. A fixed-position autoclicker therefore lands at most one
 	// click per position; a human re-aims. The button stays where it lands until the
@@ -1282,5 +1345,8 @@
 			_skinUrl, _winnerLockMs, WinnerLockPassed() ),
 		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count, _allTime.Count, _allTimeLoaded,
 			C?.HasTest ?? false, C?.TestPrompt ),
-		_howtoOpen );
+		_howtoOpen,
+		// sanction overlay state (the per-second countdown tick is already covered by
+		// the seconds term in the second combine above).
+		HashCode.Combine( C?.TestMessage, C?.SanctionState, C?.SanctionUntilMs ) );
 }
