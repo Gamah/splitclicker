@@ -4,13 +4,13 @@ This file is the authoritative context document for Claude sessions working on t
 Read it fully before making any changes. The detailed design lives in **[PLAN.md](PLAN.md)** —
 this file is the quick orientation; PLAN.md is the source of truth for architecture decisions.
 
-**Status:** backend first pass implemented in `server/` (engine state machine, WS hub,
-Facepunch auth, hourly board, Docker/Caddy) and unit-tested but not yet run end-to-end.
-The s&box client in `client/` is scaffolded (auth, WS, controller, Razor UI).
-**Next step: the s&box client** — build it out into a runnable game: create the in-editor
-startup scene (`client/scenes/main.scene`) wiring `ClickController` + a `ScreenPanel`
-hosting the panels, set `HttpAllowList`/`ApiClient.BaseUrl`, define the s&box Services
-achievements/stats, and play-test against a running backend (PLAN §7).
+**Status:** both halves are built out. `server/` has the engine state machine, WS hub,
+Facepunch auth, the bounty + leaderboard boards, the anticheat checks + per-bounty
+sanction ladder, Docker/Caddy, and unit tests. `client/` is a playable s&box game:
+`ClickController` (WS lifecycle/phase), the single-root `Hud.razor` (boards, roaming
+button, GAME INFO popup, anticheat overlays), the Skafinity music library, and
+s&box-Services achievements. **The live API version is `v4`** (anticheat sanction
+ladder); the config-driven `live_version` floor is `v3`.
 
 ---
 
@@ -114,9 +114,9 @@ server/                # Go backend (module github.com/gamah/splitclicker)
     steam/             # Facepunch token validation (copied from rotaliate)
     session/           # public player tag + username validation
     game/              # round/game state machine: arm RNG, race, scoring (first N by arrival)
-    store/             # Postgres-backed hourly board + players (pgx)
+    store/             # Postgres: players, leaderboard boards, bounties, anticheat (pgx)
     ws/                # WS hub: registry, single precomputed broadcast, click ingestion
-    api/               # REST: /auth, /leaderboard/hourly, /health, + /ws upgrade
+    api/               # REST: /auth, /leaderboard/*, /config, /admin/*, /health, + /ws upgrade
     db/                # pgx pool + goose migrations (filesystem)
   migrations/          # goose SQL files
   docker/              # Dockerfile + compose (app on 6969; external Caddy fronts it)
@@ -140,6 +140,24 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   Fixed formula (not env-configurable); mirrored client-side (`ClickController.IdlePenaltyMs`) for
   a live estimate that the authoritative `armed` value overwrites. Mashing becomes self-defeating.
   Idle clicks still rate-limited so this doesn't reintroduce idle traffic.
+- **Anticheat checks + sanction ladder** (`game.runChecks` / `game.applySanction`; tunables in
+  `data/config.json`). End of every round, the scoring clicks are inspected: **fast_clicks**
+  (sub-human inter-click gap), **too_many_clicks** (over `max_click_factor ×` the round's fair
+  share N÷active; skipped solo), **solo_round** (lone leader padding a ≥`solo_lead_margin`
+  games-won lead), **dominant_winner** (>2× a runner-up who scored ≥`dominant_runner_up_min`, so
+  beating an idle player is safe). Each carries a player-facing message. Flags escalate
+  **per-bounty** (counts reset each bounty, persisted in `anticheat_sanctions`): test (math) →
+  cooldown (`check_cooldown_threshold` flags → `check_cooldown_mins`) → ignored
+  (`check_ignore_after` more → until the bounty resolves). The server pushes the rung as a `test`
+  frame with `state`/`message`/`until_ms`; the client shows the test, then a countdown. The
+  bounty snapshot the checks need (id, leader+margin, resolve time) is supplied via
+  `Engine.SetBountyInfoFn` from the leaderboard cache.
+- **API versioning.** REST/WS are versioned (`/api/{ver}`, `/ws/{ver}`); the live floor is
+  config-driven (`live_version`). Below-live clients get the troll boards + "out of date" note;
+  live-or-newer are respected (so a new build is testable before the floor moves up). Capability
+  gates live in `ws/hub.go` (`minTestVersion`, `minSanctionVersion`). **Cleanup rule:** support
+  only N and N-1 — once a new build goes live, prune handling two+ versions back (when v5 is live,
+  drop all v3-and-older special-casing). See the note at `api/router.go`'s `liveVersionDefault`.
 - **Traffic minimization.** Persistent WS, never polling. Idle is silent. Cheap idle conns
   (epoll lib), infrequent/long heartbeats, one precomputed broadcast on arm, race closes the
   instant click N lands (losing clicks read-and-dropped), leaderboard pushed inside
@@ -163,11 +181,12 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
 ## WebSocket protocol (summary — full in PLAN.md §8)
 
 - Hot-path frames (`armed` out, `click` in) should be **binary** at scale; the rest JSON.
-- Client→server: `click {seq}`, `ping`.
+- Client→server: `click {seq}`, `test_answer {id, answer}`, `ping`.
 - Server→client: `hello`, `round_pending`, `armed`, `round_result` (with `you.points_delta`,
   `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`), `too_late`/`rejected`,
-  `achievement` (`{ident}` — out-of-band manual unlock for an HTTP feat matched by IP: `fart`,
-  `hackerman`).
+  `test {state, id?, prompt?, message, until_ms?, cleared?}` (anticheat rung: `state` =
+  `test`/`cooldown`/`ignored`; `cleared` dismisses it), `achievement` (`{ident}` — out-of-band
+  manual unlock for an HTTP feat matched by IP: `fart`, `hackerman`).
 
 ---
 

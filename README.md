@@ -9,6 +9,31 @@ tick), so rounds are decided by true server wire-arrival order.
 See **[PLAN.md](PLAN.md)** for the full design and **[CLAUDE.md](CLAUDE.md)** for
 orientation.
 
+## Anti-cheat
+
+At the end of every round the server inspects that round's scoring clicks (in true
+wire-arrival order) and flags bot-like play. Four checks, all tunable in
+`server/data/config.json`:
+
+- **fast_clicks** — two consecutive scoring clicks closer together than
+  `fast_click_ms` (default 130) — faster than a human hand.
+- **too_many_clicks** — more than `max_click_factor ×` the round's fair share
+  (N ÷ active players) of the slots. **Skipped in solo rounds** (one player rightly
+  takes them all).
+- **solo_round** — a lone player padding a bounty lead, but only once that
+  games-won lead over second place is at least `solo_lead_margin` (default 15).
+- **dominant_winner** — out-clicking the field by more than 2×, but only against a
+  runner-up who actually competed (scored ≥ `dominant_runner_up_min`, default 5),
+  so beating an idle player is never flagged.
+
+Flags escalate on a **per-bounty ladder** (counts reset each bounty): the first
+`check_cooldown_threshold` flags (default 20) each just bench the player behind a
+quick math test; crossing the threshold starts a `check_cooldown_mins` cooldown
+(default 60); `check_ignore_after` more flags (default 2) sideline them until the
+bounty resolves. The client shows the test, then a countdown for the cooldown /
+ignored states. State is persisted (`anticheat_checks`, `anticheat_sanctions`) so
+it survives a restart and feeds the admin surface.
+
 ## Repo layout
 
 This is a monorepo with two halves:
@@ -72,9 +97,11 @@ crossfaded sequence at a fixed 15% volume, and persists the song index
    returns `{tag, username, ticket, ttl_ms}` (`username` resolves to the claimed handle,
    else the Steam name).
 2. `GET /ws?ticket=…` — upgrade with the single-use ticket (SteamID never on the URL).
-3. WS frames (JSON): client→ `click {nonce}`, `ping`; server→ `hello`,
-   `round_pending`, `armed {nonce}`, `round_result` (with `you.points_delta`,
-   `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`).
+3. WS frames (JSON): client→ `click {nonce}`, `test_answer {id, answer}`, `ping`;
+   server→ `hello`, `round_pending`, `armed {nonce}`, `round_result` (with
+   `you.points_delta`, `round_id`), `game_over` (with `you.placement`, `you.won`,
+   `game_id`), and `test {state, prompt?, message, until_ms?}` for the anti-cheat
+   gate (state = `test` / `cooldown` / `ignored`, or `cleared`).
 4. `GET /api/v1/leaderboard/hourly?limit=15` — current UTC hour, top players.
 5. `GET /api/v1/leaderboard/hours-won?limit=15` — career board: hours won (the
    top scorer of each completed clock-hour wins that hour).
