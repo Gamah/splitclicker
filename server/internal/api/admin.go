@@ -4,6 +4,8 @@ import (
 	"crypto/subtle"
 	"html/template"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,9 @@ const adminSessionTTL = 12 * time.Hour
 
 // adminCookieName is the session cookie set after a successful login.
 const adminCookieName = "admin_session"
+
+// adminPageSize is the default rows-per-page for every paginated admin table.
+const adminPageSize = 20
 
 // sessionStore is the set of live admin session tokens (token → expiry). It is
 // in-memory, so a server restart logs admins out — fine for this tiny surface.
@@ -177,57 +182,167 @@ func requestIsHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-// GET /admin — dashboard: history counts, the live leaderboards, and the most
-// recent games (each linking to its per-click detail).
+// GET /admin — dashboard: history counts, the live leaderboards, the recent
+// games, and the per-player anticheat roll-up. Every table is paginated
+// (adminPageSize rows/page, each with its own page query param) and the whole
+// view can be scoped to a single bounty window via the ?bounty= filter.
 func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
 	if !h.adminAuth(w, r) {
 		return
 	}
 	ctx := r.Context()
-	stats, err := h.store.AdminStats(ctx)
+
+	selectable, err := h.store.SelectableBounties(ctx)
+	if err != nil {
+		h.adminError(w, "load bounty filter", err)
+		return
+	}
+	win, filterLabel, bounty := resolveWindow(r.URL.Query().Get("bounty"), selectable)
+
+	stats, err := h.store.AdminStats(ctx, win)
 	if err != nil {
 		h.adminError(w, "load stats", err)
 		return
 	}
-	games, err := h.store.RecentGames(ctx, 50)
+
+	gNum, gOff := pageOffset(r, "gp")
+	games, gTotal, err := h.store.RecentGames(ctx, win, adminPageSize, gOff)
 	if err != nil {
 		h.adminError(w, "load recent games", err)
 		return
 	}
+	acNum, acOff := pageOffset(r, "acp")
+	antiCheat, acTotal, err := h.store.AntiCheatAggregate(ctx, win, adminPageSize, acOff)
+	if err != nil {
+		h.adminError(w, "load anticheat summary", err)
+		return
+	}
+	fNum, fOff := pageOffset(r, "fp")
+	fastest, fTotal, err := h.store.FastestClickers(ctx, win, adminPageSize, fOff)
+	if err != nil {
+		h.adminError(w, "load fastest clickers", err)
+		return
+	}
+	pNum, pOff := pageOffset(r, "pp")
+	points, pTotal, err := h.store.PointsBoard(ctx, win, adminPageSize, pOff)
+	if err != nil {
+		h.adminError(w, "load points board", err)
+		return
+	}
+	hNum, hOff := pageOffset(r, "hp")
+	hoursWon, hTotal, err := h.store.HoursWonBoard(ctx, win, adminPageSize, hOff)
+	if err != nil {
+		h.adminError(w, "load hours-won board", err)
+		return
+	}
+	sNum, sOff := pageOffset(r, "sp")
+	sessionsWon, sTotal, err := h.store.SessionsWonBoard(ctx, win, adminPageSize, sOff)
+	if err != nil {
+		h.adminError(w, "load games-won board", err)
+		return
+	}
+	aNum, aOff := pageOffset(r, "ap")
+	allTime, aTotal, err := h.store.AllTimeClickersBoard(ctx, win, adminPageSize, aOff)
+	if err != nil {
+		h.adminError(w, "load all-time board", err)
+		return
+	}
+
+	// The bounty queue itself is the management surface, not a filtered view, so
+	// it always shows every bounty regardless of the active filter.
 	bounties, err := h.store.ListBounties(ctx)
 	if err != nil {
 		h.adminError(w, "load bounties", err)
 		return
 	}
-	fastest, err := h.store.FastestClickers(ctx, 15)
-	if err != nil {
-		h.adminError(w, "load fastest clickers", err)
-		return
-	}
-	checks, err := h.store.RecentChecks(ctx, 50)
-	if err != nil {
-		h.adminError(w, "load anticheat checks", err)
-		return
-	}
-	tests, err := h.store.RecentTests(ctx, 50)
-	if err != nil {
-		h.adminError(w, "load anticheat tests", err)
-		return
+
+	mk := func(param string, num, total int) Page {
+		return Page{Base: "/admin", Bounty: bounty, Param: param, Num: num, Size: adminPageSize, Total: total}
 	}
 	data := dashboardData{
-		Stats:       stats,
-		Games:       games,
-		Bounties:    bounties,
-		Fastest:     fastest,
-		Checks:      checks,
-		Tests:       tests,
-		Hourly:      h.cache.Hourly(15),
-		HoursWon:    h.cache.HoursWon(15),
-		SessionsWon: h.cache.SessionsWon(15),
-		AllTime:     h.cache.AllTimeClickers(15),
-		Players:     h.hub.PlayerCount(),
+		Stats:           stats,
+		Players:         h.hub.PlayerCount(),
+		Bounty:          bounty,
+		FilterLabel:     filterLabel,
+		Selectable:      selectable,
+		Bounties:        bounties,
+		Games:           games,
+		GamesPage:       mk("gp", gNum, gTotal),
+		AntiCheat:       antiCheat,
+		AntiCheatPage:   mk("acp", acNum, acTotal),
+		Fastest:         fastest,
+		FastestPage:     mk("fp", fNum, fTotal),
+		Points:          points,
+		PointsPage:      mk("pp", pNum, pTotal),
+		HoursWon:        hoursWon,
+		HoursWonPage:    mk("hp", hNum, hTotal),
+		SessionsWon:     sessionsWon,
+		SessionsWonPage: mk("sp", sNum, sTotal),
+		AllTime:         allTime,
+		AllTimePage:     mk("ap", aNum, aTotal),
 	}
 	h.renderAdmin(w, dashboardTmpl, data)
+}
+
+// GET /admin/player?id=<steamid>&bounty=… — the per-player profile: identity (a
+// link out to their Steam profile), window-scoped aggregate stats, and the
+// paginated detail of their anticheat checks and tests.
+func (h *handler) adminPlayer(w http.ResponseWriter, r *http.Request) {
+	if !h.adminAuth(w, r) {
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if !steamIDRe.MatchString(id) {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+
+	selectable, err := h.store.SelectableBounties(ctx)
+	if err != nil {
+		h.adminError(w, "load bounty filter", err)
+		return
+	}
+	win, filterLabel, bounty := resolveWindow(r.URL.Query().Get("bounty"), selectable)
+
+	profile, ok, err := h.store.PlayerProfile(ctx, id, win)
+	if err != nil {
+		h.adminError(w, "load player", err)
+		return
+	}
+	if !ok {
+		http.Error(w, "player not found", http.StatusNotFound)
+		return
+	}
+
+	cNum, cOff := pageOffset(r, "cp")
+	checks, cTotal, err := h.store.PlayerChecks(ctx, id, win, adminPageSize, cOff)
+	if err != nil {
+		h.adminError(w, "load player checks", err)
+		return
+	}
+	tNum, tOff := pageOffset(r, "tp")
+	tests, tTotal, err := h.store.PlayerTests(ctx, id, win, adminPageSize, tOff)
+	if err != nil {
+		h.adminError(w, "load player tests", err)
+		return
+	}
+
+	extra := "id=" + url.QueryEscape(id)
+	mk := func(param string, num, total int) Page {
+		return Page{Base: "/admin/player", Extra: extra, Bounty: bounty, Param: param, Num: num, Size: adminPageSize, Total: total}
+	}
+	data := playerData{
+		Profile:     profile,
+		Selectable:  selectable,
+		Bounty:      bounty,
+		FilterLabel: filterLabel,
+		Checks:      checks,
+		ChecksPage: mk("cp", cNum, cTotal),
+		Tests:      tests,
+		TestsPage:  mk("tp", tNum, tTotal),
+	}
+	h.renderAdmin(w, playerTmpl, data)
 }
 
 // GET /admin/game?id=… — one game's rounds and the per-click arrival timing.
@@ -264,30 +379,146 @@ func (h *handler) renderAdmin(w http.ResponseWriter, t *template.Template, data 
 	}
 }
 
-type loginData struct{ Error string }
+// pageOffset reads a 1-based page number from the named query param (default 1,
+// floored at 1) and returns it together with the row offset it implies.
+func pageOffset(r *http.Request, param string) (num, offset int) {
+	num = queryInt(r, param, 1)
+	if num < 1 {
+		num = 1
+	}
+	return num, (num - 1) * adminPageSize
+}
 
-var loginTmpl = template.Must(template.New("login").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>splitclicker admin · login</title><style>` + adminCSS + `</style></head><body>
-<form class="login" method="post" action="/admin/login">
-  <h1>admin</h1>
-  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
-  <input type="password" name="password" placeholder="password" autofocus autocomplete="current-password">
-  <button type="submit">Login</button>
-</form>
-</body></html>`))
+// resolveWindow turns the ?bounty= filter value into a store.Window. "", "all",
+// or an unknown id all mean the default all-history view; a known bounty id
+// scopes every view to that bounty's window. It returns the window, a label for
+// the page heading, and the normalised filter value to echo back into links
+// ("" for all-history).
+func resolveWindow(param string, selectable []store.BountyWindow) (store.Window, string, string) {
+	if param != "" && param != "all" {
+		for _, b := range selectable {
+			if strconv.FormatInt(b.ID, 10) == param {
+				return b.Window(), bountyFilterLabel(b), param
+			}
+		}
+	}
+	return store.AllWindow(), "All history", ""
+}
+
+// bountyFilterLabel is the human label for a bounty in the filter / heading.
+func bountyFilterLabel(b store.BountyWindow) string {
+	name := b.Label
+	if name == "" {
+		name = "bounty #" + strconv.FormatInt(b.ID, 10)
+	}
+	if b.Status == "active" {
+		return name + " (current)"
+	}
+	return name
+}
+
+// Page is the pagination state for one admin table. It carries everything its
+// pager control needs to build prev/next links that keep the page's base path,
+// any fixed query (Extra, e.g. the player id) and the active bounty filter,
+// while changing only this table's page param. Switching one table's page resets
+// the other tables on the page to page 1 (their params aren't carried) — fine
+// for an admin surface and keeps link building simple.
+type Page struct {
+	Base   string // "/admin" or "/admin/player"
+	Extra  string // pre-encoded query to preserve (e.g. "id=765…"), or ""
+	Bounty string // active bounty filter ("" = all history)
+	Param  string // the query param controlling this table's page
+	Num    int
+	Size   int
+	Total  int
+}
+
+// Last is the highest page number (at least 1).
+func (p Page) Last() int {
+	if p.Size <= 0 || p.Total <= 0 {
+		return 1
+	}
+	return (p.Total + p.Size - 1) / p.Size
+}
+
+func (p Page) HasPrev() bool { return p.Num > 1 }
+func (p Page) HasNext() bool { return p.Num < p.Last() }
+
+// From / To are the 1-based row range shown ("From–To of Total").
+func (p Page) From() int {
+	if p.Total == 0 {
+		return 0
+	}
+	return (p.Num-1)*p.Size + 1
+}
+
+func (p Page) To() int {
+	to := p.Num * p.Size
+	if to > p.Total {
+		to = p.Total
+	}
+	return to
+}
+
+func (p Page) link(n int) string {
+	v := url.Values{}
+	if p.Bounty != "" {
+		v.Set("bounty", p.Bounty)
+	}
+	v.Set(p.Param, strconv.Itoa(n))
+	q := v.Encode()
+	if p.Extra != "" {
+		q = p.Extra + "&" + q
+	}
+	return p.Base + "?" + q
+}
+
+func (p Page) PrevURL() string { return p.link(p.Num - 1) }
+func (p Page) NextURL() string { return p.link(p.Num + 1) }
+
+type loginData struct{ Error string }
 
 type dashboardData struct {
 	Stats       store.AdminStats
-	Games       []store.AdminGame
-	Bounties    []store.Bounty
-	Fastest     []store.FastestClicker
-	Checks      []store.AdminCheck
-	Tests       []store.AdminTest
-	Hourly      []store.LeaderboardEntry
-	HoursWon    []store.LeaderboardEntry
-	SessionsWon []store.LeaderboardEntry
-	AllTime     []store.LeaderboardEntry
 	Players     int
+	Bounty      string // active filter value ("" = all history)
+	FilterLabel string
+	Selectable  []store.BountyWindow
+	Bounties    []store.Bounty
+
+	Games     []store.AdminGame
+	GamesPage Page
+
+	AntiCheat     []store.AdminAntiCheat
+	AntiCheatPage Page
+
+	Fastest     []store.FastestClicker
+	FastestPage Page
+
+	Points     []store.LeaderboardEntry
+	PointsPage Page
+
+	HoursWon     []store.LeaderboardEntry
+	HoursWonPage Page
+
+	SessionsWon     []store.LeaderboardEntry
+	SessionsWonPage Page
+
+	AllTime     []store.LeaderboardEntry
+	AllTimePage Page
+}
+
+type playerData struct {
+	Profile     store.PlayerProfile
+	Selectable  []store.BountyWindow
+	Bounty      string
+	FilterLabel string
+
+	Checks     []store.AdminCheck
+	ChecksPage Page
+
+	Tests     []store.AdminTest
+	TestsPage Page
 }
 
 // adminFuncs are the template helpers shared by the admin views.
@@ -317,10 +548,42 @@ var adminFuncs = template.FuncMap{
 		}
 		return s
 	},
-	"add1": func(i int) int { return i + 1 }, // 0-based range index → 1-based rank
-	// plink renders a player name as a link to their public Steam profile. The
-	// name (a user-controlled display string) is HTML-escaped; an empty steam id
-	// or name degrades gracefully. Returns template.HTML so it isn't re-escaped.
+	"add": func(a, b int) int { return a + b },
+	// dict builds a map from alternating key/value args, so a shared template
+	// block (the filter bar) can be invoked with a small ad-hoc payload.
+	"dict": func(pairs ...any) map[string]any {
+		m := make(map[string]any, len(pairs)/2)
+		for i := 0; i+1 < len(pairs); i += 2 {
+			if k, ok := pairs[i].(string); ok {
+				m[k] = pairs[i+1]
+			}
+		}
+		return m
+	},
+	// idsel reports whether bounty option id matches the active filter value, for
+	// the <option selected> marker.
+	"idsel": func(id int64, cur string) bool { return strconv.FormatInt(id, 10) == cur },
+	// bwlabel is the option text for a bounty in the filter dropdown: its label
+	// (or "#id") plus its window.
+	"bwlabel": func(b store.BountyWindow) string {
+		name := b.Label
+		if name == "" {
+			name = "bounty #" + strconv.FormatInt(b.ID, 10)
+		}
+		when := b.Start.UTC().Format("2006-01-02 15:04")
+		if b.Status == "active" {
+			return name + "  (current · since " + when + " UTC)"
+		}
+		return name + "  (" + when + " → " + b.End.UTC().Format("2006-01-02 15:04") + " UTC)"
+	},
+	// steamurl is the public Steam community profile URL for a SteamID64.
+	"steamurl": func(steamID string) string {
+		return "https://steamcommunity.com/profiles/" + steamID
+	},
+	// plink renders a player name as a link to their per-player admin profile
+	// (which in turn links out to Steam). The name (a user-controlled display
+	// string) is HTML-escaped; an empty steam id or name degrades gracefully.
+	// Returns template.HTML so it isn't re-escaped.
 	"plink": func(steamID, name string) template.HTML {
 		if name == "" {
 			name = "anon"
@@ -329,50 +592,144 @@ var adminFuncs = template.FuncMap{
 		if steamID == "" {
 			return template.HTML(safeName)
 		}
-		url := "https://steamcommunity.com/profiles/" + template.HTMLEscapeString(steamID)
-		return template.HTML(`<a href="` + url + `" target="_blank" rel="noopener">` + safeName + `</a>`)
+		href := "/admin/player?id=" + template.HTMLEscapeString(steamID)
+		return template.HTML(`<a href="` + href + `">` + safeName + `</a>`)
 	},
 }
 
 const adminCSS = `
-body{font:14px/1.5 system-ui,sans-serif;margin:2rem;color:#1a1a1a;background:#fafafa}
-h1,h2{font-weight:600}h2{margin-top:2rem}
-a{color:#0a58ca;text-decoration:none}a:hover{text-decoration:underline}
-table{border-collapse:collapse;width:100%;margin-top:.5rem;background:#fff}
-th,td{padding:.35rem .6rem;border:1px solid #e2e2e2;text-align:left}
-th{background:#f0f0f0}
-.cards{display:flex;gap:1rem;flex-wrap:wrap}
-.card{background:#fff;border:1px solid #e2e2e2;border-radius:8px;padding:.8rem 1.2rem;min-width:7rem}
-.card .n{font-size:1.6rem;font-weight:700}
-.cols{display:flex;gap:2rem;flex-wrap:wrap}.cols>div{flex:1;min-width:18rem}
-.muted{color:#888}.mono{font-family:ui-monospace,monospace}
-.err{color:#b00020;margin:.5rem 0}
-.ok{color:#0a7a28}
-.flag{color:#b00020;font-weight:600}
-.login{max-width:20rem;margin:6rem auto;background:#fff;border:1px solid #e2e2e2;border-radius:8px;padding:1.5rem}
-.login input{width:100%;padding:.5rem;margin:.4rem 0;box-sizing:border-box;font-size:1rem}
-.login button{width:100%;padding:.5rem;font-size:1rem;cursor:pointer}
-.logout{float:right;font-size:.85rem}
-img.skin{height:40px;border-radius:4px;display:block;background:#eee}
-td input,td button{font-size:.85rem}
-td input[type=text],td input[type=datetime-local]{padding:.2rem}
-.addbounty{margin-top:1rem;padding:1rem;background:#fff;border:1px solid #e2e2e2;border-radius:8px;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
-.addbounty h3{margin:0 .5rem 0 0;font-weight:600;font-size:1rem}
+:root{
+  --bg:#0f1115;--panel:#171a21;--panel2:#1e222b;--line:#2a2f3a;
+  --text:#e7eaf0;--muted:#9aa3b2;--accent:#5b9dff;--accent2:#7ee0a8;
+  --warn:#ff6b6b;--ok:#42d392;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.25);
+}
+*{box-sizing:border-box}
+body{font:14px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;
+  color:var(--text);background:radial-gradient(1200px 600px at 80% -10%,#1b2030,#0f1115);min-height:100vh}
+.wrap{max-width:1180px;margin:0 auto;padding:1.5rem 1.5rem 4rem}
+h1{font-size:1.5rem;font-weight:700;letter-spacing:-.01em;margin:.2rem 0}
+h2{font-size:1.05rem;font-weight:650;margin:2rem 0 .25rem}
+h2 .muted{font-weight:400;font-size:.8rem}
+h3{margin:0 .5rem 0 0;font-weight:600;font-size:1rem}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+  padding-bottom:1rem;border-bottom:1px solid var(--line);margin-bottom:1.25rem}
+.brand{display:flex;align-items:baseline;gap:.6rem}
+.brand .badge{font-size:.7rem;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:.1rem .55rem;background:var(--panel)}
+.logout{font-size:.85rem;color:var(--muted)}
+.cards{display:flex;gap:.75rem;flex-wrap:wrap;margin:.5rem 0}
+.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
+  border-radius:12px;padding:.7rem 1.1rem;min-width:7rem;box-shadow:var(--shadow)}
+.card .n{font-size:1.7rem;font-weight:750;letter-spacing:-.02em;line-height:1.1}
+.card .lbl{color:var(--muted);font-size:.8rem}
+table{border-collapse:separate;border-spacing:0;width:100%;margin-top:.5rem;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line)}
+th{background:var(--panel2);color:var(--muted);font-weight:600;font-size:.78rem;
+  text-transform:uppercase;letter-spacing:.04em}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:rgba(91,157,255,.06)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.cols{display:flex;gap:1rem;flex-wrap:wrap}.cols>div{flex:1;min-width:16rem}
+.cols h2{margin-top:1rem;font-size:.95rem}
+.muted{color:var(--muted)}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em}
+.err{color:var(--warn);margin:.5rem 0}.ok{color:var(--ok)}
+.flag{color:var(--warn);font-weight:600}
+.pill{display:inline-block;font-size:.72rem;padding:.08rem .5rem;border-radius:999px;border:1px solid var(--line)}
+.pill.active{color:var(--accent2);border-color:#2c5a44;background:rgba(126,224,168,.08)}
+.pill.pending{color:#ffd479}
+.pill.won{color:var(--muted)}
+.filterbar{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin:.25rem 0 1rem;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:.6rem .9rem}
+.filterbar label{color:var(--muted);font-size:.85rem}
+.filterbar select{background:var(--panel2);color:var(--text);border:1px solid var(--line);
+  border-radius:8px;padding:.35rem .6rem;font-size:.9rem;min-width:18rem}
+.filterbar .scope{margin-left:auto;color:var(--muted);font-size:.85rem}
+.pager{display:flex;align-items:center;gap:.75rem;margin:.5rem 0 .25rem;font-size:.85rem}
+.pager a{padding:.2rem .6rem;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.pager .disabled{padding:.2rem .6rem;border:1px solid var(--line);border-radius:8px;
+  color:var(--muted);opacity:.5}
+.pager .range{color:var(--muted)}
+.login{max-width:21rem;margin:7rem auto;background:var(--panel);border:1px solid var(--line);
+  border-radius:14px;padding:1.6rem;box-shadow:var(--shadow)}
+.login h1{margin-bottom:.6rem}
+.login input{width:100%;padding:.6rem;margin:.4rem 0;box-sizing:border-box;font-size:1rem;
+  background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text)}
+.login button{width:100%;padding:.6rem;font-size:1rem;cursor:pointer;border:none;border-radius:8px;
+  background:var(--accent);color:#06122b;font-weight:600}
+img.skin{height:40px;border-radius:6px;display:block;background:#0b0d12}
+td input,td button,td select{font-size:.85rem;background:var(--panel2);color:var(--text);
+  border:1px solid var(--line);border-radius:6px;padding:.25rem .4rem}
+td button{cursor:pointer}
+.addbounty{margin-top:1rem;padding:1rem;background:var(--panel);border:1px solid var(--line);
+  border-radius:12px;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.addbounty input{background:var(--panel2);color:var(--text);border:1px solid var(--line);
+  border-radius:8px;padding:.4rem .55rem}
+.addbounty button{cursor:pointer;border:none;border-radius:8px;background:var(--accent);
+  color:#06122b;font-weight:600;padding:.45rem .9rem}
 .actions{display:flex;gap:.4rem}
+.backlink{display:inline-block;margin-bottom:.5rem;color:var(--muted)}
 `
 
+// loginTmpl is the password gate.
+var loginTmpl = template.Must(template.New("login").Parse(`<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>splitclicker admin · login</title><style>` + adminCSS + `</style></head><body>
+<form class="login" method="post" action="/admin/login">
+  <h1>admin</h1>
+  {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
+  <input type="password" name="password" placeholder="password" autofocus autocomplete="current-password">
+  <button type="submit">Login</button>
+</form>
+</body></html>`))
+
+// pagerTmpl is the shared prev/next control, invoked as {{template "pager" .SomePage}}.
+const pagerTmpl = `
+{{define "pager"}}{{if gt .Total 0}}
+<div class="pager">
+  <span class="range">{{.From}}–{{.To}} of {{.Total}}</span>
+  {{if .HasPrev}}<a href="{{.PrevURL}}">‹ prev</a>{{else}}<span class="disabled">‹ prev</span>{{end}}
+  {{if .HasNext}}<a href="{{.NextURL}}">next ›</a>{{else}}<span class="disabled">next ›</span>{{end}}
+</div>
+{{end}}{{end}}`
+
+// filterTmpl is the shared "filter by bounty" bar. The caller defines a
+// "filterform" block first (it differs between the dashboard and player views,
+// which post different hidden fields).
+const filterTmpl = `
+{{define "filter"}}
+<form class="filterbar" method="get" action="{{.Action}}">
+  {{template "filterhidden" .}}
+  <label for="bounty">Filter by bounty</label>
+  <select id="bounty" name="bounty" onchange="this.form.submit()">
+    <option value="" {{if eq .Bounty ""}}selected{{end}}>All history</option>
+    {{range .Selectable}}<option value="{{.ID}}" {{if idsel .ID $.Bounty}}selected{{end}}>{{bwlabel .}}</option>{{end}}
+  </select>
+  <noscript><button type="submit">Apply</button></noscript>
+  <span class="scope">showing: {{.FilterLabel}}</span>
+</form>
+{{end}}`
+
 var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>splitclicker admin</title><style>` + adminCSS + `</style></head><body>
-<a class="logout" href="/admin/logout">log out</a>
-<h1>splitclicker admin</h1>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>splitclicker admin</title><style>` + adminCSS + `</style></head><body><div class="wrap">
+<div class="topbar">
+  <div class="brand"><h1>splitclicker admin</h1><span class="badge">{{.Players}} online</span></div>
+  <a class="logout" href="/admin/logout">log out</a>
+</div>
+
+` + pagerTmpl + filterTmpl + `
+{{define "filterhidden"}}{{end}}
+{{template "filter" (dict "Action" "/admin" "Bounty" .Bounty "FilterLabel" .FilterLabel "Selectable" .Selectable)}}
+
 <div class="cards">
-  <div class="card"><div class="n">{{.Players}}</div>players online</div>
-  <div class="card"><div class="n">{{.Stats.Players}}</div>accounts</div>
-  <div class="card"><div class="n">{{.Stats.Games}}</div>games</div>
-  <div class="card"><div class="n">{{.Stats.Rounds}}</div>rounds</div>
-  <div class="card"><div class="n">{{.Stats.Clicks}}</div>scoring clicks</div>
-  <div class="card"><div class="n">{{.Stats.Checks}}</div>anticheat checks</div>
-  <div class="card"><div class="n">{{.Stats.Tests}}</div>tests sent</div>
+  <div class="card"><div class="n">{{.Stats.Games}}</div><div class="lbl">games</div></div>
+  <div class="card"><div class="n">{{.Stats.Rounds}}</div><div class="lbl">rounds</div></div>
+  <div class="card"><div class="n">{{.Stats.Clicks}}</div><div class="lbl">scoring clicks</div></div>
+  <div class="card"><div class="n">{{.Stats.Checks}}</div><div class="lbl">anticheat checks</div></div>
+  <div class="card"><div class="n">{{.Stats.Tests}}</div><div class="lbl">tests sent</div></div>
+  <div class="card"><div class="n">{{.Stats.Players}}</div><div class="lbl">accounts (all-time)</div></div>
 </div>
 
 <h2>Bounties <span class="muted">· the skin-to-win queue (times UTC). When a bounty's win time passes, the player who won the most games during its window is recorded as the winner and the next bounty activates automatically.</span></h2>
@@ -385,7 +742,7 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
       {{if ne .Status "won"}}<input form="b{{.ID}}" type="file" name="skin" accept="image/*">{{end}}
     </td>
     <td>{{if eq .Status "won"}}{{.Label}}{{else}}<input form="b{{.ID}}" type="text" name="label" value="{{.Label}}" placeholder="label">{{end}}</td>
-    <td>{{.Status}}</td>
+    <td><span class="pill {{.Status}}">{{.Status}}</span></td>
     <td>{{tsp .ActivatedAt}} &rarr; {{if eq .Status "won"}}{{ts .WinTime}}{{else}}<input form="b{{.ID}}" type="datetime-local" name="win_time" value="{{dtlocal .WinTime}}" required>{{end}}</td>
     <td>{{if eq .Status "won"}}{{if .WinnerID}}{{plink .WinnerID .WinnerName}} <span class="muted">({{.WinnerWins}})</span>{{else}}<span class="muted">no winner (empty window)</span>{{end}}{{else}}<span class="muted">—</span>{{end}}</td>
     <td>
@@ -411,107 +768,158 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
 
 <h2>Recent games</h2>
 <table>
-  <tr><th>game</th><th>ended (UTC)</th><th>length</th><th>rounds</th><th>scorers</th><th>clicks</th><th>winner</th></tr>
+  <tr><th>game</th><th>ended (UTC)</th><th>length</th><th class="num">rounds</th><th class="num">scorers</th><th class="num">clicks</th><th>winner</th></tr>
   {{range .Games}}
   <tr>
     <td><a class="mono" href="/admin/game?id={{.ID}}">{{short .ID}}</a></td>
     <td>{{ts .EndedAt}}</td>
     <td>{{dur .StartedAt .EndedAt}}</td>
-    <td>{{.Rounds}}</td>
-    <td>{{.Scorers}}</td>
-    <td>{{.Clicks}}</td>
+    <td class="num">{{.Rounds}}</td>
+    <td class="num">{{.Scorers}}</td>
+    <td class="num">{{.Clicks}}</td>
     <td>{{if .WinnerID}}{{plink .WinnerID .WinnerName}}{{else}}<span class="muted">—</span>{{end}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="7" class="muted">no games recorded yet</td></tr>
+  <tr><td colspan="7" class="muted">no games in this view</td></tr>
   {{end}}
 </table>
+{{template "pager" .GamesPage}}
 
-<h2>Fastest clickers <span class="muted">· mean gap between clicks per round (first measured from arm), min 10 clicks, refreshed ~10 min</span></h2>
+<h2>Anticheat <span class="muted">· per-player roll-up — checks flagged and tests passed/failed in this view. Click a player for the per-event detail.</span></h2>
 <table>
-  <tr><th>#</th><th>player</th><th>clicks</th><th>avg delta (ms)</th></tr>
-  {{range $i, $e := .Fastest}}
-  <tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Name}}</td><td>{{$e.Clicks}}</td><td>{{printf "%.1f" $e.AvgDeltaMs}}</td></tr>
+  <tr><th>player</th><th class="num">checks failed</th><th class="num">tests passed</th><th class="num">tests failed</th></tr>
+  {{range .AntiCheat}}
+  <tr>
+    <td>{{plink .SteamID .Name}}</td>
+    <td class="num">{{if gt .Checks 0}}<span class="flag">{{.Checks}}</span>{{else}}0{{end}}</td>
+    <td class="num">{{.TestsPassed}}</td>
+    <td class="num">{{if gt .TestsFailed 0}}<span class="flag">{{.TestsFailed}}</span>{{else}}0{{end}}</td>
+  </tr>
   {{else}}
-  <tr><td colspan="4" class="muted">no players with 10+ scoring clicks yet</td></tr>
+  <tr><td colspan="4" class="muted">no anticheat activity in this view</td></tr>
   {{end}}
 </table>
+{{template "pager" .AntiCheatPage}}
 
-<h2>Anticheat checks <span class="muted">· rounds the end-of-round checks flagged (fast_clicks &lt;130ms · too_many_clicks &gt;2× per-player · solo_round lone leader · dominant_winner &gt;2× runner-up). A test-capable (v3+) flagged player is benched until they pass a test.</span></h2>
+<h2>Fastest clickers <span class="muted">· mean gap between clicks per round (first measured from arm), min 10 clicks</span></h2>
 <table>
-  <tr><th>when (UTC)</th><th>player</th><th>check</th><th>detail</th><th>game · round</th></tr>
+  <tr><th class="num">#</th><th>player</th><th class="num">clicks</th><th class="num">avg delta (ms)</th></tr>
+  {{range $i, $e := .Fastest}}
+  <tr><td class="num">{{add $.FastestPage.From $i}}</td><td>{{plink $e.SteamID $e.Name}}</td><td class="num">{{$e.Clicks}}</td><td class="num">{{printf "%.1f" $e.AvgDeltaMs}}</td></tr>
+  {{else}}
+  <tr><td colspan="4" class="muted">no players with 10+ scoring clicks in this view</td></tr>
+  {{end}}
+</table>
+{{template "pager" .FastestPage}}
+
+<h2>Leaderboards</h2>
+<div class="cols">
+  <div>
+    <h2>Points</h2>
+    <table><tr><th class="num">#</th><th>player</th><th class="num">points</th></tr>
+    {{range $i, $e := .Points}}<tr><td class="num">{{add $.PointsPage.From $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td class="num">{{$e.Points}}</td></tr>{{else}}<tr><td colspan="3" class="muted">none</td></tr>{{end}}
+    </table>
+    {{template "pager" .PointsPage}}
+  </div>
+  <div>
+    <h2>Hours won</h2>
+    <table><tr><th class="num">#</th><th>player</th><th class="num">hours</th></tr>
+    {{range $i, $e := .HoursWon}}<tr><td class="num">{{add $.HoursWonPage.From $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td class="num">{{$e.Points}}</td></tr>{{else}}<tr><td colspan="3" class="muted">none</td></tr>{{end}}
+    </table>
+    {{template "pager" .HoursWonPage}}
+  </div>
+  <div>
+    <h2>Games won</h2>
+    <table><tr><th class="num">#</th><th>player</th><th class="num">wins</th></tr>
+    {{range $i, $e := .SessionsWon}}<tr><td class="num">{{add $.SessionsWonPage.From $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td class="num">{{$e.Points}}</td></tr>{{else}}<tr><td colspan="3" class="muted">none</td></tr>{{end}}
+    </table>
+    {{template "pager" .SessionsWonPage}}
+  </div>
+  <div>
+    <h2>Top clickers</h2>
+    <table><tr><th class="num">#</th><th>player</th><th class="num">clicks</th></tr>
+    {{range $i, $e := .AllTime}}<tr><td class="num">{{add $.AllTimePage.From $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td class="num">{{$e.Points}}</td></tr>{{else}}<tr><td colspan="3" class="muted">none</td></tr>{{end}}
+    </table>
+    {{template "pager" .AllTimePage}}
+  </div>
+</div>
+</div></body></html>`))
+
+var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>player {{.Profile.Name}}</title><style>` + adminCSS + `</style></head><body><div class="wrap">
+<a class="backlink" href="/admin">&larr; back to dashboard</a>
+<div class="topbar">
+  <div class="brand"><h1>{{.Profile.Name}}</h1><span class="badge mono">{{.Profile.Tag}}</span></div>
+  <a class="logout" href="/admin/logout">log out</a>
+</div>
+<p class="muted">
+  <a href="{{steamurl .Profile.SteamID}}" target="_blank" rel="noopener">Steam profile ↗</a>
+  · <span class="mono">{{.Profile.SteamID}}</span>
+  · first seen {{ts .Profile.CreatedAt}}
+</p>
+
+` + pagerTmpl + filterTmpl + `
+{{define "filterhidden"}}<input type="hidden" name="id" value="{{.ID}}">{{end}}
+{{template "filter" (dict "Action" "/admin/player" "Bounty" .Bounty "FilterLabel" .FilterLabel "Selectable" .Selectable "ID" .Profile.SteamID)}}
+
+<div class="cards">
+  <div class="card"><div class="n">{{.Profile.Points}}</div><div class="lbl">points</div></div>
+  <div class="card"><div class="n">{{.Profile.Clicks}}</div><div class="lbl">scoring clicks</div></div>
+  <div class="card"><div class="n">{{.Profile.GamesWon}}</div><div class="lbl">games won</div></div>
+  <div class="card"><div class="n">{{.Profile.Checks}}</div><div class="lbl">checks flagged</div></div>
+  <div class="card"><div class="n">{{.Profile.TestsPassed}}</div><div class="lbl">tests passed</div></div>
+  <div class="card"><div class="n">{{.Profile.TestsFailed}}</div><div class="lbl">tests failed</div></div>
+</div>
+
+<h2>Anticheat checks</h2>
+<table>
+  <tr><th>when (UTC)</th><th>check</th><th>detail</th><th>game · round</th></tr>
   {{range .Checks}}
   <tr>
     <td>{{ts .CreatedAt}}</td>
-    <td>{{plink .SteamID .Name}}</td>
     <td class="mono">{{.Type}}</td>
     <td>{{.Detail}}</td>
     <td><a class="mono" href="/admin/game?id={{.GameID}}">{{short .GameID}}</a> · {{.RoundNo}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="5" class="muted">no checks flagged yet</td></tr>
+  <tr><td colspan="4" class="muted">no checks in this view</td></tr>
   {{end}}
 </table>
+{{template "pager" .ChecksPage}}
 
-<h2>Anticheat tests <span class="muted">· every test sent to a flagged player and the answer received</span></h2>
+<h2>Anticheat tests</h2>
 <table>
-  <tr><th>sent (UTC)</th><th>player</th><th>kind</th><th>prompt</th><th>answer</th><th>result</th></tr>
+  <tr><th>sent (UTC)</th><th>kind</th><th>prompt</th><th>answer</th><th>result</th></tr>
   {{range .Tests}}
   <tr>
     <td>{{ts .SentAt}}</td>
-    <td>{{plink .SteamID .Name}}</td>
     <td class="mono">{{.Kind}}</td>
     <td class="mono">{{.Prompt}}</td>
     <td class="mono">{{if .Answered}}{{.Answer}}{{else}}<span class="muted">—</span>{{end}}</td>
     <td>{{if not .Answered}}<span class="muted">pending</span>{{else if .Correct}}<span class="ok">correct</span>{{else}}<span class="err">wrong</span>{{end}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="6" class="muted">no tests sent yet</td></tr>
+  <tr><td colspan="5" class="muted">no tests in this view</td></tr>
   {{end}}
 </table>
-
-<h2>Leaderboards <span class="muted">· the first three are scoped to the active bounty's window (reset when it's won); all-time clickers spans the whole DB.</span></h2>
-<div class="cols">
-  <div>
-    <h2>Points (this bounty)</h2>
-    <table><tr><th>#</th><th>player</th><th>points</th></tr>
-    {{range $i, $e := .Hourly}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
-    </table>
-  </div>
-  <div>
-    <h2>Hours won (this bounty)</h2>
-    <table><tr><th>#</th><th>player</th><th>hours</th></tr>
-    {{range $i, $e := .HoursWon}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
-    </table>
-  </div>
-  <div>
-    <h2>Games won (this bounty)</h2>
-    <table><tr><th>#</th><th>player</th><th>wins</th></tr>
-    {{range $i, $e := .SessionsWon}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
-    </table>
-  </div>
-  <div>
-    <h2>All-time clickers</h2>
-    <table><tr><th>#</th><th>player</th><th>clicks</th></tr>
-    {{range $i, $e := .AllTime}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
-    </table>
-  </div>
-</div>
-</body></html>`))
+{{template "pager" .TestsPage}}
+</div></body></html>`))
 
 var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><title>game {{short .ID}}</title><style>` + adminCSS + `</style></head><body>
-<p><a href="/admin">&larr; back</a></p>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>game {{short .ID}}</title><style>` + adminCSS + `</style></head><body><div class="wrap">
+<a class="backlink" href="/admin">&larr; back</a>
 <h1>game <span class="mono">{{.ID}}</span></h1>
 <p class="muted">started {{ts .StartedAt}} · ended {{ts .EndedAt}} · {{.Rounds}} rounds · {{dur .StartedAt .EndedAt}}</p>
 {{range .RoundList}}
 <h2>round {{.RoundNo}} <span class="muted">· N={{.N}} · {{.Players}} players · armed {{ts .ArmedAt}}</span>
   {{if .Checks}}<span class="flag">· {{len .Checks}} check(s) flagged</span>{{end}}</h2>
 <table>
-  <tr><th>click N</th><th>player</th><th>steam id</th><th>offset (ms)</th></tr>
+  <tr><th class="num">click N</th><th>player</th><th>steam id</th><th class="num">offset (ms)</th></tr>
   {{range .Clicks}}
-  <tr><td>{{.SlotNo}}</td><td>{{plink .SteamID .Name}}</td>
-      <td class="mono">{{.SteamID}}</td><td>{{.OffsetMs}}</td></tr>
+  <tr><td class="num">{{.SlotNo}}</td><td>{{plink .SteamID .Name}}</td>
+      <td class="mono">{{.SteamID}}</td><td class="num">{{.OffsetMs}}</td></tr>
   {{else}}
   <tr><td colspan="4" class="muted">no scoring clicks (race timed out)</td></tr>
   {{end}}
@@ -525,4 +933,4 @@ var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doc
 </table>
 {{end}}
 {{end}}
-</body></html>`))
+</div></body></html>`))

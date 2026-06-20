@@ -62,6 +62,52 @@ func (s *Store) ListBounties(ctx context.Context) ([]Bounty, error) {
 	return out, rows.Err()
 }
 
+// BountyWindow is a settled or in-flight bounty reduced to the time span it
+// scopes — used to populate the admin "filter by bounty" toggle and to resolve a
+// selected filter to a store.Window. Start is the bounty's activation; End is its
+// win_time once won, or now while it is still active.
+type BountyWindow struct {
+	ID     int64
+	Label  string
+	Status string // active | won
+	Start  time.Time
+	End    time.Time
+}
+
+// Window returns the (Start, End] span this bounty scopes, as a store.Window.
+func (b BountyWindow) Window() Window {
+	return Window{Start: b.Start, End: b.End}
+}
+
+// SelectableBounties returns the bounties that have a real time window — the
+// active one and every won one (pending bounties have no window yet) — newest
+// first with the active one on top. These are the choices in the dashboard's
+// bounty filter.
+func (s *Store) SelectableBounties(ctx context.Context) ([]BountyWindow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, label, status, activated_at,
+		       CASE WHEN status = 'won' THEN win_time ELSE now() END
+		FROM bounties
+		WHERE status IN ('active', 'won') AND activated_at IS NOT NULL
+		ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,
+		         won_at DESC NULLS LAST, activated_at DESC, id DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []BountyWindow{}
+	for rows.Next() {
+		var b BountyWindow
+		if err := rows.Scan(&b.ID, &b.Label, &b.Status, &b.Start, &b.End); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // CreateBounty adds a pending bounty to the queue.
 func (s *Store) CreateBounty(ctx context.Context, skinImage, label string, winTime time.Time) error {
 	_, err := s.pool.Exec(ctx, `
