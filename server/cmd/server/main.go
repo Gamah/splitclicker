@@ -90,6 +90,37 @@ func runHourlyFinalizer(ctx context.Context, st *store.Store, log *zap.Logger) {
 	}
 }
 
+// runBountyFinalizer advances the skin-to-win bounty queue: once an active
+// bounty's win_time passes it records the window's winner and activates the next
+// queued bounty, so the game keeps ticking forward. It runs once at startup
+// (catching up any deadlines crossed while the process was down, and activating
+// the first pending bounty) and then on a short tick. FinalizeDueBounties is
+// transactional and idempotent on the queue state, so re-runs can't double-count.
+func runBountyFinalizer(ctx context.Context, st *store.Store, log *zap.Logger) {
+	finalize := func() {
+		fctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		n, err := st.FinalizeDueBounties(fctx, time.Now())
+		if err != nil {
+			log.Error("finalize bounties", zap.Error(err))
+		} else if n > 0 {
+			log.Info("finalized bounties", zap.Int("count", n))
+		}
+	}
+
+	finalize() // catch up + activate the first pending bounty
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			finalize()
+		}
+	}
+}
+
 // runFastestClickersRefresh recomputes the fastest_clickers materialized view
 // (the admin "fastest clickers" board) once at startup and then every 10 minutes,
 // so that admin page reads stay cheap and the board is at most ~10 min stale.
@@ -162,6 +193,7 @@ func main() {
 	defer cancel()
 	go engine.Run(ctx)
 	go runHourlyFinalizer(ctx, st, log)
+	go runBountyFinalizer(ctx, st, log)
 	go runFastestClickersRefresh(ctx, st, log)
 
 	mux := api.NewRouter(st, cache, hub, engine, log)

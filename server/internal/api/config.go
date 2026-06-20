@@ -7,13 +7,14 @@ import (
 	"time"
 
 	"github.com/gamah/splitclicker/internal/runtimecfg"
+	"go.uber.org/zap"
 )
 
-// The skin-to-win image and the winner-lock countdown are editable from the host
-// filesystem at runtime — no rebuild, no restart. Both live in config.json under
-// the host-mounted runtime dir (see package runtimecfg), which is re-read on every
-// request: editing it on the host applies immediately. A missing file or empty
-// field falls back to env, then to the built-in default.
+// The skin-to-win image and the winner-lock countdown come from the active
+// bounty (DB-managed via the admin panel — the skin currently in play and its
+// win_time). When no bounty is active they fall back to the host-editable
+// config.json (re-read per request, see package runtimecfg), then env, then the
+// built-in default — so a fresh deploy with no bounties still serves a skin.
 
 // skinFile is the image served as the current skin: config.json's skin_image,
 // else env SKIN_IMAGE, else the default. Base-named so it can't traverse out of
@@ -47,17 +48,31 @@ func winnerLockMs() int64 {
 
 // GET /api/v1/config — the small bit of public config the client needs at
 // startup: the winner-lock time (drives the countdown) and where to fetch the
-// current skin image.
+// current skin image. The lock time is the active bounty's win_time, falling
+// back to config.json/env when no bounty is active.
 func (h *handler) config(w http.ResponseWriter, r *http.Request) {
+	lock := winnerLockMs()
+	if b, ok, err := h.store.ActiveBounty(r.Context()); err != nil {
+		h.log.Error("config: active bounty", zap.Error(err))
+	} else if ok {
+		lock = b.WinTime.UnixMilli()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"winner_lock_ms": winnerLockMs(),
+		"winner_lock_ms": lock,
 		"skin_url":       "/api/v1/skin",
 	})
 }
 
-// GET /api/v1/skin — the current skin image, selected via config.json/SKIN_IMAGE
-// and served off disk from the media dir. ServeFile sets content-type and
-// validation headers; reading per request means replacing the file is live.
+// GET /api/v1/skin — the current skin image: the active bounty's skin_image,
+// falling back to config.json/SKIN_IMAGE/default. Served off disk from the media
+// dir (base-named so it can't traverse out). ServeFile sets content-type and
+// validation headers; reading per request means a bounty swap applies live.
 func (h *handler) skin(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, filepath.Join(runtimecfg.MediaDir(), skinFile()))
+	name := skinFile()
+	if b, ok, err := h.store.ActiveBounty(r.Context()); err != nil {
+		h.log.Error("skin: active bounty", zap.Error(err))
+	} else if ok && b.SkinImage != "" {
+		name = filepath.Base(b.SkinImage)
+	}
+	http.ServeFile(w, r, filepath.Join(runtimecfg.MediaDir(), name))
 }

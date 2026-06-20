@@ -107,6 +107,10 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	mux.HandleFunc("GET /admin/logout", h.adminLogout)
 	mux.HandleFunc("GET /admin", rl.wrap(h.adminDashboard))
 	mux.HandleFunc("GET /admin/game", rl.wrap(h.adminGame))
+	mux.HandleFunc("GET /admin/media", h.adminMedia)
+	mux.HandleFunc("POST /admin/bounties", h.adminBountyCreate)
+	mux.HandleFunc("POST /admin/bounties/edit", h.adminBountyEdit)
+	mux.HandleFunc("POST /admin/bounties/delete", h.adminBountyDelete)
 
 	// v2 — the real game surface (current client build).
 	mux.HandleFunc("GET /api/v2/config", h.config)
