@@ -1,4 +1,0 @@
-// The HUD's styles live in an inline <style> block inside Hud.razor (the whole UI
-// is one full-screen root — see CLAUDE.md). This companion file exists only so s&box's
-// automatic per-Razor stylesheet probe finds a file instead of logging
-// "Error opening stylesheet: ui/hud.razor.scss (File not found)". Intentionally empty.
