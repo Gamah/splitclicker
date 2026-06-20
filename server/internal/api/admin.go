@@ -204,11 +204,23 @@ func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		h.adminError(w, "load fastest clickers", err)
 		return
 	}
+	checks, err := h.store.RecentChecks(ctx, 50)
+	if err != nil {
+		h.adminError(w, "load anticheat checks", err)
+		return
+	}
+	tests, err := h.store.RecentTests(ctx, 50)
+	if err != nil {
+		h.adminError(w, "load anticheat tests", err)
+		return
+	}
 	data := dashboardData{
 		Stats:       stats,
 		Games:       games,
 		Bounties:    bounties,
 		Fastest:     fastest,
+		Checks:      checks,
+		Tests:       tests,
 		Hourly:      h.cache.Hourly(15),
 		HoursWon:    h.cache.HoursWon(15),
 		SessionsWon: h.cache.SessionsWon(15),
@@ -269,6 +281,8 @@ type dashboardData struct {
 	Games       []store.AdminGame
 	Bounties    []store.Bounty
 	Fastest     []store.FastestClicker
+	Checks      []store.AdminCheck
+	Tests       []store.AdminTest
 	Hourly      []store.LeaderboardEntry
 	HoursWon    []store.LeaderboardEntry
 	SessionsWon []store.LeaderboardEntry
@@ -333,6 +347,8 @@ th{background:#f0f0f0}
 .cols{display:flex;gap:2rem;flex-wrap:wrap}.cols>div{flex:1;min-width:18rem}
 .muted{color:#888}.mono{font-family:ui-monospace,monospace}
 .err{color:#b00020;margin:.5rem 0}
+.ok{color:#0a7a28}
+.flag{color:#b00020;font-weight:600}
 .login{max-width:20rem;margin:6rem auto;background:#fff;border:1px solid #e2e2e2;border-radius:8px;padding:1.5rem}
 .login input{width:100%;padding:.5rem;margin:.4rem 0;box-sizing:border-box;font-size:1rem}
 .login button{width:100%;padding:.5rem;font-size:1rem;cursor:pointer}
@@ -355,6 +371,8 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
   <div class="card"><div class="n">{{.Stats.Games}}</div>games</div>
   <div class="card"><div class="n">{{.Stats.Rounds}}</div>rounds</div>
   <div class="card"><div class="n">{{.Stats.Clicks}}</div>scoring clicks</div>
+  <div class="card"><div class="n">{{.Stats.Checks}}</div>anticheat checks</div>
+  <div class="card"><div class="n">{{.Stats.Tests}}</div>tests sent</div>
 </div>
 
 <h2>Bounties <span class="muted">· the skin-to-win queue (times UTC). When a bounty's win time passes, the player who won the most games during its window is recorded as the winner and the next bounty activates automatically.</span></h2>
@@ -419,6 +437,39 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
   {{end}}
 </table>
 
+<h2>Anticheat checks <span class="muted">· rounds the end-of-round checks flagged (fast_clicks &lt;130ms · too_many_clicks &gt;2× per-player · solo_round lone leader · dominant_winner &gt;2× runner-up). A test-capable (v3+) flagged player is benched until they pass a test.</span></h2>
+<table>
+  <tr><th>when (UTC)</th><th>player</th><th>check</th><th>detail</th><th>game · round</th></tr>
+  {{range .Checks}}
+  <tr>
+    <td>{{ts .CreatedAt}}</td>
+    <td>{{plink .SteamID .Name}}</td>
+    <td class="mono">{{.Type}}</td>
+    <td>{{.Detail}}</td>
+    <td><a class="mono" href="/admin/game?id={{.GameID}}">{{short .GameID}}</a> · {{.RoundNo}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="muted">no checks flagged yet</td></tr>
+  {{end}}
+</table>
+
+<h2>Anticheat tests <span class="muted">· every test sent to a flagged player and the answer received</span></h2>
+<table>
+  <tr><th>sent (UTC)</th><th>player</th><th>kind</th><th>prompt</th><th>answer</th><th>result</th></tr>
+  {{range .Tests}}
+  <tr>
+    <td>{{ts .SentAt}}</td>
+    <td>{{plink .SteamID .Name}}</td>
+    <td class="mono">{{.Kind}}</td>
+    <td class="mono">{{.Prompt}}</td>
+    <td class="mono">{{if .Answered}}{{.Answer}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{if not .Answered}}<span class="muted">pending</span>{{else if .Correct}}<span class="ok">correct</span>{{else}}<span class="err">wrong</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">no tests sent yet</td></tr>
+  {{end}}
+</table>
+
 <h2>Leaderboards <span class="muted">· the first three are scoped to the active bounty's window (reset when it's won); all-time clickers spans the whole DB.</span></h2>
 <div class="cols">
   <div>
@@ -454,7 +505,8 @@ var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doc
 <h1>game <span class="mono">{{.ID}}</span></h1>
 <p class="muted">started {{ts .StartedAt}} · ended {{ts .EndedAt}} · {{.Rounds}} rounds · {{dur .StartedAt .EndedAt}}</p>
 {{range .RoundList}}
-<h2>round {{.RoundNo}} <span class="muted">· N={{.N}} · {{.Players}} players · armed {{ts .ArmedAt}}</span></h2>
+<h2>round {{.RoundNo}} <span class="muted">· N={{.N}} · {{.Players}} players · armed {{ts .ArmedAt}}</span>
+  {{if .Checks}}<span class="flag">· {{len .Checks}} check(s) flagged</span>{{end}}</h2>
 <table>
   <tr><th>click N</th><th>player</th><th>steam id</th><th>offset (ms)</th></tr>
   {{range .Clicks}}
@@ -464,5 +516,13 @@ var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doc
   <tr><td colspan="4" class="muted">no scoring clicks (race timed out)</td></tr>
   {{end}}
 </table>
+{{if .Checks}}
+<table>
+  <tr><th>anticheat check</th><th>player</th><th>detail</th></tr>
+  {{range .Checks}}
+  <tr><td class="mono flag">{{.Type}}</td><td>{{plink .SteamID .Name}}</td><td>{{.Detail}}</td></tr>
+  {{end}}
+</table>
+{{end}}
 {{end}}
 </body></html>`))
