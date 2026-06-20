@@ -34,6 +34,11 @@ const (
 	// (they can't render or answer a test), so the engine won't gate them.
 	minTestVersion = 3
 
+	// minSanctionVersion is the oldest client that can render the cooldown/ignored
+	// countdown frames (v4). A v3 client on those rungs is still blocked from scoring
+	// (the engine withholds the nonce), it just isn't sent a frame it can't display.
+	minSanctionVersion = 4
+
 	// outdatedNote replaces the dev note for outdated (below-live) clients, telling
 	// them to update — shown alongside the troll leaderboards.
 	outdatedNote = "Your client is out of date — restart s&box to update."
@@ -233,7 +238,10 @@ func (h *Hub) SendTest(steamID string, f game.TestFrame) {
 	if c == nil {
 		return
 	}
-	c.trySend(mustJSON(testWire{T: "test", ID: f.ID, Kind: f.Kind, Prompt: f.Prompt, Cleared: f.Cleared}))
+	c.trySend(mustJSON(testWire{
+		T: "test", State: f.State, ID: f.ID, Kind: f.Kind,
+		Prompt: f.Prompt, Message: f.Message, UntilMs: f.UntilMs, Cleared: f.Cleared,
+	}))
 }
 
 // TestCapable reports whether steamID's connected client understands anticheat
@@ -243,6 +251,16 @@ func (h *Hub) TestCapable(steamID string) bool {
 	c := h.bySteam[steamID]
 	h.mu.RUnlock()
 	return c != nil && !c.Legacy && c.Version >= minTestVersion
+}
+
+// SanctionCapable reports whether steamID's connected client understands the v4
+// cooldown/ignored countdown frames (a minSanctionVersion+ build). Implements
+// game.Broadcaster.
+func (h *Hub) SanctionCapable(steamID string) bool {
+	h.mu.RLock()
+	c := h.bySteam[steamID]
+	h.mu.RUnlock()
+	return c != nil && !c.Legacy && c.Version >= minSanctionVersion
 }
 
 // FireAchievement pushes a manual achievement unlock to every open connection

@@ -15,7 +15,7 @@ directory is bind-mounted into the container at `/data` (see
      "winner_lock_time": "2026-06-16T07:00:00Z",
      "dev_note": "",
 
-     "live_version": 2,
+     "live_version": 3,
 
      "arm_min_sec": 2,
      "arm_max_sec": 6,
@@ -27,7 +27,12 @@ directory is bind-mounted into the container at `/data` (see
      "intermission_ms": 5000,
      "board_size": 20,
      "fast_click_ms": 130,
-     "max_click_factor": 2
+     "max_click_factor": 2,
+     "solo_lead_margin": 15,
+     "dominant_runner_up_min": 5,
+     "check_cooldown_threshold": 20,
+     "check_cooldown_mins": 60,
+     "check_ignore_after": 2
    }
    ```
 
@@ -40,9 +45,9 @@ directory is bind-mounted into the container at `/data` (see
   effect on the next game; empty/omit clears it (no restart needed).
 - `live_version` — the current "live" client API version (integer). Clients on a
   lower version get the troll leaderboards + an "out of date" note; live-or-newer
-  are respected. Bump it to disable an old build (e.g. set `3` once v3 is out), or
-  leave it below a new build's version to test that build alongside the live one.
-  Omit ⇒ default `2`.
+  are respected. Bump it to disable an old build (e.g. set `4` once v4 is rolled
+  out), or leave it below a new build's version to test that build alongside the
+  live one. Omit ⇒ default `3`.
 
 **Game tunables (read at startup → `docker compose restart app` to apply):**
 - `arm_min_sec` / `arm_max_sec` — random arming-delay window.
@@ -53,8 +58,18 @@ directory is bind-mounted into the container at `/data` (see
 - `penalty_base_ms` / `penalty_step_ms` — idle-click arm-delay escalation.
 - `fast_click_ms` — anticheat: two consecutive scoring clicks closer than this
   (default 130) flag the player. `max_click_factor` — anticheat: more than
-  `max_click_factor × clicks_per_player` scoring clicks in a round flags them
-  (default 2).
+  `max_click_factor ×` the round's fair share (N ÷ active players) of the scoring
+  clicks flags them (default 2); skipped in solo rounds.
+- `solo_lead_margin` — anticheat: solo_round only flags a lone leader once their
+  games-won lead over second place is at least this (default 15).
+- `dominant_runner_up_min` — anticheat: dominant_winner only fires when the
+  runner-up scored at least this many clicks, so out-clicking an idle player is
+  never flagged (default 5).
+- `check_cooldown_threshold` / `check_cooldown_mins` / `check_ignore_after` — the
+  per-bounty sanction ladder: this many flags in a bounty (default 20) start a
+  cooldown of this many minutes (default 60); this many more flags after that
+  (default 2) sideline the player until the bounty resolves. Counts reset each
+  bounty.
 
 Any omitted field falls back to its env var (e.g. `SKIN_IMAGE`, `ARM_MIN_SEC`),
 then the built-in default. `config.json` is gitignored (the live, host-owned

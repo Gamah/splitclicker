@@ -108,6 +108,7 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	mux.HandleFunc("GET /admin/logout", h.adminLogout)
 	mux.HandleFunc("GET /admin", rl.wrap(h.adminDashboard))
 	mux.HandleFunc("GET /admin/player", rl.wrap(h.adminPlayer))
+	mux.HandleFunc("POST /admin/player/checks", h.adminPlayerChecks)
 	mux.HandleFunc("GET /admin/game", rl.wrap(h.adminGame))
 	mux.HandleFunc("GET /admin/media", h.adminMedia)
 	mux.HandleFunc("POST /admin/bounties", h.adminBountyCreate)
@@ -258,8 +259,15 @@ func boardLimit(r *http.Request) int {
 }
 
 // liveVersionDefault is the live API version assumed when config.json doesn't set
-// live_version. The current production client build is v2.
-const liveVersionDefault = 2
+// live_version. v3 is the floor; the current build is v4 (anticheat sanction
+// ladder), respected as newer-than-live during rollout.
+//
+// VERSION CLEANUP: keep only the live version and the one build above it (N and
+// N-1). Once a new build goes live, prune anything two or more versions back —
+// e.g. when v5 is live, nothing should still special-case v3 or older. Audit
+// these on every bump: this default, ws.minTestVersion / ws.minSanctionVersion,
+// the parseVer/troll fallbacks here, and the legacy bare-/ws handling.
+const liveVersionDefault = 3
 
 // liveVersion is the configured "live" client API version (config.json's
 // live_version), re-read per request so it can be toggled without a restart.

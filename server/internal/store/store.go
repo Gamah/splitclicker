@@ -237,9 +237,9 @@ func (s *Store) RecordGame(ctx context.Context, log game.GameLog) error {
 		// cleanly to the game_rounds row inserted just above.
 		for _, ch := range r.Checks {
 			batch.Queue(`
-				INSERT INTO anticheat_checks (round_id, steam_id, check_type, detail)
-				VALUES ($1, $2, $3, $4)
-			`, r.RoundID, ch.SteamID, ch.Type, ch.Detail)
+				INSERT INTO anticheat_checks (round_id, steam_id, check_type, detail, message)
+				VALUES ($1, $2, $3, $4, $5)
+			`, r.RoundID, ch.SteamID, ch.Type, ch.Detail, ch.Message)
 		}
 	}
 	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
@@ -269,6 +269,49 @@ func (s *Store) RecordTestAnswer(ctx context.Context, id, answer string, correct
 		SET answer = $2, correct = $3, answered_at = now()
 		WHERE id = $1
 	`, id, answer, correct)
+	return err
+}
+
+// LoadSanctions returns the anticheat ladder state for every player with a row in
+// the given bounty, keyed by SteamID. The engine calls it when the bounty changes
+// (or on first game) to restore the per-bounty cooldown/ignore state. Implements
+// game.Store.
+func (s *Store) LoadSanctions(ctx context.Context, bountyID int64) (map[string]game.Sanction, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT steam_id, checks, cooldown_until, ignored
+		FROM anticheat_sanctions
+		WHERE bounty_id = $1
+	`, bountyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]game.Sanction{}
+	for rows.Next() {
+		var sc game.Sanction
+		var until *time.Time
+		if err := rows.Scan(&sc.SteamID, &sc.Checks, &until, &sc.Ignored); err != nil {
+			return nil, err
+		}
+		sc.CooldownUntil = until
+		out[sc.SteamID] = sc
+	}
+	return out, rows.Err()
+}
+
+// SaveSanction upserts one player's anticheat ladder state for a bounty.
+// Implements game.Store.
+func (s *Store) SaveSanction(ctx context.Context, bountyID int64, sc game.Sanction) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO anticheat_sanctions (bounty_id, steam_id, checks, cooldown_until, ignored, updated_at)
+		VALUES ($1, $2, $3, $4, $5, now())
+		ON CONFLICT (bounty_id, steam_id) DO UPDATE
+		SET checks = EXCLUDED.checks,
+		    cooldown_until = EXCLUDED.cooldown_until,
+		    ignored = EXCLUDED.ignored,
+		    updated_at = now()
+	`, bountyID, sc.SteamID, sc.Checks, sc.CooldownUntil, sc.Ignored)
 	return err
 }
 

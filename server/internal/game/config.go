@@ -26,11 +26,31 @@ type Config struct {
 	PenaltyStepMs int
 
 	// Anticheat checks (run at the end of every round; see Engine.runChecks).
-	// FastClickMs flags a player whose two consecutive SCORING clicks landed less
-	// than this many ms apart (autoclicker-fast). MaxClickFactor flags a player who
-	// took more than MaxClickFactor × ClicksPerPlayer scoring slots in one round.
-	FastClickMs    int
-	MaxClickFactor int
+	//   FastClickMs         — flags a player whose two consecutive SCORING clicks
+	//                         landed less than this many ms apart (autoclicker-fast).
+	//   MaxClickFactor      — flags a player who took more than MaxClickFactor × the
+	//                         round's fair share (N / active players) of the scoring
+	//                         slots. Skipped in solo rounds (one player legitimately
+	//                         takes every slot).
+	//   SoloLeadMargin      — solo_round only fires once a lone leader's games-won
+	//                         lead over second place is at least this many wins, so a
+	//                         newcomer alone on the server isn't punished.
+	//   DominantRunnerUpMin — dominant_winner only fires when the runner-up actually
+	//                         competed (scored at least this many clicks); guards the
+	//                         "one player clicks, the other is idle" false positive.
+	FastClickMs         int
+	MaxClickFactor      int
+	SoloLeadMargin      int
+	DominantRunnerUpMin int
+
+	// Anticheat sanction ladder (per bounty, per player; see Engine.applySanction).
+	// The first CheckCooldownThreshold-1 checks each bench the player behind a math
+	// test. The CheckCooldownThreshold'th check starts a CheckCooldownMins cooldown
+	// (clicks ignored, no test). CheckIgnoreAfter more checks past that sidelines
+	// them until the bounty resolves. Counts reset when the bounty changes.
+	CheckCooldownThreshold int
+	CheckCooldownMins      int
+	CheckIgnoreAfter       int
 }
 
 // DefaultConfig is the baseline tuning (overridable via data/config.json, then env).
@@ -47,8 +67,14 @@ func DefaultConfig() Config {
 		BoardSize:       20,
 		PenaltyBaseMs:   500,
 		PenaltyStepMs:   100,
-		FastClickMs:     130,
-		MaxClickFactor:  2,
+		FastClickMs:         130,
+		MaxClickFactor:      2,
+		SoloLeadMargin:      15,
+		DominantRunnerUpMin: 5,
+
+		CheckCooldownThreshold: 20,
+		CheckCooldownMins:      60,
+		CheckIgnoreAfter:       2,
 	}
 }
 
@@ -69,6 +95,11 @@ func ConfigFromEnv() Config {
 	c.PenaltyStepMs = envInt("PENALTY_STEP_MS", c.PenaltyStepMs)
 	c.FastClickMs = envInt("FAST_CLICK_MS", c.FastClickMs)
 	c.MaxClickFactor = envInt("MAX_CLICK_FACTOR", c.MaxClickFactor)
+	c.SoloLeadMargin = envInt("SOLO_LEAD_MARGIN", c.SoloLeadMargin)
+	c.DominantRunnerUpMin = envInt("DOMINANT_RUNNER_UP_MIN", c.DominantRunnerUpMin)
+	c.CheckCooldownThreshold = envInt("CHECK_COOLDOWN_THRESHOLD", c.CheckCooldownThreshold)
+	c.CheckCooldownMins = envInt("CHECK_COOLDOWN_MINS", c.CheckCooldownMins)
+	c.CheckIgnoreAfter = envInt("CHECK_IGNORE_AFTER", c.CheckIgnoreAfter)
 	return c
 }
 
