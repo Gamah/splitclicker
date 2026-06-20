@@ -1,8 +1,12 @@
 // Package runtimecfg loads the host-editable runtime config that lives in a
 // bind-mounted directory (RUNTIME_DIR, default "data") alongside the skin images:
 //
-//	<RUNTIME_DIR>/media/        the servable images
-//	<RUNTIME_DIR>/config.json   skin selection, winner-lock time, and game tunables
+//	<RUNTIME_DIR>/media/        the servable images (also where admin uploads land)
+//	<RUNTIME_DIR>/config.json   game tunables + fallback skin/winner-lock time
+//
+// The live skin and winner-lock countdown are now driven by the DB-managed
+// bounty queue (see store.Bounty + the admin panel); config.json's SkinImage /
+// WinnerLockTime are only the fallback used when no bounty is active.
 //
 // It is plain stdlib (no project deps) so both the API layer (which re-reads it
 // per request for the live skin/countdown) and main (which reads it once at

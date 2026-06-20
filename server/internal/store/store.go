@@ -106,62 +106,92 @@ type LeaderboardEntry struct {
 	SteamID  string `json:"steam_id"`
 }
 
-// HourlyLeaderboard returns up to limit players for the current UTC clock-hour,
-// highest points first.
-func (s *Store) HourlyLeaderboard(ctx context.Context, limit int) ([]LeaderboardEntry, error) {
-	bucket := time.Now().UTC().Truncate(time.Hour)
+// The three competitive boards (top clickers, hours won, games won) are scoped
+// to the active bounty's window: each is derived from history filtered by the
+// window start (the active bounty's activated_at), so a new bounty automatically
+// shows fresh/zero boards while the all-time history is preserved untouched.
+// "since" is that window start; the zero time means all-time (the fallback used
+// when no bounty is active). They are read only by the LeaderboardCache.
+
+// HourlyLeaderboard returns up to limit players by points scored since the window
+// start (sumacross every UTC-hour bucket from sinceHour on), highest first.
+// sinceHour should be the window start truncated to the hour; with no active
+// bounty the cache passes the current hour, reproducing the per-hour board.
+func (s *Store) HourlyLeaderboard(ctx context.Context, sinceHour time.Time, limit int) ([]LeaderboardEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT hs.steam_id, p.username, p.display_name, hs.points
+		SELECT hs.steam_id, p.username, p.display_name, SUM(hs.points)::INT
 		FROM hourly_scores hs
 		LEFT JOIN players p ON p.steam_id = hs.steam_id
-		WHERE hs.hour_bucket = $1
-		ORDER BY hs.points DESC, hs.steam_id ASC
+		WHERE hs.hour_bucket >= $1
+		GROUP BY hs.steam_id, p.username, p.display_name
+		ORDER BY SUM(hs.points) DESC, hs.steam_id ASC
 		LIMIT $2
-	`, bucket, limit)
+	`, sinceHour.UTC(), limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	out := []LeaderboardEntry{}
-	for rows.Next() {
-		var steamID string
-		var name, disp *string
-		var pts int
-		if err := rows.Scan(&steamID, &name, &disp, &pts); err != nil {
-			return nil, err
-		}
-		p := playerOf(steamID, name, disp)
-		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: pts, SteamID: steamID})
-	}
-	return out, rows.Err()
+	return scanBoard(rows)
 }
 
-// HoursWonLeaderboard returns up to limit players by career hours won, highest
-// first. Points carries the hours count (reusing the entry shape).
-func (s *Store) HoursWonLeaderboard(ctx context.Context, limit int) ([]LeaderboardEntry, error) {
+// HoursWonLeaderboard returns up to limit players by UTC clock-hours won within
+// the window, highest first. A completed hour is "won" by its top scorer (points
+// desc, steam_id asc — same rule as the hour finalizer); the derivation reads
+// hourly_scores directly so it needs no per-window win table. The in-progress
+// hour (>= currentHour) is excluded since it isn't won yet.
+func (s *Store) HoursWonLeaderboard(ctx context.Context, since, currentHour time.Time, limit int) ([]LeaderboardEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT w.steam_id, p.username, p.display_name, w.hours
-		FROM hourly_wins w
+		SELECT w.steam_id, p.username, p.display_name, COUNT(*)::INT
+		FROM (
+			SELECT DISTINCT ON (hour_bucket) hour_bucket, steam_id
+			FROM hourly_scores
+			WHERE hour_bucket >= $1 AND hour_bucket < $2
+			ORDER BY hour_bucket, points DESC, steam_id ASC
+		) w
 		LEFT JOIN players p ON p.steam_id = w.steam_id
-		ORDER BY w.hours DESC, w.steam_id ASC
+		GROUP BY w.steam_id, p.username, p.display_name
+		ORDER BY COUNT(*) DESC, w.steam_id ASC
+		LIMIT $3
+	`, since.UTC(), currentHour.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanBoard(rows)
+}
+
+// AllTimeClickers returns up to limit players by total scoring clicks across all
+// history (every round_scores row, all bounties), highest first. This is the one
+// board that never resets — the lifetime "top clickers" of the whole DB.
+func (s *Store) AllTimeClickers(ctx context.Context, limit int) ([]LeaderboardEntry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT rs.steam_id, p.username, p.display_name, COUNT(*)::INT
+		FROM round_scores rs
+		LEFT JOIN players p ON p.steam_id = rs.steam_id
+		GROUP BY rs.steam_id, p.username, p.display_name
+		ORDER BY COUNT(*) DESC, rs.steam_id ASC
 		LIMIT $1
 	`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanBoard(rows)
+}
 
+// scanBoard reads board rows of the shared shape (steam_id, username,
+// display_name, count) into LeaderboardEntry values; count maps to Points.
+func scanBoard(rows pgx.Rows) ([]LeaderboardEntry, error) {
 	out := []LeaderboardEntry{}
 	for rows.Next() {
 		var steamID string
 		var name, disp *string
-		var hours int
-		if err := rows.Scan(&steamID, &name, &disp, &hours); err != nil {
+		var count int
+		if err := rows.Scan(&steamID, &name, &disp, &count); err != nil {
 			return nil, err
 		}
 		p := playerOf(steamID, name, disp)
-		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: hours, SteamID: steamID})
+		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: count, SteamID: steamID})
 	}
 	return out, rows.Err()
 }
@@ -220,33 +250,27 @@ func (s *Store) AddSessionWin(ctx context.Context, steamID string) error {
 	return err
 }
 
-// SessionsWonLeaderboard returns up to limit players by career sessions (games)
-// won, highest first. Points carries the wins count (reusing the entry shape).
-func (s *Store) SessionsWonLeaderboard(ctx context.Context, limit int) ([]LeaderboardEntry, error) {
+// SessionsWonLeaderboard returns up to limit players by games (sessions) won
+// within the window — placement-1 finishes in games that ended after the window
+// start — highest first. This is the board the bounty winner is read from (the
+// window leader); derived from game history so it scopes to the active bounty
+// and the cumulative session_wins table stays untouched for all-time records.
+func (s *Store) SessionsWonLeaderboard(ctx context.Context, since time.Time, limit int) ([]LeaderboardEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT sw.steam_id, p.username, p.display_name, sw.wins
-		FROM session_wins sw
-		LEFT JOIN players p ON p.steam_id = sw.steam_id
-		ORDER BY sw.wins DESC, sw.steam_id ASC
-		LIMIT $1
-	`, limit)
+		SELECT gs.steam_id, p.username, p.display_name, COUNT(*)::INT
+		FROM game_standings gs
+		JOIN games g ON g.id = gs.game_id
+		LEFT JOIN players p ON p.steam_id = gs.steam_id
+		WHERE gs.placement = 1 AND g.ended_at > $1
+		GROUP BY gs.steam_id, p.username, p.display_name
+		ORDER BY COUNT(*) DESC, gs.steam_id ASC
+		LIMIT $2
+	`, since.UTC(), limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	out := []LeaderboardEntry{}
-	for rows.Next() {
-		var steamID string
-		var name, disp *string
-		var wins int
-		if err := rows.Scan(&steamID, &name, &disp, &wins); err != nil {
-			return nil, err
-		}
-		p := playerOf(steamID, name, disp)
-		out = append(out, LeaderboardEntry{Tag: p.Tag, Username: p.Name(), Points: wins, SteamID: steamID})
-	}
-	return out, rows.Err()
+	return scanBoard(rows)
 }
 
 // FinalizeDueHours credits an hourly win to the top scorer of every completed

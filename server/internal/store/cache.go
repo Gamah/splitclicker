@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // CacheLimit is the number of rows held per cached board — and the DB LIMIT used
@@ -18,42 +19,65 @@ const CacheLimit = 15
 type LeaderboardCache struct {
 	store *Store
 
-	mu          sync.RWMutex
-	hourly      []LeaderboardEntry
-	hoursWon    []LeaderboardEntry
-	sessionsWon []LeaderboardEntry
+	mu           sync.RWMutex
+	hourly       []LeaderboardEntry
+	hoursWon     []LeaderboardEntry
+	sessionsWon  []LeaderboardEntry
+	allTimeClick []LeaderboardEntry
 }
 
 // NewLeaderboardCache builds an empty cache over st. Call Refresh once before
 // serving so reads don't return empty boards.
 func NewLeaderboardCache(st *Store) *LeaderboardCache {
 	return &LeaderboardCache{
-		store:       st,
-		hourly:      []LeaderboardEntry{},
-		hoursWon:    []LeaderboardEntry{},
-		sessionsWon: []LeaderboardEntry{},
+		store:        st,
+		hourly:       []LeaderboardEntry{},
+		hoursWon:     []LeaderboardEntry{},
+		sessionsWon:  []LeaderboardEntry{},
+		allTimeClick: []LeaderboardEntry{},
 	}
 }
 
-// Refresh re-queries all three boards (each capped at CacheLimit) and swaps them
-// in atomically under the write lock. On any query error the previous snapshot
-// is kept (a stale board beats an empty one) and the error is returned.
+// Refresh re-queries all four boards (each capped at CacheLimit) and swaps them
+// in atomically under the write lock. The three competitive boards are scoped to
+// the active bounty's window (its activated_at); with no active bounty they fall
+// back to all-time (and the points board to the current hour), preserving the
+// pre-bounty behaviour. All-time clickers always spans the whole DB. On any query
+// error the previous snapshot is kept (a stale board beats an empty one).
 func (c *LeaderboardCache) Refresh(ctx context.Context) error {
-	hourly, err := c.store.HourlyLeaderboard(ctx, CacheLimit)
+	now := time.Now().UTC()
+	currentHour := now.Truncate(time.Hour)
+
+	// Window start: the active bounty's activation. No bounty → all-time for the
+	// won boards; the points board falls back to the current hour.
+	since := time.Time{}
+	pointsSince := currentHour
+	if b, ok, err := c.store.ActiveBounty(ctx); err != nil {
+		return err
+	} else if ok && b.ActivatedAt != nil {
+		since = b.ActivatedAt.UTC()
+		pointsSince = since.Truncate(time.Hour)
+	}
+
+	hourly, err := c.store.HourlyLeaderboard(ctx, pointsSince, CacheLimit)
 	if err != nil {
 		return err
 	}
-	hoursWon, err := c.store.HoursWonLeaderboard(ctx, CacheLimit)
+	hoursWon, err := c.store.HoursWonLeaderboard(ctx, since, currentHour, CacheLimit)
 	if err != nil {
 		return err
 	}
-	sessionsWon, err := c.store.SessionsWonLeaderboard(ctx, CacheLimit)
+	sessionsWon, err := c.store.SessionsWonLeaderboard(ctx, since, CacheLimit)
+	if err != nil {
+		return err
+	}
+	allTime, err := c.store.AllTimeClickers(ctx, CacheLimit)
 	if err != nil {
 		return err
 	}
 
 	c.mu.Lock()
-	c.hourly, c.hoursWon, c.sessionsWon = hourly, hoursWon, sessionsWon
+	c.hourly, c.hoursWon, c.sessionsWon, c.allTimeClick = hourly, hoursWon, sessionsWon, allTime
 	c.mu.Unlock()
 	return nil
 }
@@ -78,6 +102,13 @@ func (c *LeaderboardCache) HoursWon(limit int) []LeaderboardEntry {
 func (c *LeaderboardCache) SessionsWon(limit int) []LeaderboardEntry {
 	c.mu.RLock()
 	b := c.sessionsWon
+	c.mu.RUnlock()
+	return clampBoard(b, limit)
+}
+
+func (c *LeaderboardCache) AllTimeClickers(limit int) []LeaderboardEntry {
+	c.mu.RLock()
+	b := c.allTimeClick
 	c.mu.RUnlock()
 	return clampBoard(b, limit)
 }

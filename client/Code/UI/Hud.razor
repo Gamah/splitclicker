@@ -29,7 +29,12 @@
 <root>
 	@{ var c = ClickController.Instance; }
 
-	@* ── session board: current game's cumulative standings, pinned top-left ── *@
+	@* ── left column: the session board stacked above the all-time board, flowed in
+	     a flex column so they can never overlap however many rows each grows to
+	     (both are capped at DisplayLimit). Pinned top-left. ── *@
+	<div class="left-col">
+
+	@* ── session board: current game's cumulative standings ── *@
 	<div class="board session">
 		<div class="title">SESSION · TOP CLICKERS</div>
 		<div class="divider"></div>
@@ -49,6 +54,31 @@
 				</div>
 			}
 		}
+	</div>
+
+	@* ── all-time clickers board: lifetime total scoring clicks across every skin
+	     (never resets) ── *@
+	<div class="board alltime">
+		<div class="title">ALL-TIME · TOP CLICKERS</div>
+		<div class="divider"></div>
+		@if ( _allTime.Count == 0 )
+		{
+			<div class="empty">@(_allTimeLoaded ? "No clicks recorded yet" : "loading…")</div>
+		}
+		else
+		{
+			@for ( int i = 0; i < _allTime.Count; i++ )
+			{
+				var s = _allTime[i];
+				<div class="row @(IsMe( s ) ? "me" : "")">
+					<div class="rank">@(i + 1)</div>
+					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
+					<div class="pts">@s.Points</div>
+				</div>
+			}
+		}
+	</div>
+
 	</div>
 
 	@* ── how-to-play: a static help card pinned bottom-left, under the session
@@ -125,14 +155,15 @@
 		}
 	</div>
 
-	@* ── hourly board: Postgres "most clicks this hour", pinned right (inner) ── *@
+	@* ── top-clickers board: points scored during the current bounty window
+	     (resets when the skin is won), pinned right (inner) ── *@
 	<div class="board hourly">
-		<div class="title">HOURLY · TOP CLICKERS</div>
-		<div class="reset">resets in @ResetCountdown()</div>
+		<div class="title">TOP CLICKERS · THIS SKIN</div>
+		<div class="reset">resets when the skin is won</div>
 		<div class="divider"></div>
 		@if ( _hourly.Count == 0 )
 		{
-			<div class="empty">@(_hourlyLoaded ? "No scores this hour yet" : "loading…")</div>
+			<div class="empty">@(_hourlyLoaded ? "No clicks for this skin yet" : "loading…")</div>
 		}
 		else
 		{
@@ -148,13 +179,14 @@
 		}
 	</div>
 
-	@* ── hours-won board: career UTC clock-hours topped, pinned right (outer) ── *@
+	@* ── hours-won board: UTC clock-hours topped during the current bounty window
+	     (resets when the skin is won), pinned right (outer) ── *@
 	<div class="board hourswon">
-		<div class="title">HOURS WON</div>
+		<div class="title">HOURS WON · THIS SKIN</div>
 		<div class="divider"></div>
 		@if ( _hoursWon.Count == 0 )
 		{
-			<div class="empty">@(_hoursWonLoaded ? "No hours won yet" : "loading…")</div>
+			<div class="empty">@(_hoursWonLoaded ? "No hours won for this skin yet" : "loading…")</div>
 		}
 		else
 		{
@@ -170,13 +202,15 @@
 		}
 	</div>
 
-	@* ── sessions-won board: career games (sessions) topped, pinned bottom-right ── *@
+	@* ── games-won board: games topped during the current bounty window — this is
+	     the board the bounty winner is read from (resets when the skin is won),
+	     pinned bottom-right ── *@
 	<div class="board sessionswon">
-		<div class="title">SESSIONS WON</div>
+		<div class="title">GAMES WON · THIS SKIN</div>
 		<div class="divider"></div>
 		@if ( _sessionsWon.Count == 0 )
 		{
-			<div class="empty">@(_sessionsWonLoaded ? "No sessions won yet" : "loading…")</div>
+			<div class="empty">@(_sessionsWonLoaded ? "No games won for this skin yet" : "loading…")</div>
 		}
 		else
 		{
@@ -245,7 +279,17 @@
 		gap: 3px;
 	}
 
-	.board.session { left: 14px; }
+	/* left column: session board stacked above the all-time board, pinned top-left.
+	   The two boards flow in this flex column (their own absolute pin is cancelled
+	   below) so they grow downward independently and can never overlap each other. */
+	.left-col {
+		position: absolute;
+		top: 18px;
+		left: 14px;
+		flex-direction: column;
+		gap: 14px;
+	}
+	.left-col .board { position: relative; top: auto; left: auto; right: auto; }
 
 	/* how-to-play card: pinned to the bottom-left (top:auto cancels the shared
 	   top:18px), under the session board. Lifted clear of the bottom edge so the
@@ -347,6 +391,11 @@
 	/* sessions-won is the blue board */
 	.board.sessionswon .pts { color: #4cc9f0; }
 	.board.sessionswon .row.me { background-color: rgba(76, 201, 240, 0.15); }
+
+	/* all-time clickers: the violet board (stacked under the session board in the
+	   left column; positioning handled by .left-col). */
+	.board.alltime .pts { color: #c77dff; }
+	.board.alltime .row.me { background-color: rgba(199, 125, 255, 0.15); }
 
 	/* the leader's "skin": bundled image + caption, pinned just left of the
 	   sessions-won board (308 = 14 edge + 280 board + 14 gap), bottom-aligned. */
@@ -649,6 +698,10 @@
 	bool _sessionsWonLoaded, _sessionsWonFetching;
 	RealTimeSince _sessionsWonLast;
 
+	List<Standing> _allTime = new();
+	bool _allTimeLoaded, _allTimeFetching;
+	RealTimeSince _allTimeLast;
+
 	GamePhase _lastPhase = GamePhase.Connecting;
 
 	// ── roaming button: the bounding box (.center) and the button itself, captured
@@ -684,6 +737,7 @@
 		_ = RefreshHourly();
 		_ = RefreshHoursWon();
 		_ = RefreshSessionsWon();
+		_ = RefreshAllTime();
 	}
 
 	// Fetch the winner-lock time + skin image URL once on startup. On failure the
@@ -732,6 +786,7 @@
 				if ( _hourlyLast > RefreshInterval ) _ = RefreshHourly();
 				if ( _hoursWonLast > RefreshInterval ) _ = RefreshHoursWon();
 				if ( _sessionsWonLast > RefreshInterval ) _ = RefreshSessionsWon();
+				if ( _allTimeLast > RefreshInterval ) _ = RefreshAllTime();
 			}
 
 			_lastPhase = phase;
@@ -813,6 +868,21 @@
 		finally { _sessionsWonFetching = false; }
 	}
 
+	async Task RefreshAllTime()
+	{
+		if ( _allTimeFetching ) return;
+		_allTimeFetching = true;
+		_allTimeLast = 0;
+		try
+		{
+			var board = await ApiClient.GetAllTimeClickersLeaderboard( DisplayLimit );
+			_allTime = board ?? new List<Standing>();
+			_allTimeLoaded = true;
+			StateHasChanged();
+		}
+		finally { _allTimeFetching = false; }
+	}
+
 	// Copy the clicked player's public Steam community profile link to the
 	// clipboard and flash a short confirmation toast. SteamID64 is public, so the
 	// link works for anyone; no-op if the row carries no id.
@@ -846,16 +916,6 @@
 		var session = SessionEntries;
 		if ( session.Count > 0 ) return DisplayName( session[0] );
 		return "Nobody";
-	}
-
-	// Wall-clock time left until the UTC hour ticks over (when the hourly board
-	// resets), as MM:SS — not a rolling 60-minute window.
-	static string ResetCountdown()
-	{
-		var now = DateTime.UtcNow;
-		var nextHour = now.Date.AddHours( now.Hour + 1 );
-		var left = nextHour - now;
-		return $"{(int)left.TotalMinutes:D2}:{left.Seconds:D2}";
 	}
 
 	// Whether a winner-lock time is configured at all (0 = unset → hide countdown).
@@ -964,5 +1024,5 @@
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
 		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), MusicOpen,
 			_skinUrl, _winnerLockMs, WinnerLockPassed() ),
-		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count ) );
+		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count, _allTime.Count, _allTimeLoaded ) );
 }

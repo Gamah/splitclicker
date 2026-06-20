@@ -194,6 +194,11 @@ func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		h.adminError(w, "load recent games", err)
 		return
 	}
+	bounties, err := h.store.ListBounties(ctx)
+	if err != nil {
+		h.adminError(w, "load bounties", err)
+		return
+	}
 	fastest, err := h.store.FastestClickers(ctx, 15)
 	if err != nil {
 		h.adminError(w, "load fastest clickers", err)
@@ -202,10 +207,12 @@ func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
 	data := dashboardData{
 		Stats:       stats,
 		Games:       games,
+		Bounties:    bounties,
 		Fastest:     fastest,
 		Hourly:      h.cache.Hourly(15),
 		HoursWon:    h.cache.HoursWon(15),
 		SessionsWon: h.cache.SessionsWon(15),
+		AllTime:     h.cache.AllTimeClickers(15),
 		Players:     h.hub.PlayerCount(),
 	}
 	h.renderAdmin(w, dashboardTmpl, data)
@@ -260,16 +267,29 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!doctype html>
 type dashboardData struct {
 	Stats       store.AdminStats
 	Games       []store.AdminGame
+	Bounties    []store.Bounty
 	Fastest     []store.FastestClicker
 	Hourly      []store.LeaderboardEntry
 	HoursWon    []store.LeaderboardEntry
 	SessionsWon []store.LeaderboardEntry
+	AllTime     []store.LeaderboardEntry
 	Players     int
 }
 
 // adminFuncs are the template helpers shared by the admin views.
 var adminFuncs = template.FuncMap{
 	"ts": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") },
+	// tsp renders a nullable timestamp ("—" when unset, e.g. a pending bounty's
+	// activation time).
+	"tsp": func(t *time.Time) string {
+		if t == nil {
+			return "—"
+		}
+		return t.UTC().Format("2006-01-02 15:04:05")
+	},
+	// dtlocal formats a time as an <input type=datetime-local> value (UTC, no
+	// zone) so editing a bounty round-trips through parseAdminTime's UTC reading.
+	"dtlocal": func(t time.Time) string { return t.UTC().Format("2006-01-02T15:04") },
 	"dur": func(a, b time.Time) string {
 		d := b.Sub(a).Round(time.Second)
 		if d < 0 {
@@ -317,6 +337,12 @@ th{background:#f0f0f0}
 .login input{width:100%;padding:.5rem;margin:.4rem 0;box-sizing:border-box;font-size:1rem}
 .login button{width:100%;padding:.5rem;font-size:1rem;cursor:pointer}
 .logout{float:right;font-size:.85rem}
+img.skin{height:40px;border-radius:4px;display:block;background:#eee}
+td input,td button{font-size:.85rem}
+td input[type=text],td input[type=datetime-local]{padding:.2rem}
+.addbounty{margin-top:1rem;padding:1rem;background:#fff;border:1px solid #e2e2e2;border-radius:8px;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.addbounty h3{margin:0 .5rem 0 0;font-weight:600;font-size:1rem}
+.actions{display:flex;gap:.4rem}
 `
 
 var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`<!doctype html>
@@ -330,6 +356,40 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
   <div class="card"><div class="n">{{.Stats.Rounds}}</div>rounds</div>
   <div class="card"><div class="n">{{.Stats.Clicks}}</div>scoring clicks</div>
 </div>
+
+<h2>Bounties <span class="muted">· the skin-to-win queue (times UTC). When a bounty's win time passes, the player who won the most games during its window is recorded as the winner and the next bounty activates automatically.</span></h2>
+<table>
+  <tr><th>skin</th><th>label</th><th>status</th><th>window (UTC)</th><th>winner</th><th></th></tr>
+  {{range .Bounties}}
+  <tr>
+    <td>
+      <img class="skin" src="/admin/media?f={{.SkinImage}}" alt="">
+      {{if ne .Status "won"}}<input form="b{{.ID}}" type="file" name="skin" accept="image/*">{{end}}
+    </td>
+    <td>{{if eq .Status "won"}}{{.Label}}{{else}}<input form="b{{.ID}}" type="text" name="label" value="{{.Label}}" placeholder="label">{{end}}</td>
+    <td>{{.Status}}</td>
+    <td>{{tsp .ActivatedAt}} &rarr; {{if eq .Status "won"}}{{ts .WinTime}}{{else}}<input form="b{{.ID}}" type="datetime-local" name="win_time" value="{{dtlocal .WinTime}}" required>{{end}}</td>
+    <td>{{if eq .Status "won"}}{{if .WinnerID}}{{plink .WinnerID .WinnerName}} <span class="muted">({{.WinnerWins}})</span>{{else}}<span class="muted">no winner (empty window)</span>{{end}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>
+      {{if ne .Status "won"}}
+      <div class="actions">
+        <form id="b{{.ID}}" method="post" action="/admin/bounties/edit" enctype="multipart/form-data"><input type="hidden" name="id" value="{{.ID}}"><button type="submit">save</button></form>
+        {{if eq .Status "pending"}}<form method="post" action="/admin/bounties/delete" onsubmit="return confirm('Delete this bounty?')"><input type="hidden" name="id" value="{{.ID}}"><button type="submit">delete</button></form>{{end}}
+      </div>
+      {{end}}
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">no bounties yet — add one below</td></tr>
+  {{end}}
+</table>
+<form class="addbounty" method="post" action="/admin/bounties" enctype="multipart/form-data">
+  <h3>Add bounty</h3>
+  <input type="file" name="skin" accept="image/*" required>
+  <input type="text" name="label" placeholder="label (optional)">
+  <input type="datetime-local" name="win_time" required>
+  <button type="submit">Add</button>
+</form>
 
 <h2>Recent games</h2>
 <table>
@@ -359,23 +419,30 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
   {{end}}
 </table>
 
+<h2>Leaderboards <span class="muted">· the first three are scoped to the active bounty's window (reset when it's won); all-time clickers spans the whole DB.</span></h2>
 <div class="cols">
   <div>
-    <h2>Hourly points</h2>
+    <h2>Points (this bounty)</h2>
     <table><tr><th>#</th><th>player</th><th>points</th></tr>
     {{range $i, $e := .Hourly}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
     </table>
   </div>
   <div>
-    <h2>Hours won</h2>
+    <h2>Hours won (this bounty)</h2>
     <table><tr><th>#</th><th>player</th><th>hours</th></tr>
     {{range $i, $e := .HoursWon}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
     </table>
   </div>
   <div>
-    <h2>Games won</h2>
+    <h2>Games won (this bounty)</h2>
     <table><tr><th>#</th><th>player</th><th>wins</th></tr>
     {{range $i, $e := .SessionsWon}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
+    </table>
+  </div>
+  <div>
+    <h2>All-time clickers</h2>
+    <table><tr><th>#</th><th>player</th><th>clicks</th></tr>
+    {{range $i, $e := .AllTime}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
     </table>
   </div>
 </div>
