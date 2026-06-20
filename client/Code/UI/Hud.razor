@@ -29,7 +29,12 @@
 <root>
 	@{ var c = ClickController.Instance; }
 
-	@* ── session board: current game's cumulative standings, pinned top-left ── *@
+	@* ── left column: the session board stacked above the all-time board, flowed in
+	     a flex column so they can never overlap however many rows each grows to
+	     (both are capped at DisplayLimit). Pinned top-left. ── *@
+	<div class="left-col">
+
+	@* ── session board: current game's cumulative standings ── *@
 	<div class="board session">
 		<div class="title">SESSION · TOP CLICKERS</div>
 		<div class="divider"></div>
@@ -49,6 +54,31 @@
 				</div>
 			}
 		}
+	</div>
+
+	@* ── all-time clickers board: lifetime total scoring clicks across every skin
+	     (never resets) ── *@
+	<div class="board alltime">
+		<div class="title">ALL-TIME · TOP CLICKERS</div>
+		<div class="divider"></div>
+		@if ( _allTime.Count == 0 )
+		{
+			<div class="empty">@(_allTimeLoaded ? "No clicks recorded yet" : "loading…")</div>
+		}
+		else
+		{
+			@for ( int i = 0; i < _allTime.Count; i++ )
+			{
+				var s = _allTime[i];
+				<div class="row @(IsMe( s ) ? "me" : "")">
+					<div class="rank">@(i + 1)</div>
+					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
+					<div class="pts">@s.Points</div>
+				</div>
+			}
+		}
+	</div>
+
 	</div>
 
 	@* ── how-to-play: a static help card pinned bottom-left, under the session
@@ -196,29 +226,6 @@
 		}
 	</div>
 
-	@* ── all-time clickers board: lifetime total scoring clicks across every skin
-	     (never resets), pinned mid-left under the session board ── *@
-	<div class="board alltime">
-		<div class="title">ALL-TIME · TOP CLICKERS</div>
-		<div class="divider"></div>
-		@if ( _allTime.Count == 0 )
-		{
-			<div class="empty">@(_allTimeLoaded ? "No clicks recorded yet" : "loading…")</div>
-		}
-		else
-		{
-			@for ( int i = 0; i < _allTime.Count; i++ )
-			{
-				var s = _allTime[i];
-				<div class="row @(IsMe( s ) ? "me" : "")">
-					<div class="rank">@(i + 1)</div>
-					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
-					<div class="pts">@s.Points</div>
-				</div>
-			}
-		}
-	</div>
-
 	@* ── leader's "skin": image served by the backend (selectable server-side),
 	     pinned just left of the sessions-won board, captioned with the current
 	     sessions-won leader's name. Above it, a countdown to when the winner is
@@ -272,7 +279,17 @@
 		gap: 3px;
 	}
 
-	.board.session { left: 14px; }
+	/* left column: session board stacked above the all-time board, pinned top-left.
+	   The two boards flow in this flex column (their own absolute pin is cancelled
+	   below) so they grow downward independently and can never overlap each other. */
+	.left-col {
+		position: absolute;
+		top: 18px;
+		left: 14px;
+		flex-direction: column;
+		gap: 14px;
+	}
+	.left-col .board { position: relative; top: auto; left: auto; right: auto; }
 
 	/* how-to-play card: pinned to the bottom-left (top:auto cancels the shared
 	   top:18px), under the session board. Lifted clear of the bottom edge so the
@@ -375,9 +392,8 @@
 	.board.sessionswon .pts { color: #4cc9f0; }
 	.board.sessionswon .row.me { background-color: rgba(76, 201, 240, 0.15); }
 
-	/* all-time clickers: pinned mid-left, in the free band between the session
-	   board (top) and the how-to card (bottom). The violet board. */
-	.board.alltime { top: 300px; left: 14px; }
+	/* all-time clickers: the violet board (stacked under the session board in the
+	   left column; positioning handled by .left-col). */
 	.board.alltime .pts { color: #c77dff; }
 	.board.alltime .row.me { background-color: rgba(199, 125, 255, 0.15); }
 
