@@ -212,6 +212,7 @@ func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		Hourly:      h.cache.Hourly(15),
 		HoursWon:    h.cache.HoursWon(15),
 		SessionsWon: h.cache.SessionsWon(15),
+		AllTime:     h.cache.AllTimeClickers(15),
 		Players:     h.hub.PlayerCount(),
 	}
 	h.renderAdmin(w, dashboardTmpl, data)
@@ -271,6 +272,7 @@ type dashboardData struct {
 	Hourly      []store.LeaderboardEntry
 	HoursWon    []store.LeaderboardEntry
 	SessionsWon []store.LeaderboardEntry
+	AllTime     []store.LeaderboardEntry
 	Players     int
 }
 
@@ -417,23 +419,30 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
   {{end}}
 </table>
 
+<h2>Leaderboards <span class="muted">· the first three are scoped to the active bounty's window (reset when it's won); all-time clickers spans the whole DB.</span></h2>
 <div class="cols">
   <div>
-    <h2>Hourly points</h2>
+    <h2>Points (this bounty)</h2>
     <table><tr><th>#</th><th>player</th><th>points</th></tr>
     {{range $i, $e := .Hourly}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
     </table>
   </div>
   <div>
-    <h2>Hours won</h2>
+    <h2>Hours won (this bounty)</h2>
     <table><tr><th>#</th><th>player</th><th>hours</th></tr>
     {{range $i, $e := .HoursWon}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
     </table>
   </div>
   <div>
-    <h2>Games won</h2>
+    <h2>Games won (this bounty)</h2>
     <table><tr><th>#</th><th>player</th><th>wins</th></tr>
     {{range $i, $e := .SessionsWon}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
+    </table>
+  </div>
+  <div>
+    <h2>All-time clickers</h2>
+    <table><tr><th>#</th><th>player</th><th>clicks</th></tr>
+    {{range $i, $e := .AllTime}}<tr><td>{{add1 $i}}</td><td>{{plink $e.SteamID $e.Username}}</td><td>{{$e.Points}}</td></tr>{{end}}
     </table>
   </div>
 </div>

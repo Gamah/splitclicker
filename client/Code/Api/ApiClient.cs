@@ -138,10 +138,17 @@ public static class ApiClient
 	public static Task<List<Standing>> GetHoursWonLeaderboard( int limit = 100 ) =>
 		GetLeaderboard( "hours-won", limit );
 
-	/// <summary>Career "sessions won" leaderboard (top `limit`). Empty list on
-	/// failure. Each Standing's Points is the games-won count.</summary>
+	/// <summary>"Games won this bounty" leaderboard (top `limit`) — games won in the
+	/// active bounty's window. Empty list on failure. Each Standing's Points is the
+	/// games-won count.</summary>
 	public static Task<List<Standing>> GetSessionsWonLeaderboard( int limit = 100 ) =>
 		GetLeaderboard( "sessions-won", limit );
+
+	/// <summary>All-time "top clickers" leaderboard (top `limit`) — total scoring
+	/// clicks across all bounties; never resets. Empty list on failure. Each
+	/// Standing's Points is the lifetime click count.</summary>
+	public static Task<List<Standing>> GetAllTimeClickersLeaderboard( int limit = 100 ) =>
+		GetLeaderboard( "all-time-clicks", limit );
 
 	static async Task<List<Standing>> GetLeaderboard( string board, int limit )
 	{

@@ -119,6 +119,7 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	mux.HandleFunc("GET /api/v2/leaderboard/hourly", h.hourlyLeaderboard)
 	mux.HandleFunc("GET /api/v2/leaderboard/hours-won", h.hoursWonLeaderboard)
 	mux.HandleFunc("GET /api/v2/leaderboard/sessions-won", h.sessionsWonLeaderboard)
+	mux.HandleFunc("GET /api/v2/leaderboard/all-time-clicks", h.allTimeClickersLeaderboard)
 	mux.HandleFunc("GET /ws/v2", h.wsConnect)
 
 	// v1 — legacy surface for OUTDATED clients still on the old build. Auth/config/
@@ -131,6 +132,7 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	mux.HandleFunc("GET /api/v1/leaderboard/hourly", h.legacyLeaderboard)
 	mux.HandleFunc("GET /api/v1/leaderboard/hours-won", h.legacyLeaderboard)
 	mux.HandleFunc("GET /api/v1/leaderboard/sessions-won", h.legacyLeaderboard)
+	mux.HandleFunc("GET /api/v1/leaderboard/all-time-clicks", h.legacyLeaderboard)
 	// Both the bare /ws (what the deployed old client hardcodes) and the explicit
 	// /ws/v1 (so a current build set to ApiVersion=v1 can exercise this path) are legacy.
 	mux.HandleFunc("GET /ws", h.wsConnectLegacy)
@@ -236,9 +238,16 @@ func (h *handler) hoursWonLeaderboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.cache.HoursWon(boardLimit(r)))
 }
 
-// GET /api/v1/leaderboard/sessions-won?limit=15 — career board of games won.
+// GET /api/v1/leaderboard/sessions-won?limit=15 — games won in the current
+// bounty window (the board the bounty winner is read from).
 func (h *handler) sessionsWonLeaderboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.cache.SessionsWon(boardLimit(r)))
+}
+
+// GET /api/v1/leaderboard/all-time-clicks?limit=15 — lifetime top clickers
+// (total scoring clicks across all bounties; never resets).
+func (h *handler) allTimeClickersLeaderboard(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.cache.AllTimeClickers(boardLimit(r)))
 }
 
 // boardLimit reads the ?limit param, defaulting to (and capped at) the cache
