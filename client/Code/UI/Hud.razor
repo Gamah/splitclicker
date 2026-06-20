@@ -403,11 +403,14 @@
 		z-index: 160;
 	}
 
+	/* Sized to its content — NOT scrollable. An overflow:scroll range becomes
+	   drag-pannable in s&box (you can drag the card around inside the overlay), so
+	   the card grows to fit instead, like the music board. The content is lean
+	   enough to fit the 1080-tall reference ScreenPanel scales to. */
 	.howto-card {
 		flex-direction: column;
+		flex-shrink: 0;
 		width: 560px;
-		max-height: 88%;
-		overflow-y: scroll;
 		padding: 22px 28px;
 		background-color: rgba(3, 13, 7, 0.98);
 		border: 1.5px solid rgba(255, 255, 255, 0.12);
