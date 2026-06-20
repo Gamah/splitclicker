@@ -37,6 +37,17 @@ type devNoteWire struct {
 	Note string `json:"note"`
 }
 
+// testWire pushes an anticheat test to a single (benched) player, or clears it.
+// The player must echo id in their test_answer frame. cleared=true (id/prompt
+// empty) tells the client to dismiss the test — they answered correctly.
+type testWire struct {
+	T       string `json:"t"`
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Prompt  string `json:"prompt"`
+	Cleared bool   `json:"cleared"`
+}
+
 // achievementWire tells the client to fire a manual achievement unlock by ident.
 // It carries out-of-band feats the server detects off the game socket (e.g.
 // poking the backend into a 404, fumbling the admin password) and matches back to

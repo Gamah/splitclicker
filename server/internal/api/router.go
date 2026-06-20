@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/gamah/splitclicker/internal/game"
+	"github.com/gamah/splitclicker/internal/runtimecfg"
 	"github.com/gamah/splitclicker/internal/session"
 	"github.com/gamah/splitclicker/internal/steam"
 	"github.com/gamah/splitclicker/internal/store"
@@ -112,31 +113,23 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	mux.HandleFunc("POST /admin/bounties/edit", h.adminBountyEdit)
 	mux.HandleFunc("POST /admin/bounties/delete", h.adminBountyDelete)
 
-	// v2 — the real game surface (current client build).
-	mux.HandleFunc("GET /api/v2/config", h.config)
-	mux.HandleFunc("GET /api/v2/skin", h.skin)
-	mux.HandleFunc("POST /api/v2/auth", rl.wrap(h.auth))
-	mux.HandleFunc("GET /api/v2/leaderboard/hourly", h.hourlyLeaderboard)
-	mux.HandleFunc("GET /api/v2/leaderboard/hours-won", h.hoursWonLeaderboard)
-	mux.HandleFunc("GET /api/v2/leaderboard/sessions-won", h.sessionsWonLeaderboard)
-	mux.HandleFunc("GET /api/v2/leaderboard/all-time-clicks", h.allTimeClickersLeaderboard)
-	mux.HandleFunc("GET /ws/v2", h.wsConnect)
+	// Versioned game surface. {ver} is the client's API version (e.g. v2, v3); the
+	// "live" threshold is config-driven (live_version in config.json, re-read per
+	// request). Auth/config/skin always work so even an outdated client connects and
+	// looks alive; the leaderboard + ws handlers compare the client's version to live
+	// and either respect it (live-or-newer) or troll it (below live: the "UPDATE
+	// UPDATE / 67" boards + a benched, click-ignored socket). A NEWER-than-live
+	// version is respected, so a v3 build can be tested before v2 is disabled.
+	mux.HandleFunc("GET /api/{ver}/config", h.config)
+	mux.HandleFunc("GET /api/{ver}/skin", h.skin)
+	mux.HandleFunc("POST /api/{ver}/auth", rl.wrap(h.auth))
+	mux.HandleFunc("GET /api/{ver}/leaderboard/{board}", h.leaderboard)
+	mux.HandleFunc("GET /ws/{ver}", h.wsConnect)
 
-	// v1 — legacy surface for OUTDATED clients still on the old build. Auth/config/
-	// skin keep working so the old client connects and looks alive, but the game
-	// socket trolls it (joins the loop, ignores its clicks) and every leaderboard
-	// returns the "UPDATE UPDATE / 67" board nudging a full s&box restart.
-	mux.HandleFunc("GET /api/v1/config", h.config)
-	mux.HandleFunc("GET /api/v1/skin", h.skin)
-	mux.HandleFunc("POST /api/v1/auth", rl.wrap(h.auth))
-	mux.HandleFunc("GET /api/v1/leaderboard/hourly", h.legacyLeaderboard)
-	mux.HandleFunc("GET /api/v1/leaderboard/hours-won", h.legacyLeaderboard)
-	mux.HandleFunc("GET /api/v1/leaderboard/sessions-won", h.legacyLeaderboard)
-	mux.HandleFunc("GET /api/v1/leaderboard/all-time-clicks", h.legacyLeaderboard)
-	// Both the bare /ws (what the deployed old client hardcodes) and the explicit
-	// /ws/v1 (so a current build set to ApiVersion=v1 can exercise this path) are legacy.
-	mux.HandleFunc("GET /ws", h.wsConnectLegacy)
-	mux.HandleFunc("GET /ws/v1", h.wsConnectLegacy)
+	// The bare, unversioned socket is what the oldest deployed client hardcodes. It
+	// carries no version segment, so it parses as version 1 — below any sane live
+	// version — and gets the legacy/troll treatment.
+	mux.HandleFunc("GET /ws", h.wsConnect)
 
 	return mux
 }
@@ -263,8 +256,61 @@ func boardLimit(r *http.Request) int {
 	return limit
 }
 
-// GET /ws/v2?ticket=… — upgrade to the game socket. The ticket (single-use, minted
-// by /auth) resolves to the player; the SteamID never rides the URL.
+// liveVersionDefault is the live API version assumed when config.json doesn't set
+// live_version. The current production client build is v2.
+const liveVersionDefault = 2
+
+// liveVersion is the configured "live" client API version (config.json's
+// live_version), re-read per request so it can be toggled without a restart.
+func (h *handler) liveVersion() int {
+	if v := runtimecfg.Load().LiveVersion; v != nil {
+		return *v
+	}
+	return liveVersionDefault
+}
+
+// parseVer turns a {ver} path segment ("v2", "2", or "" for the bare surface)
+// into an integer version. Anything missing or unparseable is treated as 1 — the
+// oldest, so it falls below any sane live version and gets the legacy treatment.
+func parseVer(s string) int {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	if s == "" {
+		return 1
+	}
+	if n, err := strconv.Atoi(s); err == nil && n >= 1 {
+		return n
+	}
+	return 1
+}
+
+// GET /api/{ver}/leaderboard/{board} (and the bare /api/leaderboard/{board}).
+// A client below the live version gets the troll board for every board/limit (the
+// visible nudge to restart s&box); live-or-newer gets the real board.
+func (h *handler) leaderboard(w http.ResponseWriter, r *http.Request) {
+	if parseVer(r.PathValue("ver")) < h.liveVersion() {
+		writeJSON(w, http.StatusOK, ws.LegacyBoard())
+		return
+	}
+	switch r.PathValue("board") {
+	case "hourly":
+		h.hourlyLeaderboard(w, r)
+	case "hours-won":
+		h.hoursWonLeaderboard(w, r)
+	case "sessions-won":
+		h.sessionsWonLeaderboard(w, r)
+	case "all-time-clicks":
+		h.allTimeClickersLeaderboard(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// GET /ws/{ver}?ticket=… (and the bare /ws) — upgrade to the game socket. The
+// ticket (single-use, minted by /auth) resolves to the player; the SteamID never
+// rides the URL. The client's version is compared to the live version: below it,
+// the connection is marked Legacy (trolled — joins the loop so its UI behaves, but
+// its clicks are ignored, it's left out of the player count, and it's fed the troll
+// board + "update" note). Live-or-newer is a normal, respected connection.
 func (h *handler) wsConnect(w http.ResponseWriter, r *http.Request) {
 	id, ok := h.tickets.Take(r.URL.Query().Get("ticket"))
 	if !ok {
@@ -276,34 +322,11 @@ func (h *handler) wsConnect(w http.ResponseWriter, r *http.Request) {
 		h.log.Warn("ws upgrade failed", zap.Error(err))
 		return
 	}
-	h.hub.ServeClient(ws.NewClient(conn, id.SteamID, id.Tag, id.Username, clientIP(r), h.hub))
-}
-
-// GET /ws — the legacy game socket for OUTDATED clients (the new build uses
-// /ws/v2). It joins them to the normal broadcast loop so their UI behaves, but the
-// hub ignores their clicks and feeds them the troll leaderboard; they're excluded
-// from the live player count. The cure is to fully restart s&box for the new build.
-func (h *handler) wsConnectLegacy(w http.ResponseWriter, r *http.Request) {
-	id, ok := h.tickets.Take(r.URL.Query().Get("ticket"))
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "valid ticket required")
-		return
-	}
-	conn, err := h.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		h.log.Warn("legacy ws upgrade failed", zap.Error(err))
-		return
-	}
+	ver := parseVer(r.PathValue("ver"))
 	c := ws.NewClient(conn, id.SteamID, id.Tag, id.Username, clientIP(r), h.hub)
-	c.Legacy = true
+	c.Version = ver
+	c.Legacy = ver < h.liveVersion()
 	h.hub.ServeClient(c)
-}
-
-// legacyLeaderboard serves the troll board (15× "UPDATE UPDATE" / 67) to every v1
-// leaderboard request, whichever board or limit was asked for — the visible nudge
-// for outdated clients to restart s&box.
-func (h *handler) legacyLeaderboard(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, ws.LegacyBoard())
 }
 
 // CORSMiddleware adds Access-Control headers for allowlisted browser origins and

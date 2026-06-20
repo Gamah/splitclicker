@@ -28,6 +28,15 @@ const (
 	pongWait       = 90 * time.Second // generous: idle conns just wait for an arm
 	pingPeriod     = 60 * time.Second // server-driven keepalive (PLAN §3.5b)
 	maxMessageSize = 1024
+
+	// minTestVersion is the oldest client API version that understands anticheat
+	// tests. Older clients still have their checks run/logged but are never benched
+	// (they can't render or answer a test), so the engine won't gate them.
+	minTestVersion = 3
+
+	// outdatedNote replaces the dev note for outdated (below-live) clients, telling
+	// them to update — shown alongside the troll leaderboards.
+	outdatedNote = "Your client is out of date — restart s&box to update."
 )
 
 // compile-time check that Hub satisfies the engine's broadcast interface.
@@ -67,11 +76,16 @@ type Client struct {
 	Username string
 	IP       string // client address (X-Forwarded-For hop), for IP-matched troll achievements
 
-	// Legacy marks a connection from an OUTDATED client build. It still rides the
-	// normal broadcast loop (so its UI behaves), but the hub ignores its clicks,
-	// leaves it out of the live player count, and swaps its leaderboards for the
-	// "UPDATE UPDATE / 67" troll board nudging a restart. See wsConnectLegacy.
+	// Legacy marks a connection from an OUTDATED client build (version below the
+	// configured live version). It still rides the normal broadcast loop (so its UI
+	// behaves), but the hub ignores its clicks, leaves it out of the live player
+	// count, and swaps its leaderboards for the "UPDATE UPDATE / 67" troll board
+	// nudging a restart. Set by the api layer from the connect path's version.
 	Legacy bool
+
+	// Version is the client's API version (from the /ws/{ver} path; bare /ws ⇒ 1).
+	// Drives TestCapable — only minTestVersion+ clients are issued anticheat tests.
+	Version int
 
 	smu        sync.Mutex // guards sendClosed + the send channel
 	sendClosed bool
@@ -150,6 +164,21 @@ func (h *Hub) PlayerCount() int {
 	return n
 }
 
+// ActivePlayerCount is the connected, non-legacy players who can actually race:
+// the player count minus anyone in the benched set. Implements game.Broadcaster
+// so the engine sizes N to the players who can score, not the benched ones.
+func (h *Hub) ActivePlayerCount(benched map[string]bool) int {
+	h.mu.RLock()
+	n := 0
+	for c := range h.clients {
+		if !c.Legacy && !benched[c.SteamID] {
+			n++
+		}
+	}
+	h.mu.RUnlock()
+	return n
+}
+
 // --- game.Broadcaster ---
 
 func (h *Hub) Pending(p game.PendingFrame) {
@@ -166,6 +195,9 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 	base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Nonce: strconv.FormatUint(a.Nonce, 16), Players: a.Players, Clicks: a.Clicks}
 	clean := mustJSON(base)
 	for _, c := range h.clientList() {
+		if a.Blocked[c.SteamID] {
+			continue // benched by anticheat: withhold the nonce until they pass their test
+		}
 		if d := a.Penalties[c.SteamID]; d > 0 {
 			w := base
 			w.PenaltyMs = int(d.Milliseconds())
@@ -182,9 +214,35 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 // clears it). Legacy clients receive it too — it's just a status line.
 func (h *Hub) DevNote(note string) {
 	msg := mustJSON(devNoteWire{T: "dev_note", Note: note})
+	legacy := mustJSON(devNoteWire{T: "dev_note", Note: outdatedNote})
 	for _, c := range h.clientList() {
-		c.trySend(msg)
+		if c.Legacy {
+			c.trySend(legacy) // outdated clients always see the "update" note
+		} else {
+			c.trySend(msg)
+		}
 	}
+}
+
+// SendTest pushes an anticheat test (or a clear) to the connection for steamID.
+// Implements game.Broadcaster; called from the engine's Run goroutine.
+func (h *Hub) SendTest(steamID string, f game.TestFrame) {
+	h.mu.RLock()
+	c := h.bySteam[steamID]
+	h.mu.RUnlock()
+	if c == nil {
+		return
+	}
+	c.trySend(mustJSON(testWire{T: "test", ID: f.ID, Kind: f.Kind, Prompt: f.Prompt, Cleared: f.Cleared}))
+}
+
+// TestCapable reports whether steamID's connected client understands anticheat
+// tests (a minTestVersion+ build). Implements game.Broadcaster.
+func (h *Hub) TestCapable(steamID string) bool {
+	h.mu.RLock()
+	c := h.bySteam[steamID]
+	h.mu.RUnlock()
+	return c != nil && !c.Legacy && c.Version >= minTestVersion
 }
 
 // FireAchievement pushes a manual achievement unlock to every open connection
@@ -261,6 +319,10 @@ func (h *Hub) hello(c *Client) {
 	if h.engine != nil {
 		snap = h.engine.Snapshot()
 	}
+	devNote := snap.DevNote
+	if c.Legacy {
+		devNote = outdatedNote // outdated client: the hard-coded "update" note
+	}
 	c.trySend(mustJSON(helloWire{
 		T:    "hello",
 		You:  helloYou{Tag: c.Tag, Username: c.Username},
@@ -269,7 +331,7 @@ func (h *Hub) hello(c *Client) {
 			Players: snap.Players, Clicks: snap.Clicks,
 			ArmMin: snap.ArmMinSec, ArmMax: snap.ArmMaxSec,
 			PenaltyBase: snap.PenaltyBaseMs, PenaltyStep: snap.PenaltyStepMs,
-			DevNote: snap.DevNote,
+			DevNote: devNote,
 		},
 	}))
 }
@@ -301,11 +363,13 @@ func (c *Client) closeSend() {
 
 // --- read / write pumps ---
 
-// inbound is the only client→server message shape: a click echoing the arm
-// nonce (hex), or a ping.
+// inbound is the client→server message shape: a click echoing the arm nonce
+// (hex), a ping, or a test_answer (echoing the test id with the player's answer).
 type inbound struct {
-	T     string `json:"t"`
-	Nonce string `json:"nonce"`
+	T      string `json:"t"`
+	Nonce  string `json:"nonce"`
+	ID     string `json:"id"`     // test_answer: the test token being answered
+	Answer string `json:"answer"` // test_answer: the player's answer text
 }
 
 func (c *Client) readPump() {
@@ -345,6 +409,13 @@ func (c *Client) readPump() {
 					Nonce:    nonce,
 					At:       now,
 				})
+			}
+		case "test_answer":
+			if c.Legacy {
+				continue // outdated client: never under test
+			}
+			if c.hub.engine != nil {
+				c.hub.engine.SubmitAnswer(game.NewAnswer(c.SteamID, in.ID, in.Answer))
 			}
 		case "ping":
 			// Keepalive handled at the protocol level (SetPongHandler); nothing to do.

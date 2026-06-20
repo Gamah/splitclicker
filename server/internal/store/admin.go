@@ -14,6 +14,8 @@ type AdminStats struct {
 	Games   int
 	Rounds  int
 	Clicks  int
+	Checks  int // anticheat checks flagged
+	Tests   int // anticheat tests sent
 }
 
 // AdminStats returns row counts across the history tables in one round-trip.
@@ -23,8 +25,10 @@ func (s *Store) AdminStats(ctx context.Context) (AdminStats, error) {
 		SELECT (SELECT COUNT(*) FROM players),
 		       (SELECT COUNT(*) FROM games),
 		       (SELECT COUNT(*) FROM game_rounds),
-		       (SELECT COUNT(*) FROM round_scores)
-	`).Scan(&a.Players, &a.Games, &a.Rounds, &a.Clicks)
+		       (SELECT COUNT(*) FROM round_scores),
+		       (SELECT COUNT(*) FROM anticheat_checks),
+		       (SELECT COUNT(*) FROM anticheat_tests)
+	`).Scan(&a.Players, &a.Games, &a.Rounds, &a.Clicks, &a.Checks, &a.Tests)
 	return a, err
 }
 
@@ -100,13 +104,15 @@ type AdminGameDetail struct {
 	RoundList []AdminRound
 }
 
-// AdminRound is one round in the detail view, with its scoring clicks in slot order.
+// AdminRound is one round in the detail view, with its scoring clicks in slot
+// order and any anticheat checks the round flagged.
 type AdminRound struct {
 	RoundNo int
 	N       int
 	Players int
 	ArmedAt time.Time
 	Clicks  []AdminClick
+	Checks  []AdminCheck
 }
 
 // AdminClick is one scoring click: slot ("click N"), who took it, and the
@@ -166,7 +172,134 @@ func (s *Store) GameDetail(ctx context.Context, gameID string) (d AdminGameDetai
 			})
 		}
 	}
-	return d, true, rows.Err()
+	if err := rows.Err(); err != nil {
+		return AdminGameDetail{}, false, err
+	}
+
+	// Attach the anticheat checks each round flagged (a separate query so the clicks
+	// query above stays a clean per-slot join).
+	crows, err := s.pool.Query(ctx, `
+		SELECT r.round_no, ac.steam_id, p.username, p.display_name, ac.check_type, ac.detail
+		FROM game_rounds r
+		JOIN anticheat_checks ac ON ac.round_id = r.id
+		LEFT JOIN players p ON p.steam_id = ac.steam_id
+		WHERE r.game_id = $1
+		ORDER BY r.round_no, ac.id
+	`, gameID)
+	if err != nil {
+		return AdminGameDetail{}, false, err
+	}
+	defer crows.Close()
+	byRound := map[int][]AdminCheck{}
+	for crows.Next() {
+		var roundNo int
+		var ch AdminCheck
+		var name, disp *string
+		if err := crows.Scan(&roundNo, &ch.SteamID, &name, &disp, &ch.Type, &ch.Detail); err != nil {
+			return AdminGameDetail{}, false, err
+		}
+		ch.Name = pickName(name, disp)
+		byRound[roundNo] = append(byRound[roundNo], ch)
+	}
+	if err := crows.Err(); err != nil {
+		return AdminGameDetail{}, false, err
+	}
+	for i := range d.RoundList {
+		d.RoundList[i].Checks = byRound[d.RoundList[i].RoundNo]
+	}
+	return d, true, nil
+}
+
+// AdminCheck is one anticheat check flagged against a player. In the recent-checks
+// list it also carries the game/round it belongs to (zero on the game-detail view,
+// which already groups by round).
+type AdminCheck struct {
+	GameID    string
+	RoundNo   int
+	SteamID   string
+	Name      string
+	Type      string
+	Detail    string
+	CreatedAt time.Time
+}
+
+// RecentChecks returns the most recently flagged anticheat checks, newest first,
+// each with the game/round it came from and the player's name.
+func (s *Store) RecentChecks(ctx context.Context, limit int) ([]AdminCheck, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.game_id, r.round_no, ac.steam_id, p.username, p.display_name,
+		       ac.check_type, ac.detail, ac.created_at
+		FROM anticheat_checks ac
+		JOIN game_rounds r ON r.id = ac.round_id
+		LEFT JOIN players p ON p.steam_id = ac.steam_id
+		ORDER BY ac.id DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []AdminCheck{}
+	for rows.Next() {
+		var ch AdminCheck
+		var name, disp *string
+		if err := rows.Scan(&ch.GameID, &ch.RoundNo, &ch.SteamID, &name, &disp,
+			&ch.Type, &ch.Detail, &ch.CreatedAt); err != nil {
+			return nil, err
+		}
+		ch.Name = pickName(name, disp)
+		out = append(out, ch)
+	}
+	return out, rows.Err()
+}
+
+// AdminTest is one anticheat test sent to a player and its answer (if any), for
+// the audit trail on the dashboard.
+type AdminTest struct {
+	SteamID    string
+	Name       string
+	Kind       string
+	Prompt     string
+	Answer     string // "" until answered
+	Answered   bool
+	Correct    bool
+	SentAt     time.Time
+	AnsweredAt *time.Time
+}
+
+// RecentTests returns the most recently sent anticheat tests, newest first, with
+// the answer received (if any) and the player's name.
+func (s *Store) RecentTests(ctx context.Context, limit int) ([]AdminTest, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.steam_id, p.username, p.display_name, t.test_kind, t.prompt,
+		       t.answer, t.correct, t.sent_at, t.answered_at
+		FROM anticheat_tests t
+		LEFT JOIN players p ON p.steam_id = t.steam_id
+		ORDER BY t.sent_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []AdminTest{}
+	for rows.Next() {
+		var tst AdminTest
+		var name, disp, answer *string
+		var correct *bool
+		if err := rows.Scan(&tst.SteamID, &name, &disp, &tst.Kind, &tst.Prompt,
+			&answer, &correct, &tst.SentAt, &tst.AnsweredAt); err != nil {
+			return nil, err
+		}
+		tst.Name = pickName(name, disp)
+		tst.Answer = deref(answer)
+		tst.Answered = tst.AnsweredAt != nil
+		tst.Correct = correct != nil && *correct
+		out = append(out, tst)
+	}
+	return out, rows.Err()
 }
 
 // FastestClicker is one row of the fastest-clickers board: a player's mean

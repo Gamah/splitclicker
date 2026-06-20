@@ -32,12 +32,12 @@ public sealed class ClickController : Component
 	/// http://localhost:8080 for a local play-test. Applied to ApiClient at startup.</summary>
 	[Property] public string BackendUrl { get; set; } = "";
 
-	/// <summary>API version to talk to, editable in the scene inspector. "v2" is the
-	/// real game; "v1" exercises the legacy/troll path the new server gives outdated
-	/// clients. LEAVE BLANK to use raw, unversioned paths (/api/… and /ws) — for the
-	/// live old master backend, whose socket is bare /ws (no version segment).
+	/// <summary>API version to talk to, editable in the scene inspector. "v3" is the
+	/// real game (with the anticheat test gate); "v2"/"v1" exercise the legacy/troll
+	/// path the server gives clients below its live version. LEAVE BLANK to use raw,
+	/// unversioned paths (bare /ws) — for the live old master backend.
 	/// Applied to <see cref="ApiClient.ApiVersion"/> at startup.</summary>
-	[Property] public string ApiVersion { get; set; } = "v2";
+	[Property] public string ApiVersion { get; set; } = "v3";
 
 	public GamePhase Phase { get; private set; } = GamePhase.Connecting;
 	public int Round { get; private set; }
@@ -71,6 +71,14 @@ public sealed class ClickController : Component
 	/// per-round delay itself stays secret. Shown while the round is arming.</summary>
 	public int ArmMinSec { get; private set; }
 	public int ArmMaxSec { get; private set; }
+
+	/// <summary>Anticheat test gate. When HasTest is true the player failed an
+	/// end-of-round check and is benched until they answer TestPrompt correctly: the
+	/// server withholds the armed signal until then. TestId must be echoed in the
+	/// answer. Set by the `test` frame; cleared by it (correct answer) or on arm.</summary>
+	public bool HasTest { get; private set; }
+	public string TestId { get; private set; } = "";
+	public string TestPrompt { get; private set; } = "";
 
 	/// <summary>True only while a valid click can score — drives both the button's
 	/// enabled state and scoring eligibility from one source.</summary>
@@ -151,6 +159,25 @@ public sealed class ClickController : Component
 	int _penaltyBaseMs = 500;
 	int _penaltyStepMs = 100;
 	int IdlePenaltyMs( int n ) => n <= 0 ? 0 : _penaltyBaseMs * n + _penaltyStepMs * n * ( n - 1 ) / 2;
+
+	// Submit the player's answer to the current anticheat test. Fire-and-forget over
+	// the socket, echoing the test id. A correct answer earns a `test` cleared frame
+	// (un-benched); a wrong one earns a fresh `test`. No-op without an active test.
+	public void SubmitTestAnswer( string answer )
+	{
+		if ( !HasTest || _ws == null || !_ws.Connected ) return;
+		// JsonSerializer quotes/escapes both fields so arbitrary answer text is safe.
+		var id = JsonSerializer.Serialize( TestId );
+		var ans = JsonSerializer.Serialize( answer ?? "" );
+		_ = _ws.Send( $"{{\"t\":\"test_answer\",\"id\":{id},\"answer\":{ans}}}" );
+	}
+
+	void ClearTest()
+	{
+		HasTest = false;
+		TestId = "";
+		TestPrompt = "";
+	}
 
 	async Task ConnectFlow()
 	{
@@ -262,6 +289,8 @@ public sealed class ClickController : Component
 					ClicksSent = 0;  // fresh CLICK! phase: start the sent tally over
 					_nonce = a.Nonce;
 					Phase = GamePhase.Armed;
+					// Receiving an arm means we're no longer benched — clear any stale test.
+					ClearTest();
 					SoundPlayer.PlayArmed();
 					break;
 
@@ -292,6 +321,23 @@ public sealed class ClickController : Component
 				case "dev_note":
 					var dn = Deser<DevNoteMsg>( json );
 					DevNote = dn.Note ?? "";
+					break;
+
+				case "test":
+					// Anticheat: we failed an end-of-round check and are benched until we
+					// answer this. A cleared frame (correct answer) dismisses it; otherwise
+					// adopt the new prompt (also overwrites a previous wrong attempt's test).
+					var tm = Deser<TestMsg>( json );
+					if ( tm.Cleared )
+					{
+						ClearTest();
+					}
+					else
+					{
+						HasTest = true;
+						TestId = tm.Id ?? "";
+						TestPrompt = tm.Prompt ?? "";
+					}
 					break;
 
 				case "achievement":

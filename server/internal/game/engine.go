@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,6 +91,10 @@ type ArmedFrame struct {
 	Players   int
 	Clicks    int
 	Penalties map[string]time.Duration
+	// Blocked is the set of SteamIDs withheld from this arm: players under an
+	// anticheat test who haven't passed yet. The hub does not send them the armed
+	// frame (no nonce ⇒ they cannot score) until they clear their test.
+	Blocked map[string]bool
 }
 
 // ResultFrame is the post-round leaderboard. Deltas is per-SteamID points scored
@@ -130,6 +135,16 @@ type Broadcaster interface {
 	// (empty string clears it). Sent once per game.
 	DevNote(note string)
 	PlayerCount() int
+	// ActivePlayerCount is the connected players who can actually race this round:
+	// non-legacy and not currently benched (in the given set). Used to size N so
+	// benched players don't inflate the scoring slots. Safe from any goroutine.
+	ActivePlayerCount(benched map[string]bool) int
+	// SendTest pushes an anticheat test (or a clear) to a single player by SteamID.
+	SendTest(steamID string, f TestFrame)
+	// TestCapable reports whether the SteamID's connected client understands tests
+	// (a new-enough build). Only test-capable players are benched/tested; older
+	// clients still have their checks run and logged. False if not connected.
+	TestCapable(steamID string) bool
 }
 
 // --- store (the persistent hourly board) ---
@@ -149,8 +164,18 @@ type ScoredClick struct {
 	OffsetMs int
 }
 
+// CheckResult is one anticheat check a round flagged against a player. Type is
+// the rule that fired ('fast_clicks' | 'too_many_clicks' | 'solo_round' |
+// 'dominant_winner'); Detail is a short human-readable note ('delta=84ms' /
+// 'clicks=37' / 'clicks=12 vs 5') for the audit record.
+type CheckResult struct {
+	SteamID string
+	Type    string
+	Detail  string
+}
+
 // RoundLog is the durable record of one round: its identity, parameters, arm
-// time, and the scoring clicks in arrival order.
+// time, the scoring clicks in arrival order, and any anticheat checks it flagged.
 type RoundLog struct {
 	RoundID string
 	RoundNo int
@@ -158,6 +183,26 @@ type RoundLog struct {
 	Players int
 	ArmedAt time.Time
 	Clicks  []ScoredClick
+	Checks  []CheckResult
+}
+
+// TestRecord is one anticheat test the engine issued to a flagged player, handed
+// to the Store for the audit trail. ID is the token a correct answer must echo.
+type TestRecord struct {
+	ID       string
+	SteamID  string
+	Kind     string
+	Prompt   string
+	Expected string
+}
+
+// TestFrame is a test pushed to a single flagged player (the hub targets it by
+// SteamID). Cleared=true tells the client to dismiss the test (answered right).
+type TestFrame struct {
+	ID      string
+	Kind    string
+	Prompt  string
+	Cleared bool
 }
 
 // GameLog is the durable record of one completed game, accumulated in memory
@@ -189,6 +234,10 @@ type Store interface {
 	AddHourlyPoints(ctx context.Context, bucket time.Time, deltas []HourlyDelta) error
 	AddSessionWin(ctx context.Context, steamID string) error
 	RecordGame(ctx context.Context, log GameLog) error
+	// RecordTestSent records an anticheat test as it is issued; RecordTestAnswer
+	// settles it with the player's answer (both wrong and right are recorded).
+	RecordTestSent(ctx context.Context, t TestRecord) error
+	RecordTestAnswer(ctx context.Context, id, answer string, correct bool) error
 }
 
 // --- engine ---
@@ -227,6 +276,18 @@ type Engine struct {
 	// armed frame (the spam deterrent); see idlePenalty.
 	badClicks map[string]int
 
+	// underTest is the set of SteamIDs benched by a failed anticheat check: they
+	// are withheld from the armed frame until they pass a test. Only test-capable
+	// clients are added (older clients still have checks run/logged, never benched).
+	// pendingTests holds each benched player's outstanding test (the answer must
+	// echo its id). Both are touched only from the Run goroutine.
+	underTest    map[string]bool
+	pendingTests map[string]pendingTest
+
+	// answers carries client test answers from the hub into the Run goroutine,
+	// like clicks. Buffered; a full buffer drops (the player can re-submit).
+	answers chan answerEvent
+
 	// gameEndHook, if set, runs after each game_over (post session-win write);
 	// used to refresh the leaderboard cache once per "session". Optional.
 	gameEndHook func(context.Context)
@@ -235,6 +296,13 @@ type Engine struct {
 	// once at the start of each game (so config edits apply on the next game).
 	// Optional — nil means no note is ever sent. Call SetDevNoteFn before Run.
 	devNoteFn func() string
+
+	// bountyLeaderFn, if set, returns the SteamID currently leading the active
+	// bounty (the games-won-this-skin #1), or "" if none. Used by the solo_round
+	// check, which only flags a lone player when they're the one in the lead.
+	// Optional — nil disables that gating (solo_round then never fires). Read from
+	// the in-memory leaderboard cache, so it's cheap to call per round.
+	bountyLeaderFn func() string
 }
 
 // SetGameEndHook registers a callback run after every game_over, once the
@@ -244,6 +312,10 @@ func (e *Engine) SetGameEndHook(fn func(context.Context)) { e.gameEndHook = fn }
 // SetDevNoteFn registers the source of the per-game dev note. Call before Run;
 // nil clears it.
 func (e *Engine) SetDevNoteFn(fn func() string) { e.devNoteFn = fn }
+
+// SetBountyLeaderFn registers the source of the current bounty leader's SteamID
+// (used by the solo_round anticheat check). Call before Run; nil disables it.
+func (e *Engine) SetBountyLeaderFn(fn func() string) { e.bountyLeaderFn = fn }
 
 // New builds an Engine. store may be nil (scoring still works, just not
 // persisted). log may be nil (falls back to a no-op logger).
@@ -256,12 +328,38 @@ func New(cfg Config, bc Broadcaster, store Store, log *zap.Logger) *Engine {
 		bc:     bc,
 		store:  store,
 		log:    log,
-		clicks:    make(chan ClickEvent, 4096),
-		wake:      make(chan struct{}, 1),
-		rng:       rand.New(rand.NewSource(seedFromCrypto())),
-		phase:     PhaseIntermission,
-		badClicks: map[string]int{},
+		clicks:       make(chan ClickEvent, 4096),
+		wake:         make(chan struct{}, 1),
+		answers:      make(chan answerEvent, 256),
+		rng:          rand.New(rand.NewSource(seedFromCrypto())),
+		phase:        PhaseIntermission,
+		badClicks:    map[string]int{},
+		underTest:    map[string]bool{},
+		pendingTests: map[string]pendingTest{},
 	}
+}
+
+// answerEvent is one client test answer as the hub read it: the test token it
+// answers and the submitted text.
+type answerEvent struct {
+	SteamID string
+	ID      string
+	Answer  string
+}
+
+// SubmitAnswer hands a client's test answer to the engine. Non-blocking (drops
+// if the buffer is full; the player can re-submit). Safe from any goroutine.
+func (e *Engine) SubmitAnswer(ev answerEvent) {
+	select {
+	case e.answers <- ev:
+	default:
+	}
+}
+
+// NewAnswer builds an answerEvent for the hub (which has no view of the engine's
+// unexported types).
+func NewAnswer(steamID, id, answer string) answerEvent {
+	return answerEvent{SteamID: steamID, ID: id, Answer: answer}
 }
 
 // Submit hands a click to the engine. Non-blocking: if the buffer is full (a
@@ -382,6 +480,8 @@ func (e *Engine) waitForPlayers(ctx context.Context) bool {
 			// A client connected (or churned) — loop and re-check the count.
 		case <-e.clicks:
 			// Stray click with nobody counted; discard so the channel can't back up.
+		case <-e.answers:
+			// Stray test answer with nobody counted; discard so it can't back up.
 		}
 	}
 	return true
@@ -409,9 +509,11 @@ func (e *Engine) playGame(ctx context.Context) {
 	var finalDeltas map[string]int
 	var finalRoundID string
 	for round := 1; round <= x && ctx.Err() == nil; round++ {
-		// Size the round to the crowd at arm time: N scales with connected players.
+		// players is the full connected crowd (shown to clients + recorded); N is sized
+		// to the players who can actually race — benched players are excluded so they
+		// don't inflate the scoring slots.
 		players := e.bc.PlayerCount()
-		n := e.clicksFor(players)
+		n := e.clicksFor(e.bc.ActivePlayerCount(e.underTest))
 		e.pending(ctx, round, x, players, n, info)
 		if ctx.Err() != nil {
 			return
@@ -421,9 +523,21 @@ func (e *Engine) playGame(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Run the end-of-round anticheat checks against this round's scoring clicks.
+		// Checks are logged for everyone; only test-capable players get benched.
+		leader := ""
+		if e.bountyLeaderFn != nil {
+			leader = e.bountyLeaderFn()
+		}
+		checks := e.runChecks(clicks, players, leader)
+		for _, ch := range checks {
+			if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
+				e.underTest[ch.SteamID] = true
+			}
+		}
 		roundLogs = append(roundLogs, RoundLog{
 			RoundID: roundID, RoundNo: round, N: n, Players: players,
-			ArmedAt: armedAt, Clicks: clicks,
+			ArmedAt: armedAt, Clicks: clicks, Checks: checks,
 		})
 		if final {
 			finalDeltas, finalRoundID = deltas, roundID
@@ -494,6 +608,10 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 	e.setPhase(PhasePending, round)
 	e.bc.Pending(PendingFrame{Round: round, Of: of, Players: players, Clicks: n})
 
+	// Issue/resend tests to benched players during the arming window so they can
+	// clear the gate before this round arms.
+	e.issueTests()
+
 	timer := time.NewTimer(e.randArmDelay())
 	defer timer.Stop()
 	for {
@@ -503,6 +621,8 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 		case ev := <-e.clicks:
 			recordInfo(info, ev)
 			e.recordBad(ev)
+		case ans := <-e.answers:
+			e.handleAnswer(ans)
 		case <-timer.C:
 			return
 		}
@@ -522,9 +642,10 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, final bool) (map[string]int, string, []ScoredClick, time.Time) {
 	nonce := newNonce()
 	penalties := e.penaltiesFrom(e.badClicks)
+	blocked := e.blockedSet()
 	e.setPhase(PhaseArmed, round)
 	armedAt := time.Now()
-	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: nonce, Players: players, Clicks: n, Penalties: penalties})
+	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: nonce, Players: players, Clicks: n, Penalties: penalties, Blocked: blocked})
 	// Each arm forgives the bad clicks accrued since the previous arm: the penalty
 	// above already reflects them, and the tally now restarts for the next arm.
 	e.badClicks = map[string]int{}
@@ -543,6 +664,8 @@ raceLoop:
 			if !rs.offer(ev) {
 				e.recordBad(ev) // an idle click during the live window still penalises
 			}
+		case ans := <-e.answers:
+			e.handleAnswer(ans)
 		case <-timer.C:
 			break raceLoop // safety: fewer than N clicks arrived
 		}
@@ -625,6 +748,8 @@ func (e *Engine) drain(ctx context.Context, d time.Duration) {
 			return
 		case ev := <-e.clicks:
 			e.recordBad(ev) // result/intermission/game-over clicks still accrue toward the next arm
+		case ans := <-e.answers:
+			e.handleAnswer(ans)
 		case <-timer.C:
 			return
 		}
@@ -708,6 +833,129 @@ func (e *Engine) penaltiesFrom(bad map[string]int) map[string]time.Duration {
 func (e *Engine) recordBad(ev ClickEvent) {
 	if ev.Nonce == 0 {
 		e.badClicks[ev.SteamID]++
+	}
+}
+
+// --- anticheat: checks + tests ---
+
+// runChecks inspects a round's scoring clicks and returns one CheckResult per
+// (player, rule) that fired. Two rules, both per-player and using only this
+// round's scoring clicks (already in wire-arrival order):
+//   - fast_clicks:     two consecutive scoring clicks < FastClickMs apart.
+//   - too_many_clicks: more than MaxClickFactor × ClicksPerPlayer scoring slots.
+func (e *Engine) runChecks(clicks []ScoredClick, players int, bountyLeader string) []CheckResult {
+	if len(clicks) == 0 {
+		return nil
+	}
+	// Per-player scoring-click offsets, preserving arrival order.
+	offsets := map[string][]int{}
+	order := []string{} // stable iteration so results are deterministic
+	for _, c := range clicks {
+		if _, seen := offsets[c.SteamID]; !seen {
+			order = append(order, c.SteamID)
+		}
+		offsets[c.SteamID] = append(offsets[c.SteamID], c.OffsetMs)
+	}
+
+	limit := e.cfg.MaxClickFactor * e.cfg.ClicksPerPlayer
+	var out []CheckResult
+	for _, sid := range order {
+		offs := offsets[sid]
+		// fast_clicks: smallest gap between consecutive scoring clicks.
+		if e.cfg.FastClickMs > 0 {
+			for i := 1; i < len(offs); i++ {
+				if d := offs[i] - offs[i-1]; d < e.cfg.FastClickMs {
+					out = append(out, CheckResult{SteamID: sid, Type: "fast_clicks", Detail: fmt.Sprintf("delta=%dms", d)})
+					break
+				}
+			}
+		}
+		// too_many_clicks: an implausible share of the round's slots.
+		if limit > 0 && len(offs) > limit {
+			out = append(out, CheckResult{SteamID: sid, Type: "too_many_clicks", Detail: fmt.Sprintf("clicks=%d", len(offs))})
+		}
+	}
+
+	// solo_round: the round had a single connected player (farming an empty lobby),
+	// but only counts when that lone player is the one currently LEADING the bounty —
+	// i.e. padding a lead nobody can contest. A lone player who isn't in the lead is
+	// left alone.
+	if players == 1 && bountyLeader != "" && order[0] == bountyLeader {
+		out = append(out, CheckResult{SteamID: order[0], Type: "solo_round", Detail: fmt.Sprintf("clicks=%d", len(offsets[order[0]]))})
+	}
+
+	// dominant_winner: the round's top scorer took MORE than 2× the runner-up's
+	// scoring clicks. Needs at least two distinct scorers; ties at the top don't fire.
+	if len(order) >= 2 {
+		topSID, topN, secondN := "", 0, 0
+		for _, sid := range order { // stable: first-arrival order breaks count ties
+			if n := len(offsets[sid]); n > topN {
+				topN, secondN, topSID = n, topN, sid
+			} else if n > secondN {
+				secondN = n
+			}
+		}
+		if secondN > 0 && topN > 2*secondN {
+			out = append(out, CheckResult{SteamID: topSID, Type: "dominant_winner", Detail: fmt.Sprintf("clicks=%d vs %d", topN, secondN)})
+		}
+	}
+	return out
+}
+
+// blockedSet snapshots the currently-benched players for an ArmedFrame. nil when
+// nobody is benched (the common case).
+func (e *Engine) blockedSet() map[string]bool {
+	if len(e.underTest) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(e.underTest))
+	for sid := range e.underTest {
+		out[sid] = true
+	}
+	return out
+}
+
+// issueTests pushes a test to every benched player, creating one (and recording
+// it) if they don't already have an outstanding test, or resending the existing
+// one (so a reconnecting client re-sees it).
+func (e *Engine) issueTests() {
+	if e.bc == nil {
+		return
+	}
+	for sid := range e.underTest {
+		pt, ok := e.pendingTests[sid]
+		if !ok {
+			pt = e.newTest(sid)
+			e.pendingTests[sid] = pt
+		}
+		e.bc.SendTest(sid, TestFrame{ID: pt.id, Kind: pt.kind, Prompt: pt.prompt})
+	}
+}
+
+// handleAnswer settles a benched player's test answer. A correct answer clears
+// the bench (they rejoin at the next arm); a wrong one is recorded and a fresh
+// test issued. Answers that don't match the outstanding test id are ignored
+// (stale/duplicate). Both outcomes are persisted for the audit trail.
+func (e *Engine) handleAnswer(a answerEvent) {
+	pt, ok := e.pendingTests[a.SteamID]
+	if !ok || pt.id != a.ID {
+		return
+	}
+	correct := strings.TrimSpace(a.Answer) == pt.expected
+	e.recordTestAnswer(pt.id, a.Answer, correct)
+	if correct {
+		delete(e.pendingTests, a.SteamID)
+		delete(e.underTest, a.SteamID)
+		if e.bc != nil {
+			e.bc.SendTest(a.SteamID, TestFrame{Cleared: true})
+		}
+		return
+	}
+	// Wrong: issue a fresh test so they can't brute-force the same prompt.
+	npt := e.newTest(a.SteamID)
+	e.pendingTests[a.SteamID] = npt
+	if e.bc != nil {
+		e.bc.SendTest(a.SteamID, TestFrame{ID: npt.id, Kind: npt.kind, Prompt: npt.prompt})
 	}
 }
 

@@ -233,11 +233,43 @@ func (s *Store) RecordGame(ctx context.Context, log game.GameLog) error {
 				VALUES ($1, $2, $3, $4)
 			`, r.RoundID, c.SlotNo, c.SteamID, c.OffsetMs)
 		}
+		// Anticheat checks the round flagged ride the same transaction, so they FK
+		// cleanly to the game_rounds row inserted just above.
+		for _, ch := range r.Checks {
+			batch.Queue(`
+				INSERT INTO anticheat_checks (round_id, steam_id, check_type, detail)
+				VALUES ($1, $2, $3, $4)
+			`, r.RoundID, ch.SteamID, ch.Type, ch.Detail)
+		}
 	}
 	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// RecordTestSent persists a test the engine issued to a flagged player. The id is
+// the engine token the answer must echo; answer/correct stay NULL until answered.
+// Implements game.Store.
+func (s *Store) RecordTestSent(ctx context.Context, t game.TestRecord) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO anticheat_tests (id, steam_id, test_kind, prompt, expected)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (id) DO NOTHING
+	`, t.ID, t.SteamID, t.Kind, t.Prompt, t.Expected)
+	return err
+}
+
+// RecordTestAnswer settles a sent test with the player's answer. A wrong answer
+// is recorded too (the engine then issues a fresh test), so the table holds the
+// full attempt trail. Implements game.Store.
+func (s *Store) RecordTestAnswer(ctx context.Context, id, answer string, correct bool) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE anticheat_tests
+		SET answer = $2, correct = $3, answered_at = now()
+		WHERE id = $1
+	`, id, answer, correct)
+	return err
 }
 
 // AddSessionWin credits one game win to steamID on the persistent sessions-won

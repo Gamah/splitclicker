@@ -111,6 +111,17 @@ public record DevNoteMsg(
 	[property: JsonPropertyName( "note" )] string Note
 );
 
+// An anticheat test pushed to this client after it failed an end-of-round check:
+// the player must answer (echoing id) before the server will arm them again.
+// cleared=true (id/prompt empty) means the test was answered correctly — dismiss
+// the prompt. kind is the test type ("sum2"); prompt is the question to show.
+public record TestMsg(
+	[property: JsonPropertyName( "id" )] string Id,
+	[property: JsonPropertyName( "kind" )] string Kind,
+	[property: JsonPropertyName( "prompt" )] string Prompt,
+	[property: JsonPropertyName( "cleared" )] bool Cleared
+);
+
 // ident is a server-pushed manual achievement unlock for an out-of-band feat
 // (e.g. poking the backend into a 404, fumbling the admin password); it must
 // match an achievement defined in the s&box project.

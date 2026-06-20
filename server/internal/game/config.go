@@ -24,6 +24,13 @@ type Config struct {
 	// to clients on connect so they mirror the live estimate. See idlePenalty.
 	PenaltyBaseMs int
 	PenaltyStepMs int
+
+	// Anticheat checks (run at the end of every round; see Engine.runChecks).
+	// FastClickMs flags a player whose two consecutive SCORING clicks landed less
+	// than this many ms apart (autoclicker-fast). MaxClickFactor flags a player who
+	// took more than MaxClickFactor × ClicksPerPlayer scoring slots in one round.
+	FastClickMs    int
+	MaxClickFactor int
 }
 
 // DefaultConfig is the baseline tuning (overridable via data/config.json, then env).
@@ -40,6 +47,8 @@ func DefaultConfig() Config {
 		BoardSize:       20,
 		PenaltyBaseMs:   500,
 		PenaltyStepMs:   100,
+		FastClickMs:     130,
+		MaxClickFactor:  2,
 	}
 }
 
@@ -58,6 +67,8 @@ func ConfigFromEnv() Config {
 	c.BoardSize = envInt("BOARD_SIZE", c.BoardSize)
 	c.PenaltyBaseMs = envInt("PENALTY_BASE_MS", c.PenaltyBaseMs)
 	c.PenaltyStepMs = envInt("PENALTY_STEP_MS", c.PenaltyStepMs)
+	c.FastClickMs = envInt("FAST_CLICK_MS", c.FastClickMs)
+	c.MaxClickFactor = envInt("MAX_CLICK_FACTOR", c.MaxClickFactor)
 	return c
 }
 

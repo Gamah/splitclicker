@@ -15,6 +15,8 @@ directory is bind-mounted into the container at `/data` (see
      "winner_lock_time": "2026-06-16T07:00:00Z",
      "dev_note": "",
 
+     "live_version": 2,
+
      "arm_min_sec": 2,
      "arm_max_sec": 6,
      "clicks_per_player": 15,
@@ -23,7 +25,9 @@ directory is bind-mounted into the container at `/data` (see
      "race_max_ms": 5000,
      "result_display_ms": 4000,
      "intermission_ms": 5000,
-     "board_size": 20
+     "board_size": 20,
+     "fast_click_ms": 130,
+     "max_click_factor": 2
    }
    ```
 
@@ -34,6 +38,11 @@ directory is bind-mounted into the container at `/data` (see
 - `dev_note` — a broadcast message shown orange on every client (under the
   throttle line). Re-read once at the start of each game, so a change takes
   effect on the next game; empty/omit clears it (no restart needed).
+- `live_version` — the current "live" client API version (integer). Clients on a
+  lower version get the troll leaderboards + an "out of date" note; live-or-newer
+  are respected. Bump it to disable an old build (e.g. set `3` once v3 is out), or
+  leave it below a new build's version to test that build alongside the live one.
+  Omit ⇒ default `2`.
 
 **Game tunables (read at startup → `docker compose restart app` to apply):**
 - `arm_min_sec` / `arm_max_sec` — random arming-delay window.
@@ -41,6 +50,11 @@ directory is bind-mounted into the container at `/data` (see
   at min_clicks.
 - `rounds_per_game`, `race_max_ms`, `result_display_ms`, `intermission_ms`,
   `board_size`.
+- `penalty_base_ms` / `penalty_step_ms` — idle-click arm-delay escalation.
+- `fast_click_ms` — anticheat: two consecutive scoring clicks closer than this
+  (default 130) flag the player. `max_click_factor` — anticheat: more than
+  `max_click_factor × clicks_per_player` scoring clicks in a round flags them
+  (default 2).
 
 Any omitted field falls back to its env var (e.g. `SKIN_IMAGE`, `ARM_MIN_SEC`),
 then the built-in default. `config.json` is gitignored (the live, host-owned
