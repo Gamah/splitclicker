@@ -741,15 +741,20 @@
 		justify-content: center;
 	}
 
+	/* Mirror the known-good TextEntry recipe (skafinity .tag-input / rotaliate
+	   .chat-entry): an explicit height + plain `color: white`. Without a height the
+	   text box collapses and the typed text is clipped (it's still captured — the
+	   answer sends — just not painted); text-align on a TextEntry also hides it. */
 	.test-input {
-		width: 200px;
+		width: 240px;
+		height: 44px;
+		padding: 0 14px;
 		font-size: 24px;
-		color: #ffffff;
+		color: white;
 		background-color: rgba(255, 255, 255, 0.08);
 		border: 1.5px solid rgba(255, 255, 255, 0.3);
 		border-radius: 8px;
-		padding: 8px 12px;
-		text-align: center;
+		pointer-events: all;
 	}
 
 	.test-submit {
