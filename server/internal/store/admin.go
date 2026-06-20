@@ -539,18 +539,9 @@ func (s *Store) PlayerSanction(ctx context.Context, steamID string) (PlayerSanct
 	return ps, nil
 }
 
-// SetPlayerSanctionChecks sets a player's flag count for a bounty and clears any
-// active cooldown/ignored state (an admin edit re-baselines the ladder; it then
-// re-escalates naturally from the new count). Used by the admin player page.
-func (s *Store) SetPlayerSanctionChecks(ctx context.Context, bountyID int64, steamID string, checks int) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO anticheat_sanctions (bounty_id, steam_id, checks, cooldown_until, ignored, updated_at)
-		VALUES ($1, $2, $3, NULL, false, now())
-		ON CONFLICT (bounty_id, steam_id) DO UPDATE
-		SET checks = EXCLUDED.checks, cooldown_until = NULL, ignored = false, updated_at = now()
-	`, bountyID, steamID, checks)
-	return err
-}
+// The admin "set flag count" path writes the full ladder state (count + derived
+// cooldown/ignored) via SaveSanction — see Engine.SanctionForChecks and the
+// adminPlayerChecks handler — so there's no count-only setter here.
 
 // FastestClicker is one row of the fastest-clickers board: a player's mean
 // per-round click delta in ms (gap from their previous click that arm; their

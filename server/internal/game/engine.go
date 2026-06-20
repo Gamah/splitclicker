@@ -1136,6 +1136,24 @@ func (e *Engine) applySanction(ch CheckResult, bi BountyInfo) {
 	e.persistSanction(bi.ID, *s)
 }
 
+// SanctionForChecks derives the full ladder state for a given flag count using the
+// live config — the same thresholds applySanction escalates through. Used by the
+// admin "set flag count" path so an edit lands the player on the right rung
+// immediately (>= threshold → cooldown, >= threshold+grace → ignored) rather than
+// only re-escalating on the next real flag. Safe from any goroutine (reads cfg).
+func (e *Engine) SanctionForChecks(checks int) Sanction {
+	s := Sanction{Checks: checks}
+	x := e.cfg.CheckCooldownThreshold
+	switch {
+	case x > 0 && checks >= x+e.cfg.CheckIgnoreAfter:
+		s.Ignored = true
+	case x > 0 && checks >= x:
+		until := time.Now().Add(time.Duration(e.cfg.CheckCooldownMins) * time.Minute)
+		s.CooldownUntil = &until
+	}
+	return s
+}
+
 // applyExternalSanction applies an admin override in the Run goroutine: drop any
 // math-test bench for the player, replace (or remove) their sanction state, and
 // reconcile what their client is showing. The store row is written by the caller.

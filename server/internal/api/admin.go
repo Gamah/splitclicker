@@ -378,14 +378,21 @@ func (h *handler) adminPlayerChecks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no active bounty — nothing to sanction", http.StatusConflict)
 		return
 	}
-	if err := h.store.SetPlayerSanctionChecks(r.Context(), bountyID, id, checks); err != nil {
+	// Derive the rung the count lands on (>= threshold → cooldown, more → ignored) so
+	// the edit takes effect now, not on the next real flag. Persist that full state
+	// synchronously (so the reloaded page reflects it), then push it to the engine to
+	// apply live (block scoring + notify the client).
+	s := game.Sanction{SteamID: id, Checks: checks}
+	if h.engine != nil {
+		s = h.engine.SanctionForChecks(checks)
+		s.SteamID = id
+	}
+	if err := h.store.SaveSanction(r.Context(), bountyID, s); err != nil {
 		h.adminError(w, "set player checks", err)
 		return
 	}
-	// Apply live: clears cooldown/ignored and any math-test bench, re-baselining the
-	// ladder at the new count (the store write above matches this).
 	if h.engine != nil {
-		h.engine.SetSanction(id, game.Sanction{SteamID: id, Checks: checks})
+		h.engine.SetSanction(id, s)
 	}
 	http.Redirect(w, r, "/admin/player?id="+url.QueryEscape(id), http.StatusSeeOther)
 }
