@@ -19,7 +19,7 @@
 -- presence of rows for a round is exactly "this round added checks".
 CREATE TABLE anticheat_checks (
     id         BIGSERIAL   PRIMARY KEY,
-    round_id   TEXT        NOT NULL REFERENCES game_rounds(id) ON DELETE CASCADE,
+    round_id   UUID        NOT NULL REFERENCES game_rounds(id) ON DELETE CASCADE,
     steam_id   TEXT        NOT NULL REFERENCES players(steam_id),
     check_type TEXT        NOT NULL,                 -- 'fast_clicks' | 'too_many_clicks'
     detail     TEXT        NOT NULL DEFAULT '',      -- e.g. 'delta=84ms' / 'clicks=37'
