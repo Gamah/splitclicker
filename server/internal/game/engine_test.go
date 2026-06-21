@@ -89,10 +89,23 @@ func TestIdlePenalty(t *testing.T) {
 func TestStandingsOrder(t *testing.T) {
 	scores := map[string]int{"a": 1, "b": 3, "c": 3}
 	info := map[string]playerInfo{"a": {}, "b": {}, "c": {}}
-	s := standingsOf(scores, info)
-	// b,c tie at 3 — SteamID asc tiebreak puts b before c; a last.
+	// No reached times: b,c tie at 3 and fall back to SteamID asc (b before c); a last.
+	s := standingsOf(scores, info, nil)
 	if s[0].SteamID != "b" || s[1].SteamID != "c" || s[2].SteamID != "a" {
 		t.Fatalf("unexpected order: %v %v %v", s[0].SteamID, s[1].SteamID, s[2].SteamID)
+	}
+}
+
+func TestStandingsTieBreakByReached(t *testing.T) {
+	scores := map[string]int{"a": 3, "b": 3}
+	info := map[string]playerInfo{"a": {}, "b": {}}
+	now := time.Now()
+	// a and b tie at 3, but b reached it first (earlier timestamp) so b ranks above
+	// a — even though SteamID asc alone would put a first.
+	reached := map[string]time.Time{"a": now.Add(time.Second), "b": now}
+	s := standingsOf(scores, info, reached)
+	if s[0].SteamID != "b" || s[1].SteamID != "a" {
+		t.Fatalf("expected b before a (b got there first), got %v %v", s[0].SteamID, s[1].SteamID)
 	}
 }
 
