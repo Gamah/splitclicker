@@ -55,16 +55,21 @@ psql() {
   $COMPOSE exec -T postgres psql -U splitclicker -d splitclicker -At -F $'\t' -v ON_ERROR_STOP=1 "$@"
 }
 
+# The SteamID as a SQL string literal. psql's :'var' interpolation isn't reliably
+# applied through `docker compose exec … -c`, so the (already digits-only
+# validated) id is inlined directly — no injection surface.
+SID="'$STEAMID'"
+
 # Show who this is + how much they have on the boards, so a typo'd SteamID is
 # obvious before anything is deleted.
-summary=$(psql -v sid="$STEAMID" -c "
+summary=$(psql -c "
   SELECT COALESCE(NULLIF(p.username,''), NULLIF(p.display_name,''), '(no name)'),
-         (SELECT COUNT(*)      FROM round_scores       WHERE steam_id = :'sid'),
-         (SELECT COALESCE(SUM(points),0) FROM hourly_scores WHERE steam_id = :'sid'),
-         (SELECT COALESCE(wins,0)        FROM session_wins  WHERE steam_id = :'sid'),
-         (SELECT COUNT(*)      FROM bounties            WHERE winner_id = :'sid')
+         (SELECT COUNT(*)      FROM round_scores       WHERE steam_id = $SID),
+         (SELECT COALESCE(SUM(points),0) FROM hourly_scores WHERE steam_id = $SID),
+         (SELECT COALESCE(wins,0)        FROM session_wins  WHERE steam_id = $SID),
+         (SELECT COUNT(*)      FROM bounties            WHERE winner_id = $SID)
     FROM players p
-   WHERE p.steam_id = :'sid';")
+   WHERE p.steam_id = $SID;")
 
 if [ -z "$summary" ]; then
   echo "No player with steam_id $STEAMID exists — nothing to do." >&2
@@ -87,19 +92,19 @@ fi
 
 # One transaction: children first (FK, no cascade), board tables, unassign any
 # won bounties, then the player row.
-psql -v sid="$STEAMID" <<'SQL'
+psql <<SQL
 BEGIN;
-DELETE FROM round_scores        WHERE steam_id = :'sid';
-DELETE FROM anticheat_checks    WHERE steam_id = :'sid';
-DELETE FROM anticheat_tests     WHERE steam_id = :'sid';
-DELETE FROM anticheat_sanctions WHERE steam_id = :'sid';
-DELETE FROM hourly_scores       WHERE steam_id = :'sid';
-DELETE FROM hourly_wins         WHERE steam_id = :'sid';
-DELETE FROM session_wins        WHERE steam_id = :'sid';
+DELETE FROM round_scores        WHERE steam_id = $SID;
+DELETE FROM anticheat_checks    WHERE steam_id = $SID;
+DELETE FROM anticheat_tests     WHERE steam_id = $SID;
+DELETE FROM anticheat_sanctions WHERE steam_id = $SID;
+DELETE FROM hourly_scores       WHERE steam_id = $SID;
+DELETE FROM hourly_wins         WHERE steam_id = $SID;
+DELETE FROM session_wins        WHERE steam_id = $SID;
 UPDATE bounties
    SET winner_id = NULL, winner_name = '', winner_wins = 0
- WHERE winner_id = :'sid';
-DELETE FROM players             WHERE steam_id = :'sid';
+ WHERE winner_id = $SID;
+DELETE FROM players             WHERE steam_id = $SID;
 COMMIT;
 SQL
 
