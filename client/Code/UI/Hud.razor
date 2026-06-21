@@ -105,8 +105,30 @@
 	<div class="center @StateClass()" @ref="_box">
 		@if ( !MusicOpen )
 		{
-			<div class="game-btn @StateClass()" @ref="_btn"
-			     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
+			@* The scoring surface. v5: one clickable button per live board slot, at its
+			   server-placed position (board-% space, same as the pips) — no client roam.
+			   Below-v5: the single legacy button that roams the box on every click. *@
+			@if ( c != null && c.HasBoard )
+			{
+				@foreach ( var btn in c.LiveButtons )
+				{
+					<div class="board-btn" style="left: @(PipPct( btn.X ))%; top: @(PipPct( btn.Y ))%;"
+					     onclick="@(() => OnPressButton( btn ))"></div>
+				}
+			}
+			else
+			{
+				<div class="game-btn @StateClass()" @ref="_btn"
+				     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
+			}
+
+			@* Opponent cursors: a labelled amber dot per sampled opponent pointer (v5). *@
+			@foreach ( var cur in CursorsToShow() )
+			{
+				<div class="opp-cursor" style="left: @(PipPct( cur.X ))%; top: @(PipPct( cur.Y ))%;">
+					<div class="opp-cursor-name">@cur.Name</div>
+				</div>
+			}
 
 			@* "+ PENALTY" popups: one per bad click, floating up from where it was hit. *@
 			@foreach ( var p in _pops )
@@ -1066,6 +1088,53 @@
 		white-space: nowrap;
 	}
 
+	/* v5 board button: one clickable green circle per live slot. Positioned by its
+	   server-placed centre (inline left/top %, same box-% space as the pips), centred via
+	   −half margins. Smaller than the legacy single button since up to X share the box.
+	   No teleport — positions are server-authoritative, so left/top can transition-free. */
+	.board-btn {
+		position: absolute;
+		width: 96px;
+		height: 96px;
+		margin-left: -48px;
+		margin-top: -48px;
+		border-radius: 50%;
+		background-color: #06d6a0; /* live green — the board only exists while armed */
+		border: 4px solid rgba(255, 255, 255, 0.9);
+		transition: transform 0.08s ease-out;
+		pointer-events: all;
+		cursor: pointer;
+		z-index: 105;
+	}
+	.board-btn:active { transform: scale(0.9); }
+
+	/* Opponent cursor: a small amber dot at another player's sampled pointer, with their
+	   name beneath. Box-% space like the pips; never eats a click. */
+	.opp-cursor {
+		position: absolute;
+		width: 16px;
+		height: 16px;
+		margin-left: -8px;
+		margin-top: -8px;
+		border-radius: 50%;
+		background-color: rgba(255, 209, 102, 0.9);
+		border: 2px solid rgba(0, 0, 0, 0.5);
+		flex-direction: column;
+		align-items: center;
+		pointer-events: none;
+		z-index: 108;
+	}
+
+	.opp-cursor-name {
+		position: absolute;
+		top: 16px;
+		font-size: 13px;
+		color: #ffd166;
+		text-stroke: 1px rgba(0, 0, 0, 0.8);
+		white-space: nowrap;
+		pointer-events: none;
+	}
+
 	/* Live clicks-remaining counter, green, shown while the window is open. */
 	.remaining {
 		font-size: 40px;
@@ -1639,6 +1708,23 @@
 
 		var phase = C?.Phase ?? GamePhase.Connecting;
 
+		// While armed, report our pointer to the server (throttled in SendCursor) so other
+		// players see our roaming cursor. Mouse.Position and Box.Rect share the same
+		// screen-pixel space, so the pointer normalizes to the box exactly like the
+		// buttons/pips (−1..1, 0 = centre). Re-render is driven by BoardHash in BuildHash
+		// (board claims + cursor moves), so no per-frame StateHasChanged needed here.
+		if ( phase == GamePhase.Armed && C != null )
+		{
+			var r = _box?.Box.Rect ?? default;
+			if ( r.Width > 0f && r.Height > 0f )
+			{
+				var m = Sandbox.Mouse.Position;
+				float nx = Math.Clamp( ( m.x - r.Center.x ) / ( r.Width / 2f ), -1f, 1f );
+				float ny = Math.Clamp( ( m.y - r.Center.y ) / ( r.Height / 2f ), -1f, 1f );
+				C.SendCursor( nx, ny );
+			}
+		}
+
 		// Rest the button at the box centre once both panels have been laid out
 		// (their measured rects become valid only after the first frame).
 		if ( !_positioned && (_box?.Box.Rect.Width ?? 0f) > 0f && (_btn?.Box.Rect.Width ?? 0f) > 0f )
@@ -1934,6 +2020,20 @@
 		StateHasChanged();
 	}
 
+	// A click on a v5 board button: score it via its nonce. No teleport — the board is
+	// server-placed. SendButtonClick returns true only if it fell through to a penalised
+	// idle click (e.g. the window just closed), in which case pop "+ PENALTY" at the spot.
+	void OnPressButton( ClickController.LiveButton btn )
+	{
+		bool bad = ClickController.Instance?.SendButtonClick( btn ) ?? false;
+		if ( bad )
+		{
+			_pops.Add( new PenaltyPop { Left = PipPct( btn.X ), Top = PipPct( btn.Y ), Since = 0f } );
+			_popSeq++;
+		}
+		StateHasChanged();
+	}
+
 	// The button's centre as a normalized box position (−1..1 per axis, 0 = box
 	// centre), derived from the live measured rects (same space as the opponent pips
 	// render in, so positions round-trip). Returns hasPos=false until the rects are
@@ -1952,6 +2052,28 @@
 	// ── opponent pips (read from ClickController, rendered + faded by CSS) ──
 	static readonly List<ClickController.PipButton> NoPips = new();
 	IReadOnlyList<ClickController.PipButton> PipsToShow() => ClickController.Instance?.ActivePips ?? NoPips;
+
+	// ── opponent cursors (read from ClickController, rendered as labelled dots) ──
+	static readonly List<ClickController.CursorDot> NoCursors = new();
+	IReadOnlyList<ClickController.CursorDot> CursorsToShow() => ClickController.Instance?.Cursors ?? NoCursors;
+
+	// A cheap hash of the live board + opponent cursors so BuildHash re-renders when a
+	// button is claimed/spawned or a cursor moves (positions quantized to ~box-% steps).
+	int BoardHash()
+	{
+		var c = C;
+		if ( c == null ) return 0;
+		var h = new HashCode();
+		h.Add( c.LiveButtons.Count );
+		foreach ( var b in c.LiveButtons ) h.Add( b.Slot );
+		h.Add( c.Cursors.Count );
+		foreach ( var cur in c.Cursors )
+		{
+			h.Add( (int)(cur.X * 200f) );
+			h.Add( (int)(cur.Y * 200f) );
+		}
+		return h.ToHashCode();
+	}
 
 	// Normalized −1..1 position → box left/top percentage (0..100), clamped so an
 	// off-screen pip pins to the box edge rather than overflowing. Integer math keeps
@@ -2042,5 +2164,5 @@
 		// plus the previous-winner panel state (which bounty, and whether its skin has
 		// resolved) so it repaints when a rollover/refresh loads a new one.
 		HashCode.Combine( C?.RemainingThisRound ?? 0, PipsToShow().Count,
-			_prevBounty?.Id ?? 0L, _prevSkin != null, _prevSkinUrl ) );
+			_prevBounty?.Id ?? 0L, _prevSkin != null, _prevSkinUrl, BoardHash() ) );
 }
