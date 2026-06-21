@@ -24,7 +24,7 @@ func TestSum2PoolSize(t *testing.T) {
 	}
 }
 
-func checksEngine(fastMs, perPlayer, factor int) *Engine {
+func checksEngine(fastMs, perPlayer int, factor float64) *Engine {
 	return New(Config{FastClickMs: fastMs, ClicksPerPlayer: perPlayer, MaxClickFactor: factor}, nil, nil, nil)
 }
 
@@ -89,6 +89,22 @@ func TestRunChecksTooMany(t *testing.T) {
 	many := scoredAt("a", 0, 100, 200, 300, 400, 500, 600, 700, 800, 900)
 	if got := e.runChecks(many, solo); hasCheck(got, "a", "too_many_clicks") {
 		t.Fatalf("a solo round should NEVER flag too_many, got %+v", got)
+	}
+}
+
+// A fractional MaxClickFactor floors to a whole click count: 2.5 × fair(2) = 5,
+// so 5 clicks are fine and 6 flag.
+func TestRunChecksTooManyFractional(t *testing.T) {
+	e := checksEngine(130, 2, 2.5)
+	ctx := checkCtx{players: 5, active: 5, n: 10} // fair = 2, limit = int(2.5*2) = 5
+
+	five := scoredAt("a", 0, 200, 400, 600, 800)
+	if got := e.runChecks(five, ctx); hasCheck(got, "a", "too_many_clicks") {
+		t.Fatalf("5 clicks (==limit) should NOT flag too_many, got %+v", got)
+	}
+	six := scoredAt("a", 0, 200, 400, 600, 800, 1000)
+	if got := e.runChecks(six, ctx); !hasCheck(got, "a", "too_many_clicks") {
+		t.Fatalf("6 clicks (>limit) should flag too_many, got %+v", got)
 	}
 }
 
