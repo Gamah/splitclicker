@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/gamah/splitclicker/internal/session"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -260,6 +261,75 @@ func windowWinner(ctx context.Context, tx pgx.Tx, start, end time.Time) (id, nam
 		return "", "", 0, err
 	}
 	return id, pickName(uname, disp), wins, nil
+}
+
+// WonBounty is a settled bounty plus its winner, reduced to what the client's
+// "previous winner" panel needs: the skin (inspect link and/or image) and the
+// winner's public identity. WinnerTag is the same public tag the client knows
+// itself by (so it can highlight "you won"), computed from the winner's current
+// username; it (and WinnerID/Name) are empty when the window had no winner.
+type WonBounty struct {
+	ID          int64
+	Label       string
+	SkinImage   string
+	InspectLink string
+	WinnerTag   string
+	WinnerID    string
+	WinnerName  string
+	WinnerWins  int
+	WonAt       time.Time
+}
+
+// RecentWonBounties returns up to limit settled bounties, newest-won first — the
+// history the client rebuilds the "previous winner" panel(s) from. The winner's
+// tag is derived from their current username (LEFT JOIN, so a deleted player just
+// yields an empty winner).
+func (s *Store) RecentWonBounties(ctx context.Context, limit int) ([]WonBounty, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT b.id, b.label, b.skin_image, b.inspect_link,
+		       b.winner_id, b.winner_name, p.username, b.winner_wins, b.won_at
+		  FROM bounties b
+		  LEFT JOIN players p ON p.steam_id = b.winner_id
+		 WHERE b.status = 'won'
+		 ORDER BY b.won_at DESC NULLS LAST, b.id DESC
+		 LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []WonBounty{}
+	for rows.Next() {
+		var b WonBounty
+		var winnerID, username *string
+		var wonAt *time.Time
+		if err := rows.Scan(&b.ID, &b.Label, &b.SkinImage, &b.InspectLink,
+			&winnerID, &b.WinnerName, &username, &b.WinnerWins, &wonAt); err != nil {
+			return nil, err
+		}
+		b.WinnerID = deref(winnerID)
+		if b.WinnerID != "" && username != nil && *username != "" {
+			b.WinnerTag = session.PlayerTag(b.WinnerID, *username)
+		}
+		if wonAt != nil {
+			b.WonAt = *wonAt
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// BountySkinImage returns one bounty's uploaded skin image filename ("" if it's a
+// link-only bounty or the id is unknown) — used to serve a specific (past)
+// bounty's image to the previous-winner panel.
+func (s *Store) BountySkinImage(ctx context.Context, id int64) (string, error) {
+	var img string
+	err := s.pool.QueryRow(ctx, `SELECT skin_image FROM bounties WHERE id = $1`, id).Scan(&img)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return img, err
 }
 
 // bountySelect is the shared column list / order for scanBounty.

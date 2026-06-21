@@ -130,6 +130,25 @@ public static class ApiClient
 		}
 	}
 
+	/// <summary>The recently settled bounties (newest-won first, up to 5) for the
+	/// "previous winner" panel — each with its winner and skin. Empty list on
+	/// failure; the panel just hides.</summary>
+	public static async Task<List<PreviousBounty>> GetPreviousBounties()
+	{
+		try
+		{
+			var resp = await Http.RequestAsync( BaseUrl + $"/api{VerSeg}/bounties/previous", "GET", null );
+			if ( !resp.IsSuccessStatusCode ) return new List<PreviousBounty>();
+			return JsonSerializer.Deserialize<List<PreviousBounty>>( await resp.Content.ReadAsStringAsync(), JsonOpts )
+				?? new List<PreviousBounty>();
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[Splitclicker] previous bounties fetch failed: {e.Message}" );
+			return new List<PreviousBounty>();
+		}
+	}
+
 	/// <summary>Current UTC-hour leaderboard (top `limit`). Empty list on failure.</summary>
 	public static Task<List<Standing>> GetHourlyLeaderboard( int limit = 100 ) =>
 		GetLeaderboard( "hourly", limit );

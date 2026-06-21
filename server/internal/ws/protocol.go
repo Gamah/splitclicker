@@ -66,6 +66,15 @@ type achievementWire struct {
 	Ident string `json:"ident"`
 }
 
+// bountyUpdateWire nudges every client to re-fetch the bounty state (/config +
+// /bounties/previous) because the active bounty just rolled over. It carries no
+// data — the HTTP endpoints are the source of truth; this is only a "refresh now"
+// signal, so a client never sits in the stale post-rollover state. Older clients
+// ignore the unknown frame.
+type bountyUpdateWire struct {
+	T string `json:"t"`
+}
+
 type helloWire struct {
 	T    string    `json:"t"`
 	You  helloYou  `json:"you"`
