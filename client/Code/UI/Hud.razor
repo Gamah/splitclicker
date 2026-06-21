@@ -49,6 +49,7 @@
 				var s = SessionEntries[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -72,6 +73,7 @@
 				var s = _allTime[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -81,23 +83,16 @@
 
 	</div>
 
-	@* ── how-to-play: a static help card pinned bottom-left, under the session
-	     board. Quick primer on the round states and the idle-click penalty. ── *@
-	<div class="board howto">
-		<div class="title">HOW TO PLAY</div>
-		<div class="divider"></div>
-		<div class="line">One global button, limited clicks, shared by everyone.</div>
-		<div class="state-row"><span class="tag wait">WAIT…</span><span class="desc">Button is arming - DO NOT CLICK just because it's green</span></div>
-		<div class="state-row"><span class="tag go">CLICK!</span><span class="desc">Button is live! One point per click.</span></div>
-		<div class="state-row"><span class="tag over">ROUND OVER</span><span class="desc">All clicks used up, current score shown.</span></div>
-		<div class="state-row"><span class="tag over">GAME OVER</span><span class="desc">Session winner picked, new game next!</span></div>
-		<div class="divider"></div>
-		<div class="line penalty-note">Clicking while not live is allowed but delays your button becoming live behind other players.</div>
-	</div>
+	@* ── GAME INFO opener: a wide labelled bar pinned bottom-left, mirroring the
+	     MUSIC bar that sits beneath it. Toggles the floating "How to Play" popup;
+	     the open/closed choice is persisted to local storage (PlayerData) so it
+	     survives across sessions. The popup itself is rendered near the end of the
+	     root so it overlays everything. ── *@
+	<div class="info-fab" onclick="@ToggleHowTo">GAME INFO</div>
 
 	@* ── the music opener is the Skafinity library's own toggle button: it lives on the
 	     MusicUI ScreenPanel and is styled (ShowFab/WideFab/FabLabel in the scene) into the
-	     wide "MUSIC" bar pinned bottom-left under the how-to-play card, opening/closing its
+	     wide "MUSIC" bar pinned bottom-left under the GAME INFO bar, opening/closing its
 	     own board. This HUD only reads MusicOpen (the panel's IsOpen) to stop painting the
 	     game while the board is up. ── *@
 
@@ -172,6 +167,7 @@
 				var s = _hourly[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -195,6 +191,7 @@
 				var s = _hoursWon[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -219,6 +216,7 @@
 				var s = _sessionsWon[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -255,6 +253,46 @@
 		<div class="toast">@_toast</div>
 	}
 
+	@* ── "How to Play" popup: a floating card centred over the screen (like the music
+	     player), shown while _howtoOpen. A dim full-screen backdrop captures input so the
+	     game pauses behind it; the ✕ (or the GAME INFO bar) closes it. Two sections: the
+	     round-state primer and a rundown of the server-side anticheat checks (see
+	     ../server/internal/game). Every text line is a single literal or one interpolated
+	     expression (the mixed-text-node reorder bug). ── *@
+	@if ( _howtoOpen )
+	{
+		<div class="howto-overlay">
+			<div class="howto-card">
+				<div class="howto-head">
+					<div class="howto-title">HOW TO PLAY</div>
+					<div class="howto-close" onclick="@ToggleHowTo">✕</div>
+				</div>
+				<div class="divider"></div>
+
+				<div class="line">One global button, limited clicks, shared by everyone.</div>
+				<div class="state-row"><span class="tag wait">WAIT…</span><span class="desc">Button is arming - DO NOT CLICK just because it's green</span></div>
+				<div class="state-row"><span class="tag go">CLICK!</span><span class="desc">Button is live! One point per click.</span></div>
+				<div class="state-row"><span class="tag over">ROUND OVER</span><span class="desc">All clicks used up, current score shown.</span></div>
+				<div class="state-row"><span class="tag over">GAME OVER</span><span class="desc">Session winner picked, new game next!</span></div>
+				<div class="line penalty-note">Clicking while not live is allowed but delays your button becoming live behind other players.</div>
+
+				<div class="divider"></div>
+				<div class="howto-subtitle">ANTI-CHEAT</div>
+				<div class="line">Every round, the server inspects the scoring clicks for tell-tale bot behaviour. The first flags just bench you behind a quick math question before the button arms again.</div>
+				<div class="state-row"><span class="tag over">TOO FAST</span><span class="desc">Two of your scoring clicks landed closer together than any human hand can manage.</span></div>
+				<div class="state-row"><span class="tag over">TOO MANY</span><span class="desc">In a busy round you took far more than your fair share of the clicks (solo rounds are exempt — there's no one to share with).</span></div>
+				<div class="state-row"><span class="tag over">SOLO FARM</span><span class="desc">Padding a runaway bounty lead by clicking alone, once that lead is already huge.</span></div>
+				<div class="state-row"><span class="tag over">RUNAWAY</span><span class="desc">You out-clicked a runner-up who was genuinely competing by an impossible margin (beating an idle player is fine).</span></div>
+				<div class="line penalty-note">Keep getting flagged in one bounty and it escalates: too many flags puts you on a timed cooldown, and a few more after that sidelines you until the skin is won. Play fair and none of this ever fires — these only catch automation.</div>
+
+				<div class="divider"></div>
+				@* Single interpolated string (mixed literal + @() text nodes reorder on
+				   rebuild — see CLAUDE.md). Click copies the invite; toast confirms. *@
+				<div class="discord-line clickable" onclick="@CopyDiscord">@($"Think a flag was wrong, or want a heads-up on upcoming changes? Click here to copy our Discord invite ({DiscordInvite}) and come say hi.")</div>
+			</div>
+		</div>
+	}
+
 	@* ── anticheat test gate: shown when the player failed an end-of-round check and
 	     is benched. A full-screen dim overlay (captures input) with the question and
 	     an answer box; answering correctly un-benches them and the server arms them
@@ -266,9 +304,30 @@
 			<div class="test-card">
 				<div class="test-title">Gamah Anti-Cheat v0.67.69.420</div>
 				<div class="test-sub">You probably know what you did so do some math now instead...</div>
+				@if ( !string.IsNullOrEmpty( C.TestMessage ) )
+				{
+					<div class="test-reason">@C.TestMessage</div>
+				}
 				<div class="test-prompt">@($"{C.TestPrompt} = ?")</div>
 				<TextEntry @ref="_testEntry" placeholder="answer" class="test-input" maxlength="12" />
 				<div class="test-submit" onclick="@SubmitTest">SUBMIT</div>
+			</div>
+		</div>
+	}
+
+	@* ── anticheat sanction gate: shown when the player is past the test rung — on a
+	     timed cooldown or ignored for the rest of the bounty. Same dim overlay, but no
+	     test to answer: just the reason and a countdown to when the state lifts (reuses
+	     the bounty-timer HH:MM:SS format). Each line is a single interpolated
+	     expression (the mixed-text-node reorder bug). ── *@
+	@if ( !string.IsNullOrEmpty( C?.SanctionState ) )
+	{
+		<div class="test-overlay">
+			<div class="test-card sanction">
+				<div class="test-title">Gamah Anti-Cheat v0.67.69.420</div>
+				<div class="test-reason">@(C.SanctionMessage)</div>
+				<div class="sanction-label">@(C.SanctionState == "ignored" ? "Back in the game when the skin is won" : "Cooldown ends in")</div>
+				<div class="sanction-time">@SanctionCountdown()</div>
 			</div>
 		</div>
 	}
@@ -309,48 +368,163 @@
 	}
 	.left-col .board { position: relative; top: auto; left: auto; right: auto; }
 
-	/* how-to-play card: pinned to the bottom-left (top:auto cancels the shared
-	   top:18px), under the session board. Lifted clear of the bottom edge so the
-	   MUSIC button can sit beneath it. Same board chrome, but a column of
-	   explanatory text rather than a leaderboard. */
-	.board.howto { top: auto; bottom: 66px; left: 14px; width: 300px; }
+	/* GAME INFO opener: a wide labelled bar pinned bottom-left (top:auto cancels the
+	   shared pins), lifted clear of the bottom edge so the MUSIC bar sits beneath it.
+	   Mirrors the music FAB's wide-bar geometry/colours so the two read as a pair.
+	   Re-enables pointer events against the pointer-events:none root. */
+	.info-fab {
+		position: absolute;
+		left: 14px;
+		bottom: 66px;
+		width: 300px;
+		height: 44px;
+		justify-content: center;
+		align-items: center;
+		font-size: 15px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: rgba(255, 255, 255, 0.85);
+		background-color: rgba(3, 13, 7, 0.85);
+		border: 1.5px solid rgba(255, 255, 255, 0.12);
+		border-radius: 8px;
+		cursor: pointer;
+		pointer-events: all;
+		z-index: 150;
+	}
 
-	.board.howto .line {
-		font-size: 12px;
-		color: rgba(255, 255, 255, 0.6);
+	.info-fab:hover {
+		color: #ffffff;
+		border-color: rgba(6, 214, 160, 0.6);
+	}
+
+	/* ── "How to Play" popup: a dim full-screen backdrop (captures input) with a
+	   floating card centred over it, like the music player. Sits below the anticheat
+	   test gate (z:200) but above everything else. ── */
+	.howto-overlay {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		align-items: center;
+		justify-content: center;
+		background-color: rgba(0, 0, 0, 0.7);
+		pointer-events: all;
+		z-index: 160;
+	}
+
+	/* Sized to its content — NOT scrollable. An overflow:scroll range becomes
+	   drag-pannable in s&box (you can drag the card around inside the overlay), so
+	   the card grows to fit instead, like the music board. The content is lean
+	   enough to fit the 1080-tall reference ScreenPanel scales to. */
+	.howto-card {
+		flex-direction: column;
+		flex-shrink: 0;
+		width: 560px;
+		padding: 22px 28px;
+		background-color: rgba(3, 13, 7, 0.98);
+		border: 1.5px solid rgba(255, 255, 255, 0.12);
+		border-radius: 12px;
+		gap: 3px;
+		pointer-events: all;
+	}
+
+	.howto-card .howto-head {
+		flex-direction: row;
+		align-items: center;
+		justify-content: space-between;
 		margin-bottom: 4px;
+	}
+
+	.howto-card .howto-title {
+		font-size: 22px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.9);
+		letter-spacing: 1px;
+	}
+
+	.howto-card .howto-subtitle {
+		font-size: 16px;
+		font-weight: bold;
+		color: #06d6a0;
+		letter-spacing: 1px;
+		margin-top: 2px;
+		margin-bottom: 4px;
+	}
+
+	.howto-card .howto-close {
+		width: 34px;
+		height: 34px;
+		justify-content: center;
+		align-items: center;
+		font-size: 20px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.6);
+		border-radius: 6px;
+		cursor: pointer;
+	}
+
+	.howto-card .howto-close:hover {
+		color: #ffffff;
+		background-color: rgba(255, 255, 255, 0.08);
+	}
+
+	.howto-card .divider {
+		height: 1px;
+		background-color: rgba(255, 255, 255, 0.1);
+		margin-top: 6px;
+		margin-bottom: 8px;
+	}
+
+	.howto-card .line {
+		font-size: 14px;
+		color: rgba(255, 255, 255, 0.6);
+		margin-bottom: 6px;
 		white-space: normal;
 	}
 
-	.board.howto .penalty-note {
+	.howto-card .penalty-note {
 		margin-bottom: 0;
 		margin-top: 2px;
 	}
 
-	.board.howto .state-row {
+	.howto-card .state-row {
 		flex-direction: row;
 		align-items: center;
-		gap: 8px;
-		margin-bottom: 3px;
+		gap: 10px;
+		margin-bottom: 5px;
 	}
 
-	.board.howto .tag {
-		width: 90px;
-		font-size: 12px;
+	.howto-card .tag {
+		width: 110px;
+		flex-shrink: 0;
+		font-size: 13px;
 		font-weight: bold;
 		letter-spacing: 0.5px;
 	}
 
-	.board.howto .tag.wait { color: #06d6a0; }
-	.board.howto .tag.go { color: #ffffff; }
-	.board.howto .tag.over { color: #e63946; }
+	.howto-card .tag.wait { color: #06d6a0; }
+	.howto-card .tag.go { color: #ffffff; }
+	.howto-card .tag.over { color: #e63946; }
 
-	.board.howto .desc {
+	.howto-card .desc {
 		flex-grow: 1;
-		font-size: 12px;
+		font-size: 13px;
 		color: rgba(255, 255, 255, 0.6);
 		white-space: normal;
 	}
+
+	/* click-to-copy Discord invite blurb (there's no in-game URL open; Clipboard
+	   works, so it copies). Discord blurple, underlines on hover. */
+	.howto-card .discord-line {
+		font-size: 13px;
+		font-weight: bold;
+		color: #8b93f5;
+		white-space: normal;
+		pointer-events: all;
+		cursor: pointer;
+	}
+	.howto-card .discord-line:hover { color: #ffffff; text-decoration: underline; }
 
 	/* The music opener lives on the Skafinity panel's own ScreenPanel (see scene
 	   ShowFab/WideFab/FabLabel), not here. */
@@ -393,6 +567,18 @@
 	}
 
 	.board .rank { width: 24px; color: rgba(255, 255, 255, 0.4); font-size: 12px; }
+	/* anticheat status dot: green live / yellow cooldown / red ignored. */
+	.board .dot {
+		width: 8px;
+		height: 8px;
+		flex-shrink: 0;
+		margin-right: 7px;
+		border-radius: 50%;
+		background-color: #06d6a0;
+	}
+	.board .dot.live { background-color: #06d6a0; }
+	.board .dot.cooldown { background-color: #ffd166; }
+	.board .dot.ignored { background-color: #e63946; }
 	.board .name { flex-grow: 1; overflow: hidden; white-space: nowrap; }
 	.board .pts { color: #06d6a0; font-weight: bold; }
 	.board .row.me { background-color: rgba(6, 214, 160, 0.15); }
@@ -686,9 +872,10 @@
 		color: #4cc9f0;
 		letter-spacing: 1px;
 		pointer-events: none;
-		/* above the .center box (z-index:100) so the confirmation isn't hidden behind
-		   the centred status HUD when both are near the top of the screen. */
-		z-index: 110;
+		/* Above every overlay (the .center box at 100, the how-to popup at 160, the
+		   anticheat gate at 200) so the "copied" confirmation is visible no matter what's
+		   open — e.g. copying the Discord invite from inside the how-to popup. */
+		z-index: 210;
 	}
 
 	/* ── anticheat test gate: a full-screen dim overlay that captures input (above
@@ -731,6 +918,37 @@
 		text-align: center;
 		justify-content: center;
 		white-space: normal;
+	}
+
+	/* the specific check (or sanction) reason, in the anticheat red. */
+	.test-reason {
+		font-size: 16px;
+		font-weight: bold;
+		color: #ff8c69;
+		text-align: center;
+		justify-content: center;
+		white-space: normal;
+	}
+
+	/* cooldown/ignored card: no answer box, just the reason + a countdown. The
+	   amber border separates it from the red math-test card. */
+	.test-card.sanction { border-color: #ffd166; }
+
+	.sanction-label {
+		font-size: 14px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.6);
+		text-align: center;
+		justify-content: center;
+		letter-spacing: 0.5px;
+	}
+
+	.sanction-time {
+		font-size: 40px;
+		font-weight: bold;
+		color: #ffd166;
+		letter-spacing: 2px;
+		justify-content: center;
 	}
 
 	.test-prompt {
@@ -836,6 +1054,21 @@
 		if ( string.IsNullOrEmpty( ans ) ) return;
 		ClickController.Instance?.SubmitTestAnswer( ans );
 		if ( _testEntry != null ) _testEntry.Text = "";
+	}
+
+	// ── "How to Play" popup: open state mirrors PlayerData.HowToPlayOpen (persisted to
+	//    local storage), seeded once from it here so the player's choice survives across
+	//    sessions. First-time players default to open (PlayerData default). ──
+	bool _howtoOpen = PlayerData.Load().HowToPlayOpen;
+
+	// Toggle the popup and persist the new state to local storage so it sticks.
+	void ToggleHowTo()
+	{
+		_howtoOpen = !_howtoOpen;
+		var data = PlayerData.Load();
+		data.HowToPlayOpen = _howtoOpen;
+		data.Save();
+		StateHasChanged();
 	}
 
 	// ── "copied profile link" toast: shown for ToastDuration after a name click ──
@@ -1010,11 +1243,37 @@
 		StateHasChanged();
 	}
 
+	// Discord invite (shared with the rotaliate family). No in-game URL-open API, so
+	// the how-to popup's blurb copies it to the clipboard instead. DiscordInvite is the
+	// short display form; DiscordUrl is what lands on the clipboard.
+	const string DiscordInvite = "discord.gg/GG8HWUfFpD";
+	const string DiscordUrl = "https://discord.gg/GG8HWUfFpD";
+
+	// Copy the Discord invite and flash the confirmation toast (visible above the
+	// how-to popup — see the toast's z-index).
+	void CopyDiscord()
+	{
+		try { Clipboard.SetText( DiscordUrl ); }
+		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
+		_toast = "Copied the Discord invite — see you there!";
+		_toastSince = 0f;
+		StateHasChanged();
+	}
+
 	static bool IsMe( Standing s )
 	{
 		var tag = ClickController.Instance?.Tag;
 		return !string.IsNullOrEmpty( tag ) && s.Tag == tag;
 	}
+
+	// Anticheat status dot class for a board row: green when live (the default),
+	// yellow on a cooldown, red when ignored for the bounty. Empty/unknown ⇒ live.
+	static string StatusClass( Standing s ) => s?.Status switch
+	{
+		"cooldown" => "cooldown",
+		"ignored" => "ignored",
+		_ => "live",
+	};
 
 	// Show the player's name (claimed username or Steam display name, resolved
 	// server-side), never the opaque hex tag.
@@ -1044,6 +1303,17 @@
 	string WinnerCountdown()
 	{
 		long left = _winnerLockMs - NowMs();
+		if ( left < 0 ) left = 0;
+		long s = left / 1000;
+		return $"{s / 3600:D2}:{(s % 3600) / 60:D2}:{s % 60:D2}";
+	}
+
+	// Time left on the active anticheat sanction (cooldown end, or the bounty resolve
+	// time for "ignored"), as HH:MM:SS clamped at zero — same integer epoch-ms math
+	// as the winner countdown (sandbox-safe).
+	string SanctionCountdown()
+	{
+		long left = ( C?.SanctionUntilMs ?? 0 ) - NowMs();
 		if ( left < 0 ) left = 0;
 		long s = left / 1000;
 		return $"{s / 3600:D2}:{(s % 3600) / 60:D2}:{s % 60:D2}";
@@ -1138,5 +1408,9 @@
 		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), MusicOpen,
 			_skinUrl, _winnerLockMs, WinnerLockPassed() ),
 		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count, _allTime.Count, _allTimeLoaded,
-			C?.HasTest ?? false, C?.TestPrompt ) );
+			C?.HasTest ?? false, C?.TestPrompt ),
+		_howtoOpen,
+		// sanction overlay state (the per-second countdown tick is already covered by
+		// the seconds term in the second combine above).
+		HashCode.Combine( C?.TestMessage, C?.SanctionState, C?.SanctionUntilMs ) );
 }

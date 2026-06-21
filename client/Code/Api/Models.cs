@@ -29,7 +29,10 @@ public record Standing(
 	[property: JsonPropertyName( "tag" )] string Tag,
 	[property: JsonPropertyName( "username" )] string Username,
 	[property: JsonPropertyName( "points" )] int Points,
-	[property: JsonPropertyName( "steam_id" )] string SteamId
+	[property: JsonPropertyName( "steam_id" )] string SteamId,
+	// Anticheat status for the active bounty: "live" / "cooldown" / "ignored".
+	// Drives the coloured status dot on every board row. Empty ⇒ treated as live.
+	[property: JsonPropertyName( "status" )] string Status
 );
 
 // --- WebSocket server→client frames (the "t" field selects the shape) ---
@@ -111,14 +114,22 @@ public record DevNoteMsg(
 	[property: JsonPropertyName( "note" )] string Note
 );
 
-// An anticheat test pushed to this client after it failed an end-of-round check:
-// the player must answer (echoing id) before the server will arm them again.
-// cleared=true (id/prompt empty) means the test was answered correctly — dismiss
-// the prompt. kind is the test type ("sum2"); prompt is the question to show.
+// An anticheat frame pushed to this client after it failed end-of-round checks.
+// state is the ladder rung:
+//   "test"     — answer prompt (echoing id) before the server will arm us again.
+//   "cooldown" — sidelined until until_ms (a timed cooldown); no test to answer.
+//   "ignored"  — sidelined until until_ms (the bounty's resolve time); no test.
+// message is the player-facing explanation for every state; until_ms is the epoch
+// ms the cooldown/ignored state ends (the client shows a countdown to it).
+// cleared=true means we're back in play — dismiss any overlay. (state may be empty
+// on a v3-era frame; treat empty as "test".)
 public record TestMsg(
+	[property: JsonPropertyName( "state" )] string State,
 	[property: JsonPropertyName( "id" )] string Id,
 	[property: JsonPropertyName( "kind" )] string Kind,
 	[property: JsonPropertyName( "prompt" )] string Prompt,
+	[property: JsonPropertyName( "message" )] string Message,
+	[property: JsonPropertyName( "until_ms" )] long UntilMs,
 	[property: JsonPropertyName( "cleared" )] bool Cleared
 );
 

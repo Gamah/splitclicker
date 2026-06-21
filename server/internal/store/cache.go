@@ -24,6 +24,13 @@ type LeaderboardCache struct {
 	hoursWon     []LeaderboardEntry
 	sessionsWon  []LeaderboardEntry
 	allTimeClick []LeaderboardEntry
+
+	// Active bounty metadata, refreshed alongside the boards. bountyID scopes the
+	// anticheat sanction ladder; bountyResolveMs is its winner-lock time (the
+	// "ignored" countdown target). hasBounty is false when none is active.
+	bountyID        int64
+	bountyResolveMs int64
+	hasBounty       bool
 }
 
 // NewLeaderboardCache builds an empty cache over st. Call Refresh once before
@@ -52,11 +59,18 @@ func (c *LeaderboardCache) Refresh(ctx context.Context) error {
 	// won boards; the points board falls back to the current hour.
 	since := time.Time{}
 	pointsSince := currentHour
+	var bountyID, bountyResolveMs int64
+	hasBounty := false
 	if b, ok, err := c.store.ActiveBounty(ctx); err != nil {
 		return err
-	} else if ok && b.ActivatedAt != nil {
-		since = b.ActivatedAt.UTC()
-		pointsSince = since.Truncate(time.Hour)
+	} else if ok {
+		hasBounty = true
+		bountyID = b.ID
+		bountyResolveMs = b.WinTime.UnixMilli()
+		if b.ActivatedAt != nil {
+			since = b.ActivatedAt.UTC()
+			pointsSince = since.Truncate(time.Hour)
+		}
 	}
 
 	hourly, err := c.store.HourlyLeaderboard(ctx, pointsSince, CacheLimit)
@@ -78,8 +92,17 @@ func (c *LeaderboardCache) Refresh(ctx context.Context) error {
 
 	c.mu.Lock()
 	c.hourly, c.hoursWon, c.sessionsWon, c.allTimeClick = hourly, hoursWon, sessionsWon, allTime
+	c.bountyID, c.bountyResolveMs, c.hasBounty = bountyID, bountyResolveMs, hasBounty
 	c.mu.Unlock()
 	return nil
+}
+
+// ActiveBountyMeta returns the cached active bounty's id and winner-lock time
+// (epoch ms), and whether one is active. Used by the anticheat sanction ladder.
+func (c *LeaderboardCache) ActiveBountyMeta() (id, resolveMs int64, ok bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.bountyID, c.bountyResolveMs, c.hasBounty
 }
 
 // Hourly/HoursWon/SessionsWon return the cached board, truncated to limit rows.

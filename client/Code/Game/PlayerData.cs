@@ -18,6 +18,11 @@ public sealed class PlayerData
 	/// <summary>game_id whose win we last counted toward the `wins` stat.</summary>
 	public string LastWinGameId { get; set; } = "";
 
+	/// <summary>Whether the "How to Play" info panel is showing. Persisted so the
+	/// player's choice to keep it open (or dismissed) survives across sessions —
+	/// this is the local-storage state behind the GAME INFO button.</summary>
+	public bool HowToPlayOpen { get; set; } = true;
+
 	// Music persistence (track index / mute / volume / seed) lives in the Skafinity library
 	// now — the SkafinityPlayer persists its own song index (PersistProgress), and the
 	// library's SkafinityMusicPanel drives it. The game keeps no music state.

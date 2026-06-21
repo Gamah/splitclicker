@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gamah/splitclicker/internal/game"
 	"github.com/gamah/splitclicker/internal/store"
 	"go.uber.org/zap"
 )
@@ -328,6 +329,14 @@ func (h *handler) adminPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Live anticheat ladder state for the active bounty (independent of the bounty
+	// filter above — the ladder only exists for the bounty currently in play).
+	sanction, err := h.store.PlayerSanction(ctx, id)
+	if err != nil {
+		h.adminError(w, "load player sanction", err)
+		return
+	}
+
 	extra := "id=" + url.QueryEscape(id)
 	mk := func(param string, num, total int) Page {
 		return Page{Base: "/admin/player", Extra: extra, Bounty: bounty, Param: param, Num: num, Size: adminPageSize, Total: total}
@@ -337,12 +346,55 @@ func (h *handler) adminPlayer(w http.ResponseWriter, r *http.Request) {
 		Selectable:  selectable,
 		Bounty:      bounty,
 		FilterLabel: filterLabel,
+		Sanction:    sanction,
 		Checks:      checks,
 		ChecksPage: mk("cp", cNum, cTotal),
 		Tests:      tests,
 		TestsPage:  mk("tp", tNum, tTotal),
 	}
 	h.renderAdmin(w, playerTmpl, data)
+}
+
+// POST /admin/player/checks — set a player's anticheat flag count for the active
+// bounty (clearing any cooldown/ignored). Writes the store row and pushes the new
+// state to the engine so it applies live, then returns to the player page.
+func (h *handler) adminPlayerChecks(w http.ResponseWriter, r *http.Request) {
+	if !h.adminAuth(w, r) {
+		return
+	}
+	id := r.FormValue("id")
+	if !steamIDRe.MatchString(id) {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	checks, err := strconv.Atoi(strings.TrimSpace(r.FormValue("checks")))
+	if err != nil || checks < 0 {
+		http.Error(w, "checks must be a non-negative integer", http.StatusBadRequest)
+		return
+	}
+
+	bountyID, _, ok := h.cache.ActiveBountyMeta()
+	if !ok || bountyID == 0 {
+		http.Error(w, "no active bounty — nothing to sanction", http.StatusConflict)
+		return
+	}
+	// Derive the rung the count lands on (>= threshold → cooldown, more → ignored) so
+	// the edit takes effect now, not on the next real flag. Persist that full state
+	// synchronously (so the reloaded page reflects it), then push it to the engine to
+	// apply live (block scoring + notify the client).
+	s := game.Sanction{SteamID: id, Checks: checks}
+	if h.engine != nil {
+		s = h.engine.SanctionForChecks(checks)
+		s.SteamID = id
+	}
+	if err := h.store.SaveSanction(r.Context(), bountyID, s); err != nil {
+		h.adminError(w, "set player checks", err)
+		return
+	}
+	if h.engine != nil {
+		h.engine.SetSanction(id, s)
+	}
+	http.Redirect(w, r, "/admin/player?id="+url.QueryEscape(id), http.StatusSeeOther)
 }
 
 // GET /admin/game?id=… — one game's rounds and the per-click arrival timing.
@@ -513,6 +565,8 @@ type playerData struct {
 	Selectable  []store.BountyWindow
 	Bounty      string
 	FilterLabel string
+
+	Sanction store.PlayerSanction // live ladder state for the active bounty (editable)
 
 	Checks     []store.AdminCheck
 	ChecksPage Page
@@ -871,6 +925,29 @@ var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<
   <div class="card"><div class="n">{{.Profile.TestsPassed}}</div><div class="lbl">tests passed</div></div>
   <div class="card"><div class="n">{{.Profile.TestsFailed}}</div><div class="lbl">tests failed</div></div>
 </div>
+
+<h2>Anticheat status</h2>
+{{if .Sanction.Active}}
+<p class="muted">Live ladder for the active bounty <strong>{{.Sanction.BountyLabel}}</strong> <span class="mono">#{{.Sanction.BountyID}}</span> (counts reset each bounty).</p>
+<div class="cards">
+  <div class="card"><div class="n">
+    {{if eq .Sanction.Status "live"}}<span class="ok">live</span>
+    {{else if eq .Sanction.Status "cooldown"}}<span class="flag">cooldown</span>
+    {{else}}<span class="err">ignored</span>{{end}}
+  </div><div class="lbl">status</div></div>
+  <div class="card"><div class="n">{{.Sanction.Checks}}</div><div class="lbl">flags this bounty</div></div>
+</div>
+{{if eq .Sanction.Status "cooldown"}}<p class="muted">cooldown ends {{tsp .Sanction.CooldownUntil}} UTC</p>{{end}}
+{{if eq .Sanction.Status "ignored"}}<p class="muted">ignored until the bounty resolves {{ts .Sanction.ResolveAt}} UTC</p>{{end}}
+<form class="addbounty" method="post" action="/admin/player/checks">
+  <input type="hidden" name="id" value="{{.Profile.SteamID}}">
+  <label>flag count <input type="number" name="checks" min="0" value="{{.Sanction.Checks}}" required></label>
+  <button type="submit">save</button>
+</form>
+<p class="muted">Saving clears any active cooldown/ignored and re-baselines the ladder at the new count; it re-escalates from there and applies live.</p>
+{{else}}
+<p class="muted">No active bounty — the anticheat ladder is per-bounty, so there's nothing to set right now.</p>
+{{end}}
 
 <h2>Anticheat checks</h2>
 <table>

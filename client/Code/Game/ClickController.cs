@@ -32,12 +32,13 @@ public sealed class ClickController : Component
 	/// http://localhost:8080 for a local play-test. Applied to ApiClient at startup.</summary>
 	[Property] public string BackendUrl { get; set; } = "";
 
-	/// <summary>API version to talk to, editable in the scene inspector. "v3" is the
-	/// real game (with the anticheat test gate); "v2"/"v1" exercise the legacy/troll
-	/// path the server gives clients below its live version. LEAVE BLANK to use raw,
-	/// unversioned paths (bare /ws) — for the live old master backend.
-	/// Applied to <see cref="ApiClient.ApiVersion"/> at startup.</summary>
-	[Property] public string ApiVersion { get; set; } = "v3";
+	/// <summary>API version to talk to, editable in the scene inspector. "v4" is the
+	/// real game (anticheat test gate + the cooldown/ignored sanction ladder); "v3"
+	/// understands the test gate but not the sanction countdowns; "v2"/"v1" exercise
+	/// the legacy/troll path the server gives clients below its live version. LEAVE
+	/// BLANK to use raw, unversioned paths (bare /ws) — for the live old master
+	/// backend. Applied to <see cref="ApiClient.ApiVersion"/> at startup.</summary>
+	[Property] public string ApiVersion { get; set; } = "v4";
 
 	public GamePhase Phase { get; private set; } = GamePhase.Connecting;
 	public int Round { get; private set; }
@@ -75,10 +76,21 @@ public sealed class ClickController : Component
 	/// <summary>Anticheat test gate. When HasTest is true the player failed an
 	/// end-of-round check and is benched until they answer TestPrompt correctly: the
 	/// server withholds the armed signal until then. TestId must be echoed in the
-	/// answer. Set by the `test` frame; cleared by it (correct answer) or on arm.</summary>
+	/// answer. TestMessage explains which check fired. Set by the `test` frame;
+	/// cleared by it (correct answer) or on arm.</summary>
 	public bool HasTest { get; private set; }
 	public string TestId { get; private set; } = "";
 	public string TestPrompt { get; private set; } = "";
+	public string TestMessage { get; private set; } = "";
+
+	/// <summary>Anticheat sanction ladder (beyond the test gate). SanctionState is
+	/// "cooldown" (a timed cooldown after too many flags) or "ignored" (sidelined for
+	/// the rest of the bounty), or "" when not sanctioned. SanctionUntilMs is the
+	/// epoch ms the state ends — the UI shows a countdown to it — and SanctionMessage
+	/// is the line to display. Set/cleared by the `test` frame's state field.</summary>
+	public string SanctionState { get; private set; } = "";
+	public long SanctionUntilMs { get; private set; }
+	public string SanctionMessage { get; private set; } = "";
 
 	/// <summary>True only while a valid click can score — drives both the button's
 	/// enabled state and scoring eligibility from one source.</summary>
@@ -177,6 +189,14 @@ public sealed class ClickController : Component
 		HasTest = false;
 		TestId = "";
 		TestPrompt = "";
+		TestMessage = "";
+	}
+
+	void ClearSanction()
+	{
+		SanctionState = "";
+		SanctionUntilMs = 0;
+		SanctionMessage = "";
 	}
 
 	async Task ConnectFlow()
@@ -324,19 +344,31 @@ public sealed class ClickController : Component
 					break;
 
 				case "test":
-					// Anticheat: we failed an end-of-round check and are benched until we
-					// answer this. A cleared frame (correct answer) dismisses it; otherwise
-					// adopt the new prompt (also overwrites a previous wrong attempt's test).
+					// Anticheat: we failed end-of-round checks. The state field picks the
+					// rung — a cleared frame dismisses everything; "cooldown"/"ignored" show
+					// a countdown (no test); anything else (incl. a v3-era frame) is the math
+					// test gate. The three states are mutually exclusive, so each path clears
+					// the others.
 					var tm = Deser<TestMsg>( json );
 					if ( tm.Cleared )
 					{
 						ClearTest();
+						ClearSanction();
+					}
+					else if ( tm.State == "cooldown" || tm.State == "ignored" )
+					{
+						ClearTest();
+						SanctionState = tm.State;
+						SanctionUntilMs = tm.UntilMs;
+						SanctionMessage = tm.Message ?? "";
 					}
 					else
 					{
+						ClearSanction();
 						HasTest = true;
 						TestId = tm.Id ?? "";
 						TestPrompt = tm.Prompt ?? "";
+						TestMessage = tm.Message ?? "";
 					}
 					break;
 

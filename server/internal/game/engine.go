@@ -66,6 +66,9 @@ type Standing struct {
 	Username string `json:"username"`
 	Points   int    `json:"points"`
 	SteamID  string `json:"steam_id"`
+	// Status is the player's live anticheat rung for the active bounty —
+	// "live" / "cooldown" / "ignored" — for the leaderboard status dot.
+	Status string `json:"status"`
 }
 
 // --- broadcaster (implemented by the ws hub) ---
@@ -145,6 +148,11 @@ type Broadcaster interface {
 	// (a new-enough build). Only test-capable players are benched/tested; older
 	// clients still have their checks run and logged. False if not connected.
 	TestCapable(steamID string) bool
+	// SanctionCapable reports whether the client understands the v4 sanction states
+	// (cooldown / ignored countdowns). Such a client is sidelined silently when on a
+	// non-test rung — it still can't score, it just doesn't get a frame it can't
+	// render. False if not connected.
+	SanctionCapable(steamID string) bool
 }
 
 // --- store (the persistent hourly board) ---
@@ -166,12 +174,37 @@ type ScoredClick struct {
 
 // CheckResult is one anticheat check a round flagged against a player. Type is
 // the rule that fired ('fast_clicks' | 'too_many_clicks' | 'solo_round' |
-// 'dominant_winner'); Detail is a short human-readable note ('delta=84ms' /
-// 'clicks=37' / 'clicks=12 vs 5') for the audit record.
+// 'dominant_winner'); Detail is a short note ('delta=84ms' / 'clicks=37' /
+// 'clicks=12 vs 5') for the audit record; Message is the player-facing line
+// shown in the anticheat popup explaining which rule benched them.
 type CheckResult struct {
 	SteamID string
 	Type    string
 	Detail  string
+	Message string
+}
+
+// BountyInfo is the snapshot of the active bounty the anticheat code needs each
+// round: who leads it (and by how many games-won), when it resolves, and its id
+// (which scopes the sanction ladder — counts reset when the id changes). Supplied
+// by SetBountyInfoFn; Active is false when no bounty is running.
+type BountyInfo struct {
+	ID          int64
+	LeaderID    string
+	LeadMargin  int   // leader's games-won minus the runner-up's (0 if alone/none)
+	ResolveAtMs int64 // epoch ms the bounty's winner locks in (0 if unknown)
+	Active      bool
+}
+
+// Sanction is a player's persisted anticheat ladder state within one bounty. The
+// engine keeps the live copy in memory and mirrors it to the Store so it survives
+// a restart and feeds the admin surface. CooldownUntil is nil until the cooldown
+// threshold is crossed; Ignored sidelines them until the bounty resolves.
+type Sanction struct {
+	SteamID       string
+	Checks        int
+	CooldownUntil *time.Time
+	Ignored       bool
 }
 
 // RoundLog is the durable record of one round: its identity, parameters, arm
@@ -196,12 +229,20 @@ type TestRecord struct {
 	Expected string
 }
 
-// TestFrame is a test pushed to a single flagged player (the hub targets it by
-// SteamID). Cleared=true tells the client to dismiss the test (answered right).
+// TestFrame is an anticheat frame pushed to a single flagged player (the hub
+// targets it by SteamID). State is the ladder rung:
+//   - "test"     — answer Prompt (echoing ID) to clear the bench.
+//   - "cooldown" — sidelined until UntilMs (a timed cooldown); no test.
+//   - "ignored"  — sidelined until UntilMs (the bounty resolve time); no test.
+// Message is the player-facing explanation for every state. Cleared=true tells
+// the client to dismiss any overlay (the player is back in play).
 type TestFrame struct {
+	State   string
 	ID      string
 	Kind    string
 	Prompt  string
+	Message string
+	UntilMs int64
 	Cleared bool
 }
 
@@ -238,6 +279,11 @@ type Store interface {
 	// settles it with the player's answer (both wrong and right are recorded).
 	RecordTestSent(ctx context.Context, t TestRecord) error
 	RecordTestAnswer(ctx context.Context, id, answer string, correct bool) error
+	// LoadSanctions returns the anticheat ladder state for every player with a row
+	// in the given bounty; SaveSanction upserts one player's state. Together they
+	// persist the per-bounty cooldown/ignore ladder across restarts.
+	LoadSanctions(ctx context.Context, bountyID int64) (map[string]Sanction, error)
+	SaveSanction(ctx context.Context, bountyID int64, s Sanction) error
 }
 
 // --- engine ---
@@ -288,6 +334,11 @@ type Engine struct {
 	// like clicks. Buffered; a full buffer drops (the player can re-submit).
 	answers chan answerEvent
 
+	// extSanction carries admin-set sanction overrides (e.g. an edited flag count)
+	// into the Run goroutine so they apply live within the current bounty rather than
+	// only on the next bounty reload. Buffered; a full buffer drops (admin re-submits).
+	extSanction chan extSanctionEvent
+
 	// gameEndHook, if set, runs after each game_over (post session-win write);
 	// used to refresh the leaderboard cache once per "session". Optional.
 	gameEndHook func(context.Context)
@@ -297,12 +348,31 @@ type Engine struct {
 	// Optional — nil means no note is ever sent. Call SetDevNoteFn before Run.
 	devNoteFn func() string
 
-	// bountyLeaderFn, if set, returns the SteamID currently leading the active
-	// bounty (the games-won-this-skin #1), or "" if none. Used by the solo_round
-	// check, which only flags a lone player when they're the one in the lead.
-	// Optional — nil disables that gating (solo_round then never fires). Read from
-	// the in-memory leaderboard cache, so it's cheap to call per round.
-	bountyLeaderFn func() string
+	// bountyInfoFn, if set, returns the active bounty snapshot (id, leader + margin,
+	// resolve time). Used by solo_round (lone-leader margin gating) and by the
+	// sanction ladder (the bounty id scopes counts; the resolve time bounds the
+	// "ignored" rung). Optional — nil disables solo_round and the ladder runs with a
+	// zero bounty id (counts never reset, no resolve-time countdown). Read from the
+	// in-memory leaderboard cache, so it's cheap to call per round.
+	bountyInfoFn func() BountyInfo
+
+	// Anticheat sanction ladder, scoped to the current bounty. curBountyID is the
+	// bounty the in-memory sanctions belong to; when bountyInfoFn reports a different
+	// id the ladder resets (reloaded from the store for the new bounty). sanctions
+	// is the live per-player state. Touched only from the Run goroutine.
+	curBountyID     int64
+	bountyLoaded    bool
+	bountyResolveMs int64                // active bounty's resolve time (the "ignored" countdown target)
+	sanctions       map[string]*Sanction // per-player ladder state for the current bounty
+	benchMsg        map[string]string    // last triggering check message per test-rung player
+	notified        map[string]string    // last sanction state pushed to each client ("test"/"cooldown"/"ignored")
+
+	// sanctionSnap is a lock-guarded copy of the sanction state, republished from the
+	// Run goroutine after every change, so other goroutines (the API serving the
+	// leaderboard status dots) can read each player's rung without racing the Run
+	// loop's maps. Guarded by sanctionMu.
+	sanctionMu   sync.RWMutex
+	sanctionSnap map[string]Sanction
 }
 
 // SetGameEndHook registers a callback run after every game_over, once the
@@ -313,9 +383,9 @@ func (e *Engine) SetGameEndHook(fn func(context.Context)) { e.gameEndHook = fn }
 // nil clears it.
 func (e *Engine) SetDevNoteFn(fn func() string) { e.devNoteFn = fn }
 
-// SetBountyLeaderFn registers the source of the current bounty leader's SteamID
-// (used by the solo_round anticheat check). Call before Run; nil disables it.
-func (e *Engine) SetBountyLeaderFn(fn func() string) { e.bountyLeaderFn = fn }
+// SetBountyInfoFn registers the source of the active bounty snapshot (used by the
+// solo_round check and the sanction ladder). Call before Run; nil disables both.
+func (e *Engine) SetBountyInfoFn(fn func() BountyInfo) { e.bountyInfoFn = fn }
 
 // New builds an Engine. store may be nil (scoring still works, just not
 // persisted). log may be nil (falls back to a no-op logger).
@@ -331,11 +401,16 @@ func New(cfg Config, bc Broadcaster, store Store, log *zap.Logger) *Engine {
 		clicks:       make(chan ClickEvent, 4096),
 		wake:         make(chan struct{}, 1),
 		answers:      make(chan answerEvent, 256),
+		extSanction:  make(chan extSanctionEvent, 64),
 		rng:          rand.New(rand.NewSource(seedFromCrypto())),
 		phase:        PhaseIntermission,
 		badClicks:    map[string]int{},
 		underTest:    map[string]bool{},
 		pendingTests: map[string]pendingTest{},
+		sanctions:    map[string]*Sanction{},
+		benchMsg:     map[string]string{},
+		notified:     map[string]string{},
+		sanctionSnap: map[string]Sanction{},
 	}
 }
 
@@ -360,6 +435,25 @@ func (e *Engine) SubmitAnswer(ev answerEvent) {
 // unexported types).
 func NewAnswer(steamID, id, answer string) answerEvent {
 	return answerEvent{SteamID: steamID, ID: id, Answer: answer}
+}
+
+// extSanctionEvent is an admin-set sanction override for one player, applied in
+// the Run goroutine. The store row has already been written; this updates the
+// engine's live in-memory copy so the change takes effect this bounty.
+type extSanctionEvent struct {
+	SteamID string
+	S       Sanction
+}
+
+// SetSanction applies an admin-set sanction state for a player live (e.g. an
+// edited flag count, with cooldown/ignored cleared). Non-blocking; safe from any
+// goroutine. The caller persists the same state to the store.
+func (e *Engine) SetSanction(steamID string, s Sanction) {
+	s.SteamID = steamID
+	select {
+	case e.extSanction <- extSanctionEvent{SteamID: steamID, S: s}:
+	default:
+	}
 }
 
 // Submit hands a click to the engine. Non-blocking: if the buffer is full (a
@@ -482,6 +576,9 @@ func (e *Engine) waitForPlayers(ctx context.Context) bool {
 			// Stray click with nobody counted; discard so the channel can't back up.
 		case <-e.answers:
 			// Stray test answer with nobody counted; discard so it can't back up.
+		case ev := <-e.extSanction:
+			// Admin sanction edit while idle — apply it so it's in place once play resumes.
+			e.applyExternalSanction(ev)
 		}
 	}
 	return true
@@ -504,16 +601,23 @@ func (e *Engine) playGame(ctx context.Context) {
 	e.setDevNote(note)
 	e.bc.DevNote(note)
 
+	// Sync the anticheat sanction ladder to the active bounty once per game: if the
+	// bounty changed since last game the per-bounty counts reset (reloaded from the
+	// store for the new bounty), and anyone the old bounty had sidelined is cleared.
+	bi := e.bountyInfo()
+	e.syncBounty(ctx, bi)
+
 	// The final round's points + round id, carried into game_over (the last round
 	// has no separate round_result — see race/final).
 	var finalDeltas map[string]int
 	var finalRoundID string
 	for round := 1; round <= x && ctx.Err() == nil; round++ {
 		// players is the full connected crowd (shown to clients + recorded); N is sized
-		// to the players who can actually race — benched players are excluded so they
-		// don't inflate the scoring slots.
+		// to the players who can actually race — benched/cooled-down/ignored players are
+		// excluded so they don't inflate the scoring slots.
 		players := e.bc.PlayerCount()
-		n := e.clicksFor(e.bc.ActivePlayerCount(e.underTest))
+		active := e.bc.ActivePlayerCount(e.blockedMap())
+		n := e.clicksFor(active)
 		e.pending(ctx, round, x, players, n, info)
 		if ctx.Err() != nil {
 			return
@@ -524,15 +628,15 @@ func (e *Engine) playGame(ctx context.Context) {
 			return
 		}
 		// Run the end-of-round anticheat checks against this round's scoring clicks.
-		// Checks are logged for everyone; only test-capable players get benched.
-		leader := ""
-		if e.bountyLeaderFn != nil {
-			leader = e.bountyLeaderFn()
-		}
-		checks := e.runChecks(clicks, players, leader)
+		// Every flagged check is logged; applySanction then escalates the ladder for
+		// test-capable players (test → cooldown → ignored) and pushes them a frame.
+		checks := e.runChecks(clicks, checkCtx{
+			players: players, active: active, n: n,
+			leaderID: bi.LeaderID, leadMargin: bi.LeadMargin,
+		})
 		for _, ch := range checks {
 			if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
-				e.underTest[ch.SteamID] = true
+				e.applySanction(ch, bi)
 			}
 		}
 		roundLogs = append(roundLogs, RoundLog{
@@ -548,6 +652,7 @@ func (e *Engine) playGame(ctx context.Context) {
 	}
 
 	final := standingsOf(scores, info)
+	e.annotateStatus(final)
 	placements := make(map[string]int, len(final))
 	won := make(map[string]bool, len(final))
 	for i, s := range final {
@@ -608,9 +713,10 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 	e.setPhase(PhasePending, round)
 	e.bc.Pending(PendingFrame{Round: round, Of: of, Players: players, Clicks: n})
 
-	// Issue/resend tests to benched players during the arming window so they can
-	// clear the gate before this round arms.
-	e.issueTests()
+	// Re-notify sanctioned players during the arming window: resend math tests so a
+	// benched player can clear the gate before this round arms, refresh cooldown /
+	// ignored countdowns, and clear anyone whose cooldown elapsed.
+	e.notifySanctions()
 
 	timer := time.NewTimer(e.randArmDelay())
 	defer timer.Stop()
@@ -623,6 +729,8 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 			e.recordBad(ev)
 		case ans := <-e.answers:
 			e.handleAnswer(ans)
+		case ev := <-e.extSanction:
+			e.applyExternalSanction(ev)
 		case <-timer.C:
 			return
 		}
@@ -642,7 +750,7 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, final bool) (map[string]int, string, []ScoredClick, time.Time) {
 	nonce := newNonce()
 	penalties := e.penaltiesFrom(e.badClicks)
-	blocked := e.blockedSet()
+	blocked := e.blockedMap()
 	e.setPhase(PhaseArmed, round)
 	armedAt := time.Now()
 	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: nonce, Players: players, Clicks: n, Penalties: penalties, Blocked: blocked})
@@ -703,11 +811,14 @@ raceLoop:
 		pi := info[ev.SteamID]
 		winners = append(winners, Standing{Tag: pi.tag, Username: pi.username, Points: scores[ev.SteamID], SteamID: ev.SteamID})
 	}
+	e.annotateStatus(winners)
+	standings := topK(standingsOf(scores, info), e.cfg.BoardSize)
+	e.annotateStatus(standings)
 	e.bc.Result(ResultFrame{
 		Round:     round,
 		Of:        of,
 		Winners:   winners,
-		Standings: topK(standingsOf(scores, info), e.cfg.BoardSize),
+		Standings: standings,
 		RoundID:   roundID,
 		Deltas:    deltas,
 	})
@@ -750,6 +861,8 @@ func (e *Engine) drain(ctx context.Context, d time.Duration) {
 			e.recordBad(ev) // result/intermission/game-over clicks still accrue toward the next arm
 		case ans := <-e.answers:
 			e.handleAnswer(ans)
+		case ev := <-e.extSanction:
+			e.applyExternalSanction(ev)
 		case <-timer.C:
 			return
 		}
@@ -838,26 +951,57 @@ func (e *Engine) recordBad(ev ClickEvent) {
 
 // --- anticheat: checks + tests ---
 
+// checkCtx is the round context the checks need beyond the scoring clicks:
+// players (full connected crowd), active (the can-score count = divisor for the
+// fair-share rule and the round's N), n (the round's scoring-slot count), and the
+// active bounty's leader + games-won margin (for solo_round).
+type checkCtx struct {
+	players    int
+	active     int
+	n          int
+	leaderID   string
+	leadMargin int
+}
+
 // runChecks inspects a round's scoring clicks and returns one CheckResult per
-// (player, rule) that fired. Two rules, both per-player and using only this
-// round's scoring clicks (already in wire-arrival order):
+// (player, rule) that fired, each carrying a player-facing Message. The rules,
+// all using only this round's scoring clicks (already in wire-arrival order):
 //   - fast_clicks:     two consecutive scoring clicks < FastClickMs apart.
-//   - too_many_clicks: more than MaxClickFactor × ClicksPerPlayer scoring slots.
-func (e *Engine) runChecks(clicks []ScoredClick, players int, bountyLeader string) []CheckResult {
+//   - too_many_clicks: more than MaxClickFactor × the round's fair share
+//                      (N / active players); skipped in solo rounds.
+//   - solo_round:      a lone player padding a bounty lead of ≥ SoloLeadMargin.
+//   - dominant_winner: top scorer took > 2× a runner-up who actually competed
+//                      (scored ≥ DominantRunnerUpMin).
+func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 	if len(clicks) == 0 {
 		return nil
 	}
 	// Per-player scoring-click offsets, preserving arrival order.
 	offsets := map[string][]int{}
 	order := []string{} // stable iteration so results are deterministic
-	for _, c := range clicks {
-		if _, seen := offsets[c.SteamID]; !seen {
-			order = append(order, c.SteamID)
+	for _, ev := range clicks {
+		if _, seen := offsets[ev.SteamID]; !seen {
+			order = append(order, ev.SteamID)
 		}
-		offsets[c.SteamID] = append(offsets[c.SteamID], c.OffsetMs)
+		offsets[ev.SteamID] = append(offsets[ev.SteamID], ev.OffsetMs)
 	}
 
-	limit := e.cfg.MaxClickFactor * e.cfg.ClicksPerPlayer
+	// too_many_clicks limit: MaxClickFactor × the round's fair share of slots. Fair
+	// share is N / active players (≈ ClicksPerPlayer, or higher when the MinClicks
+	// floor inflates N). Disabled in solo rounds — one player rightly takes them all.
+	limit := 0
+	if e.cfg.MaxClickFactor > 0 && c.players >= 2 {
+		div := c.active
+		if div < 1 {
+			div = 1
+		}
+		fair := c.n / div
+		if fair < 1 {
+			fair = 1
+		}
+		limit = e.cfg.MaxClickFactor * fair
+	}
+
 	var out []CheckResult
 	for _, sid := range order {
 		offs := offsets[sid]
@@ -865,27 +1009,34 @@ func (e *Engine) runChecks(clicks []ScoredClick, players int, bountyLeader strin
 		if e.cfg.FastClickMs > 0 {
 			for i := 1; i < len(offs); i++ {
 				if d := offs[i] - offs[i-1]; d < e.cfg.FastClickMs {
-					out = append(out, CheckResult{SteamID: sid, Type: "fast_clicks", Detail: fmt.Sprintf("delta=%dms", d)})
+					out = append(out, CheckResult{SteamID: sid, Type: "fast_clicks",
+						Detail:  fmt.Sprintf("delta=%dms", d),
+						Message: "You clicked faster than humanly possible."})
 					break
 				}
 			}
 		}
-		// too_many_clicks: an implausible share of the round's slots.
+		// too_many_clicks: an implausible share of this round's slots.
 		if limit > 0 && len(offs) > limit {
-			out = append(out, CheckResult{SteamID: sid, Type: "too_many_clicks", Detail: fmt.Sprintf("clicks=%d", len(offs))})
+			out = append(out, CheckResult{SteamID: sid, Type: "too_many_clicks",
+				Detail:  fmt.Sprintf("clicks=%d limit=%d", len(offs), limit),
+				Message: "You took far more of the round's clicks than your share."})
 		}
 	}
 
-	// solo_round: the round had a single connected player (farming an empty lobby),
-	// but only counts when that lone player is the one currently LEADING the bounty —
-	// i.e. padding a lead nobody can contest. A lone player who isn't in the lead is
-	// left alone.
-	if players == 1 && bountyLeader != "" && order[0] == bountyLeader {
-		out = append(out, CheckResult{SteamID: order[0], Type: "solo_round", Detail: fmt.Sprintf("clicks=%d", len(offsets[order[0]]))})
+	// solo_round: a single connected player padding a bounty lead nobody can contest
+	// — but only once that lead (games won this skin, over second place) is at least
+	// SoloLeadMargin, so a newcomer alone on the server is left to play.
+	if c.players == 1 && c.leaderID != "" && order[0] == c.leaderID &&
+		e.cfg.SoloLeadMargin > 0 && c.leadMargin >= e.cfg.SoloLeadMargin {
+		out = append(out, CheckResult{SteamID: order[0], Type: "solo_round",
+			Detail:  fmt.Sprintf("lead=%d clicks=%d", c.leadMargin, len(offsets[order[0]])),
+			Message: "You're padding a runaway lead alone — let others catch up."})
 	}
 
-	// dominant_winner: the round's top scorer took MORE than 2× the runner-up's
-	// scoring clicks. Needs at least two distinct scorers; ties at the top don't fire.
+	// dominant_winner: the top scorer took MORE than 2× the runner-up's clicks, but
+	// only when the runner-up actually competed (scored ≥ DominantRunnerUpMin) — so a
+	// lone clicker beating an idle player is never flagged.
 	if len(order) >= 2 {
 		topSID, topN, secondN := "", 0, 0
 		for _, sid := range order { // stable: first-arrival order breaks count ties
@@ -895,40 +1046,301 @@ func (e *Engine) runChecks(clicks []ScoredClick, players int, bountyLeader strin
 				secondN = n
 			}
 		}
-		if secondN > 0 && topN > 2*secondN {
-			out = append(out, CheckResult{SteamID: topSID, Type: "dominant_winner", Detail: fmt.Sprintf("clicks=%d vs %d", topN, secondN)})
+		if secondN >= e.cfg.DominantRunnerUpMin && topN > 2*secondN {
+			out = append(out, CheckResult{SteamID: topSID, Type: "dominant_winner",
+				Detail:  fmt.Sprintf("clicks=%d vs %d", topN, secondN),
+				Message: "You out-clicked the field by an impossible margin."})
 		}
 	}
 	return out
 }
 
-// blockedSet snapshots the currently-benched players for an ArmedFrame. nil when
-// nobody is benched (the common case).
-func (e *Engine) blockedSet() map[string]bool {
-	if len(e.underTest) == 0 {
-		return nil
+// Player-facing lines for the two non-test sanction rungs (the test rung uses the
+// triggering check's own Message). The client pairs these with a countdown to the
+// frame's until_ms.
+const (
+	cooldownMsg = "Too many anticheat flags this bounty — you're on a cooldown."
+	ignoredMsg  = "You've been sidelined for the rest of this bounty."
+)
+
+// bountyInfo returns the active bounty snapshot, or a zero value when no source
+// is wired (solo_round and the per-bounty ladder reset then run with id 0).
+func (e *Engine) bountyInfo() BountyInfo {
+	if e.bountyInfoFn == nil {
+		return BountyInfo{}
 	}
-	out := make(map[string]bool, len(e.underTest))
-	for sid := range e.underTest {
-		out[sid] = true
+	return e.bountyInfoFn()
+}
+
+// syncBounty aligns the in-memory sanction ladder with the active bounty. It
+// always refreshes the cached resolve time (the "ignored" countdown target); when
+// the bounty id changes (or on first load) it clears everyone the previous bounty
+// sidelined, drops all per-bounty state, and reloads the new bounty's persisted
+// sanctions. Called once per game from the Run goroutine.
+func (e *Engine) syncBounty(ctx context.Context, bi BountyInfo) {
+	e.bountyResolveMs = bi.ResolveAtMs
+	if e.bountyLoaded && bi.ID == e.curBountyID {
+		return
+	}
+	if e.bc != nil {
+		for sid := range e.underTest {
+			e.bc.SendTest(sid, TestFrame{Cleared: true})
+		}
+		for sid, s := range e.sanctions {
+			if s.Ignored || s.CooldownUntil != nil {
+				e.bc.SendTest(sid, TestFrame{Cleared: true})
+			}
+		}
+	}
+	e.underTest = map[string]bool{}
+	e.pendingTests = map[string]pendingTest{}
+	e.sanctions = map[string]*Sanction{}
+	e.benchMsg = map[string]string{}
+	e.notified = map[string]string{}
+	e.curBountyID = bi.ID
+	e.bountyLoaded = true
+
+	if e.store != nil && bi.ID != 0 {
+		loaded, err := e.store.LoadSanctions(ctx, bi.ID)
+		if err != nil {
+			e.log.Error("load anticheat sanctions", zap.Error(err))
+			return
+		}
+		for sid, s := range loaded {
+			sc := s
+			e.sanctions[sid] = &sc
+		}
+	}
+	e.publishSanctions()
+}
+
+// applySanction escalates a flagged player's ladder for one check: bump the
+// per-bounty count, then place them on the right rung — test (math), a timed
+// cooldown, or ignored-until-the-bounty-resolves — and persist the state. The
+// client is (re)notified from notifySanctions at the next pending phase.
+func (e *Engine) applySanction(ch CheckResult, bi BountyInfo) {
+	s := e.sanctions[ch.SteamID]
+	if s == nil {
+		s = &Sanction{SteamID: ch.SteamID}
+		e.sanctions[ch.SteamID] = s
+	}
+	s.Checks++
+
+	x := e.cfg.CheckCooldownThreshold
+	ignoreAt := x + e.cfg.CheckIgnoreAfter
+	now := time.Now()
+	switch {
+	case x > 0 && s.Checks >= ignoreAt:
+		// Past the cooldown plus the grace checks → sidelined for the bounty.
+		s.Ignored = true
+		e.clearTestRung(ch.SteamID)
+	case x > 0 && s.CooldownUntil == nil && s.Checks >= x:
+		// First time across the threshold → start the timed cooldown.
+		until := now.Add(time.Duration(e.cfg.CheckCooldownMins) * time.Minute)
+		s.CooldownUntil = &until
+		e.clearTestRung(ch.SteamID)
+	case x > 0 && s.CooldownUntil != nil && now.Before(*s.CooldownUntil):
+		// A check landed during an active cooldown (defensive — they're blocked, so
+		// this is rare); keep them cooling rather than issuing a test.
+		e.clearTestRung(ch.SteamID)
+	default:
+		// Test rung: below the threshold, or post-cooldown grace checks. Bench them
+		// behind a math test, remembering which rule fired for the popup.
+		e.underTest[ch.SteamID] = true
+		e.benchMsg[ch.SteamID] = ch.Message
+	}
+	e.persistSanction(bi.ID, *s)
+	e.publishSanctions()
+}
+
+// statusOf is the player-visible rung for a sanction: "ignored", "cooldown" (while
+// the cooldown is still running), or "live". The math-test rung isn't a leaderboard
+// status — a benched-on-test player still reads as "live" here.
+func statusOf(s Sanction) string {
+	switch {
+	case s.Ignored:
+		return "ignored"
+	case s.CooldownUntil != nil && time.Now().Before(*s.CooldownUntil):
+		return "cooldown"
+	default:
+		return "live"
+	}
+}
+
+// liveStatus is the current rung for a player, read from the Run goroutine's own
+// maps (no lock). Used when the engine builds standings on that goroutine.
+func (e *Engine) liveStatus(steamID string) string {
+	if s, ok := e.sanctions[steamID]; ok {
+		return statusOf(*s)
+	}
+	return "live"
+}
+
+// annotateStatus stamps each standing with its player's current rung. Called from
+// the Run goroutine (reads the live maps via liveStatus), so the session board the
+// engine pushes carries status dots too.
+func (e *Engine) annotateStatus(standings []Standing) {
+	for i := range standings {
+		standings[i].Status = e.liveStatus(standings[i].SteamID)
+	}
+}
+
+// publishSanctions republishes the lock-guarded snapshot from the Run goroutine's
+// live state. Call after any mutation so external readers see the change.
+func (e *Engine) publishSanctions() {
+	snap := make(map[string]Sanction, len(e.sanctions))
+	for sid, s := range e.sanctions {
+		snap[sid] = *s
+	}
+	e.sanctionMu.Lock()
+	e.sanctionSnap = snap
+	e.sanctionMu.Unlock()
+}
+
+// SanctionStatuses returns the current non-"live" rung ("cooldown"/"ignored") for
+// every sanctioned player, as a fresh map. Safe from any goroutine; used by the API
+// to stamp the leaderboard status dots (absent ⇒ "live"). Cooldown expiry is
+// evaluated at call time, so an elapsed cooldown reads back "live" without an event.
+func (e *Engine) SanctionStatuses() map[string]string {
+	e.sanctionMu.RLock()
+	snap := e.sanctionSnap
+	e.sanctionMu.RUnlock()
+	out := make(map[string]string)
+	for sid, s := range snap {
+		if st := statusOf(s); st != "live" {
+			out[sid] = st
+		}
 	}
 	return out
 }
 
-// issueTests pushes a test to every benched player, creating one (and recording
-// it) if they don't already have an outstanding test, or resending the existing
-// one (so a reconnecting client re-sees it).
-func (e *Engine) issueTests() {
+// SanctionForChecks derives the full ladder state for a given flag count using the
+// live config — the same thresholds applySanction escalates through. Used by the
+// admin "set flag count" path so an edit lands the player on the right rung
+// immediately (>= threshold → cooldown, >= threshold+grace → ignored) rather than
+// only re-escalating on the next real flag. Safe from any goroutine (reads cfg).
+func (e *Engine) SanctionForChecks(checks int) Sanction {
+	s := Sanction{Checks: checks}
+	x := e.cfg.CheckCooldownThreshold
+	switch {
+	case x > 0 && checks >= x+e.cfg.CheckIgnoreAfter:
+		s.Ignored = true
+	case x > 0 && checks >= x:
+		until := time.Now().Add(time.Duration(e.cfg.CheckCooldownMins) * time.Minute)
+		s.CooldownUntil = &until
+	}
+	return s
+}
+
+// applyExternalSanction applies an admin override in the Run goroutine: drop any
+// math-test bench for the player, replace (or remove) their sanction state, and
+// reconcile what their client is showing. The store row is written by the caller.
+func (e *Engine) applyExternalSanction(ev extSanctionEvent) {
+	sid := ev.SteamID
+	e.clearTestRung(sid)
+	if ev.S.Checks <= 0 && !ev.S.Ignored && ev.S.CooldownUntil == nil {
+		delete(e.sanctions, sid) // fully forgiven → back to live
+	} else {
+		s := ev.S
+		e.sanctions[sid] = &s
+	}
+	e.notifySanctions()
+	e.publishSanctions()
+}
+
+// clearTestRung removes a player from the math-test bench (used when they move to
+// a cooldown/ignored rung, where there is no test to answer).
+func (e *Engine) clearTestRung(steamID string) {
+	delete(e.underTest, steamID)
+	delete(e.pendingTests, steamID)
+	delete(e.benchMsg, steamID)
+}
+
+// persistSanction mirrors a player's ladder state to the store off the Run loop
+// (fire-and-forget). No-op without a store or before a bounty is known.
+func (e *Engine) persistSanction(bountyID int64, s Sanction) {
+	if e.store == nil || bountyID == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := e.store.SaveSanction(ctx, bountyID, s); err != nil {
+			e.log.Error("persist anticheat sanction", zap.Error(err))
+		}
+	}()
+}
+
+// blockedMap snapshots every player who can't score this round: those on the math
+// test, in an active cooldown, or ignored for the bounty. Used to size N and to
+// withhold the armed nonce. nil when nobody is blocked (the common case).
+func (e *Engine) blockedMap() map[string]bool {
+	now := time.Now()
+	out := map[string]bool{}
+	for sid := range e.underTest {
+		out[sid] = true
+	}
+	for sid, s := range e.sanctions {
+		if s.Ignored || (s.CooldownUntil != nil && now.Before(*s.CooldownUntil)) {
+			out[sid] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// notifySanctions reconciles what each sanctioned player's client is showing with
+// their current rung: (re)send the math test to test-rung players, the cooldown /
+// ignored countdown to those on those rungs (only to v4 clients that can render
+// them), and a clear to anyone previously notified who is now back in play. Called
+// each pending phase, so countdowns refresh and reconnecting clients catch up.
+func (e *Engine) notifySanctions() {
 	if e.bc == nil {
 		return
 	}
+	now := time.Now()
+
 	for sid := range e.underTest {
 		pt, ok := e.pendingTests[sid]
 		if !ok {
 			pt = e.newTest(sid)
 			e.pendingTests[sid] = pt
 		}
-		e.bc.SendTest(sid, TestFrame{ID: pt.id, Kind: pt.kind, Prompt: pt.prompt})
+		e.bc.SendTest(sid, TestFrame{State: "test", ID: pt.id, Kind: pt.kind, Prompt: pt.prompt, Message: e.benchMsg[sid]})
+		e.notified[sid] = "test"
+	}
+
+	for sid, s := range e.sanctions {
+		switch {
+		case s.Ignored:
+			if e.bc.SanctionCapable(sid) {
+				e.bc.SendTest(sid, TestFrame{State: "ignored", UntilMs: e.bountyResolveMs, Message: ignoredMsg})
+			}
+			e.notified[sid] = "ignored"
+		case s.CooldownUntil != nil && now.Before(*s.CooldownUntil):
+			if e.bc.SanctionCapable(sid) {
+				e.bc.SendTest(sid, TestFrame{State: "cooldown", UntilMs: s.CooldownUntil.UnixMilli(), Message: cooldownMsg})
+			}
+			e.notified[sid] = "cooldown"
+		}
+	}
+
+	// Anyone we previously notified who is no longer blocked (passed their test, or a
+	// cooldown elapsed) gets a clear so their overlay disappears.
+	for sid, st := range e.notified {
+		if st == "" {
+			continue
+		}
+		if e.underTest[sid] {
+			continue
+		}
+		if s, ok := e.sanctions[sid]; ok && (s.Ignored || (s.CooldownUntil != nil && now.Before(*s.CooldownUntil))) {
+			continue
+		}
+		e.bc.SendTest(sid, TestFrame{Cleared: true})
+		delete(e.notified, sid)
 	}
 }
 
@@ -946,6 +1358,8 @@ func (e *Engine) handleAnswer(a answerEvent) {
 	if correct {
 		delete(e.pendingTests, a.SteamID)
 		delete(e.underTest, a.SteamID)
+		delete(e.benchMsg, a.SteamID)
+		delete(e.notified, a.SteamID)
 		if e.bc != nil {
 			e.bc.SendTest(a.SteamID, TestFrame{Cleared: true})
 		}
@@ -955,7 +1369,7 @@ func (e *Engine) handleAnswer(a answerEvent) {
 	npt := e.newTest(a.SteamID)
 	e.pendingTests[a.SteamID] = npt
 	if e.bc != nil {
-		e.bc.SendTest(a.SteamID, TestFrame{ID: npt.id, Kind: npt.kind, Prompt: npt.prompt})
+		e.bc.SendTest(a.SteamID, TestFrame{State: "test", ID: npt.id, Kind: npt.kind, Prompt: npt.prompt, Message: e.benchMsg[a.SteamID]})
 	}
 }
 

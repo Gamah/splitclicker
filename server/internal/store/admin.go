@@ -484,6 +484,65 @@ func (s *Store) PlayerProfile(ctx context.Context, steamID string, w Window) (Pl
 	return p, true, nil
 }
 
+// PlayerSanction is a player's live anticheat ladder state for the ACTIVE bounty:
+// the persisted flag count and the derived status ("live" / "cooldown" / "ignored"
+// — the engine's own terms) with the timestamp the non-live state lifts. Active is
+// false when no bounty is running (the ladder is per-bounty, so there's nothing to
+// show or edit then).
+type PlayerSanction struct {
+	Active        bool
+	BountyID      int64
+	BountyLabel   string
+	ResolveAt     time.Time // bounty win_time — the "ignored" countdown target
+	Checks        int
+	CooldownUntil *time.Time
+	Ignored       bool
+	Status        string
+}
+
+// sanctionStatus derives the engine's rung name from the persisted columns.
+func sanctionStatus(ignored bool, cooldownUntil *time.Time) string {
+	if ignored {
+		return "ignored"
+	}
+	if cooldownUntil != nil && time.Now().Before(*cooldownUntil) {
+		return "cooldown"
+	}
+	return "live"
+}
+
+// PlayerSanction loads the player's ladder state for the active bounty. With no
+// active bounty it returns {Active:false}; with no sanction row (never flagged this
+// bounty) it returns a zeroed, "live" state.
+func (s *Store) PlayerSanction(ctx context.Context, steamID string) (PlayerSanction, error) {
+	b, ok, err := s.ActiveBounty(ctx)
+	if err != nil {
+		return PlayerSanction{}, err
+	}
+	if !ok {
+		return PlayerSanction{Active: false}, nil
+	}
+	ps := PlayerSanction{Active: true, BountyID: b.ID, BountyLabel: b.Label, ResolveAt: b.WinTime}
+	err = s.pool.QueryRow(ctx, `
+		SELECT checks, cooldown_until, ignored
+		FROM anticheat_sanctions
+		WHERE bounty_id = $1 AND steam_id = $2
+	`, b.ID, steamID).Scan(&ps.Checks, &ps.CooldownUntil, &ps.Ignored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		ps.Status = "live"
+		return ps, nil
+	}
+	if err != nil {
+		return PlayerSanction{}, err
+	}
+	ps.Status = sanctionStatus(ps.Ignored, ps.CooldownUntil)
+	return ps, nil
+}
+
+// The admin "set flag count" path writes the full ladder state (count + derived
+// cooldown/ignored) via SaveSanction — see Engine.SanctionForChecks and the
+// adminPlayerChecks handler — so there's no count-only setter here.
+
 // FastestClicker is one row of the fastest-clickers board: a player's mean
 // per-round click delta in ms (gap from their previous click that arm; their
 // first click of a round measured from the arm) and how many clicks qualified.

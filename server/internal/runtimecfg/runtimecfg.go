@@ -52,6 +52,13 @@ type File struct {
 	PenaltyStepMs   *int `json:"penalty_step_ms"`
 	FastClickMs     *int `json:"fast_click_ms"`
 	MaxClickFactor  *int `json:"max_click_factor"`
+
+	// Anticheat check gating + the per-bounty sanction ladder. See game.Config.
+	SoloLeadMargin         *int `json:"solo_lead_margin"`
+	DominantRunnerUpMin    *int `json:"dominant_runner_up_min"`
+	CheckCooldownThreshold *int `json:"check_cooldown_threshold"`
+	CheckCooldownMins      *int `json:"check_cooldown_mins"`
+	CheckIgnoreAfter       *int `json:"check_ignore_after"`
 }
 
 // Dir is the host-mounted config+media directory.

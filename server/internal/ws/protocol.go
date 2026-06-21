@@ -37,14 +37,19 @@ type devNoteWire struct {
 	Note string `json:"note"`
 }
 
-// testWire pushes an anticheat test to a single (benched) player, or clears it.
-// The player must echo id in their test_answer frame. cleared=true (id/prompt
-// empty) tells the client to dismiss the test — they answered correctly.
+// testWire pushes an anticheat frame to a single sanctioned player, or clears it.
+// state is the ladder rung: "test" (answer prompt, echoing id), "cooldown" or
+// "ignored" (sidelined until until_ms — a timed cooldown / the bounty resolve
+// time). message is the player-facing explanation. cleared=true tells the client
+// to dismiss any overlay (they're back in play).
 type testWire struct {
 	T       string `json:"t"`
+	State   string `json:"state"`
 	ID      string `json:"id"`
 	Kind    string `json:"kind"`
 	Prompt  string `json:"prompt"`
+	Message string `json:"message"`
+	UntilMs int64  `json:"until_ms"`
 	Cleared bool   `json:"cleared"`
 }
 

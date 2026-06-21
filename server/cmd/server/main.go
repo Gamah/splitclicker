@@ -53,6 +53,11 @@ func gameConfig() game.Config {
 	setInt(f.PenaltyStepMs, &c.PenaltyStepMs)
 	setInt(f.FastClickMs, &c.FastClickMs)
 	setInt(f.MaxClickFactor, &c.MaxClickFactor)
+	setInt(f.SoloLeadMargin, &c.SoloLeadMargin)
+	setInt(f.DominantRunnerUpMin, &c.DominantRunnerUpMin)
+	setInt(f.CheckCooldownThreshold, &c.CheckCooldownThreshold)
+	setInt(f.CheckCooldownMins, &c.CheckCooldownMins)
+	setInt(f.CheckIgnoreAfter, &c.CheckIgnoreAfter)
 	return c
 }
 
@@ -183,13 +188,21 @@ func main() {
 	hub.SetEngine(engine)
 	// Re-read the host-editable dev note from config.json once per game.
 	engine.SetDevNoteFn(func() string { return runtimecfg.Load().DevNote })
-	// The solo_round anticheat check needs the current bounty leader; read it from
-	// the in-memory cache (games-won-this-skin #1) so it's free to call per round.
-	engine.SetBountyLeaderFn(func() string {
-		if sw := cache.SessionsWon(1); len(sw) > 0 {
-			return sw[0].SteamID
+	// The anticheat checks + sanction ladder need the active bounty snapshot: its id
+	// (scopes the ladder), winner-lock time (the "ignored" countdown), and the
+	// games-won leader + margin (solo_round). All read from the in-memory cache, so
+	// it's free to call per round.
+	engine.SetBountyInfoFn(func() game.BountyInfo {
+		id, resolveMs, ok := cache.ActiveBountyMeta()
+		bi := game.BountyInfo{ID: id, ResolveAtMs: resolveMs, Active: ok}
+		if sw := cache.SessionsWon(2); len(sw) > 0 {
+			bi.LeaderID = sw[0].SteamID
+			bi.LeadMargin = sw[0].Points
+			if len(sw) > 1 {
+				bi.LeadMargin = sw[0].Points - sw[1].Points
+			}
 		}
-		return ""
+		return bi
 	})
 	engine.SetGameEndHook(func(ctx context.Context) {
 		if err := cache.Refresh(ctx); err != nil {
