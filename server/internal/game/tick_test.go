@@ -5,51 +5,36 @@ import (
 	"time"
 )
 
-func TestSamplePipsFiltersAndCaps(t *testing.T) {
+func TestMsSinceClamps(t *testing.T) {
 	armedAt := time.Now()
-	mk := func(tag string, pos bool, ms int) ClickEvent {
-		return ClickEvent{Tag: tag, HasPos: pos, X: 1, Y: 2, At: armedAt.Add(time.Duration(ms) * time.Millisecond)}
+	if got := msSince(armedAt, armedAt.Add(-5*time.Millisecond)); got != 0 {
+		t.Errorf("negative offset: want 0, got %d", got)
 	}
-
-	// No positioned clicks ⇒ no pips (older clients send no x/y).
-	if got := samplePips([]ClickEvent{mk("a", false, 5)}, armedAt, 4); got != nil {
-		t.Fatalf("want nil for no-position clicks, got %v", got)
+	if got := msSince(armedAt, armedAt.Add(100*time.Second)); got != 65535 {
+		t.Errorf("overflow offset: want 65535, got %d", got)
 	}
-	// k<=0 disables sampling.
-	if got := samplePips([]ClickEvent{mk("a", true, 5)}, armedAt, 0); got != nil {
-		t.Fatalf("want nil for k=0, got %v", got)
-	}
-
-	// Under the cap: every positioned click survives (the unpositioned one is dropped),
-	// in order, with t_arm measured from the arm.
-	in := []ClickEvent{mk("a", true, 10), mk("b", false, 20), mk("c", true, 30)}
-	got := samplePips(in, armedAt, 4)
-	if len(got) != 2 {
-		t.Fatalf("want 2 positioned pips, got %d", len(got))
-	}
-	if got[0].Tag != "a" || got[0].TArmMs != 10 || got[1].Tag != "c" || got[1].TArmMs != 30 {
-		t.Fatalf("unexpected pips: %+v", got)
-	}
-
-	// Over the cap: sampled down to exactly k.
-	many := make([]ClickEvent, 20)
-	for i := range many {
-		many[i] = mk("x", true, i)
-	}
-	if got := samplePips(many, armedAt, 8); len(got) != 8 {
-		t.Fatalf("want 8 sampled, got %d", len(got))
+	if got := msSince(armedAt, armedAt.Add(42*time.Millisecond)); got != 42 {
+		t.Errorf("normal offset: want 42, got %d", got)
 	}
 }
 
-func TestSamplePipsClampsTArm(t *testing.T) {
-	armedAt := time.Now()
-	neg := ClickEvent{Tag: "a", HasPos: true, At: armedAt.Add(-5 * time.Millisecond)}
-	big := ClickEvent{Tag: "b", HasPos: true, At: armedAt.Add(100 * time.Second)}
-	got := samplePips([]ClickEvent{neg, big}, armedAt, 4)
-	if got[0].TArmMs != 0 {
-		t.Errorf("negative offset: want t_arm 0, got %d", got[0].TArmMs)
+// takePending drains the board mutations accumulated since the last call, carrying the
+// claimer tag and the replacement, so each tick ships only the new ones.
+func TestBoardTakePending(t *testing.T) {
+	b := newBoard(5, 0, time.Now())
+	seq := uint64(1)
+	b.mint = func() Button {
+		seq++
+		return b.register(seq, int16(seq), int16(seq))
 	}
-	if got[1].TArmMs != 65535 {
-		t.Errorf("overflow offset: want t_arm 65535, got %d", got[1].TArmMs)
+	live := b.mint()
+	b.offer(ClickEvent{Tag: "aaaa", Nonce: live.Nonce, At: time.Now()})
+
+	got := b.takePending()
+	if len(got) != 1 || got[0].ClaimerTag != "aaaa" || got[0].Spawn == nil {
+		t.Fatalf("unexpected pending: %+v", got)
+	}
+	if b.takePending() != nil {
+		t.Fatal("pending should be drained after takePending")
 	}
 }

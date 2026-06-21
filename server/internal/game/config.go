@@ -12,7 +12,11 @@ type Config struct {
 	ArmMax          time.Duration // longest arming delay
 	ClicksPerPlayer int           // N = ClicksPerPlayer × connected players (the scoring slots scale with the crowd)
 	MinClicks       int           // floor for N when few/no players are connected (1 = first-click-wins)
-	RoundsPerGame   int           // X: rounds before game_over
+	RoundsPerGame   int           // rounds before game_over
+	ButtonsOnScreen int           // X: live buttons shown at once during an armed window (v5+). The
+	//                              board is refilled to this count after every claim; the round still
+	//                              ends when N total points are claimed, so up to X−1 unclaimed buttons
+	//                              can be on screen at the final claim. 1 ⇒ single-button (legacy-shaped).
 	RaceMax       time.Duration // safety cap: close the race even if < N clicks land
 	ResultDisplay time.Duration // how long the round leaderboard shows
 	Intermission  time.Duration // pause between games
@@ -21,13 +25,16 @@ type Config struct {
 
 	// Live-round tick (the coalesced armed-window broadcast; see Engine.race). While
 	// the button is armed the engine emits a `tick` frame TickHz times a second
-	// carrying the running clicks-remaining count plus a bounded sample of the
-	// scoring clicks that landed since the last tick (for the opponent pips). The
-	// fan-out is linear in players (one precomputed broadcast per tick, capped at K
-	// pips) — never a per-click broadcast. TickHz<=0 disables ticking entirely.
-	//   TickHz      — ticks per second while armed (0 = off).
-	//   TickSampleK — max scoring clicks sampled per tick for the positioned pips;
-	//                 the count itself is always exact, only the pip sample is capped.
+	// carrying the running clicks-remaining count, every board mutation since the last
+	// tick (buttons claimed + their server-RNG'd replacements — these are authoritative
+	// and never sampled, or a client would miss a live button), and a bounded SAMPLE of
+	// connected players' cursor positions. The fan-out is linear in players (one
+	// precomputed broadcast per tick) and the board-mutation bytes are O(scoring clicks),
+	// never per-non-scoring-click. TickHz<=0 disables ticking entirely.
+	//   TickHz       — ticks per second while armed (0 = off).
+	//   TickSampleK  — max opponent cursors sampled per tick (cosmetic, so capped). The
+	//                  clicks-remaining count and the claim/spawn mutations are always
+	//                  exact; only the cursor sample is bounded.
 	TickHz      int
 	TickSampleK int
 
@@ -73,6 +80,7 @@ func DefaultConfig() Config {
 		ClicksPerPlayer: 15,
 		MinClicks:       50,
 		RoundsPerGame:   5,
+		ButtonsOnScreen: 10,
 		RaceMax:         5 * time.Second,
 		ResultDisplay:   4 * time.Second,
 		Intermission:    5 * time.Second,
@@ -101,6 +109,7 @@ func ConfigFromEnv() Config {
 	c.ClicksPerPlayer = envInt("CLICKS_PER_PLAYER", c.ClicksPerPlayer)
 	c.MinClicks = envInt("MIN_CLICKS", c.MinClicks)
 	c.RoundsPerGame = envInt("ROUNDS_PER_GAME", c.RoundsPerGame)
+	c.ButtonsOnScreen = envInt("BUTTONS_ON_SCREEN", c.ButtonsOnScreen)
 	c.RaceMax = envDur("RACE_MAX_MS", c.RaceMax, time.Millisecond)
 	c.ResultDisplay = envDur("RESULT_DISPLAY_MS", c.ResultDisplay, time.Millisecond)
 	c.Intermission = envDur("INTERMISSION_MS", c.Intermission, time.Millisecond)

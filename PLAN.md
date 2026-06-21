@@ -417,6 +417,15 @@ slot in under the remaining score budget; reaction-time would need the server to
 > scale; the rest stay JSON for legibility. See §3.5(c). Heartbeats: prefer protocol-level
 > ping/pong on a long interval (or TCP keepalive), not an app `ping` per client every 30s.
 
+> **v5 supersedes the single-button shape below.** The live window is now a **multi-button
+> board** with **opponent cursors**: `armed` carries the initial X buttons (`buttons:[{id,nonce,
+> x,y}]`) to v5 (a single legacy `nonce` to v4); the binary `tick` carries `remaining` + the
+> complete board mutations since the last tick (`{slot, claimer_tag, t_arm, spawn?{id,nonce,x,y}}`)
+> + a sample of cursors (`{tag,x,y}`); the client sends `cursor {x,y}` (~15/s, armed-only).
+> Button positions are **server-authoritative and transmitted** (each replacement's offset is
+> server-RNG'd) — there is no client-derivable seed. See CLAUDE.md "Multi-button live window +
+> opponent cursors (v5)" for the authoritative description.
+
 Client → server:
 - `click` — `{seq:<armSeq>}` (binary in production); the only hot-path frame; keep tiny.
 - `ping` — keepalive (infrequent; see §3.5(b)).

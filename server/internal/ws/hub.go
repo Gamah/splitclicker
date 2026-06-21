@@ -29,6 +29,10 @@ const (
 	pingPeriod     = 60 * time.Second // server-driven keepalive (PLAN §3.5b)
 	maxMessageSize = 1024
 
+	// cursorMinGap throttles inbound cursor frames per connection (~25/s ceiling; the
+	// client sends ~15/s). Bounds cursor traffic without a shared rate bucket.
+	cursorMinGap = 40 * time.Millisecond
+
 	// minTickVersion is the oldest client API version that understands the
 	// live-window `tick` frame, the round_pending roster, and click x/y positions
 	// (all the v5 wire). Below it, a client is still a normal respected connection
@@ -105,6 +109,40 @@ type Client struct {
 
 	smu        sync.Mutex // guards sendClosed + the send channel
 	sendClosed bool
+
+	// Cursor is this connection's last reported pointer position (normalized int16,
+	// 0 = centre), sampled into tick frames so others can render the roaming cursor.
+	// Written from readPump (this conn's goroutine), read from Hub.Tick (the engine
+	// goroutine), so guarded by curMu. hasCur is false until the first cursor arrives
+	// or after a clear (round/game end, via Hub.Pending). lastCur throttles the inbound
+	// rate; touched only in readPump, so it needs no lock.
+	curMu   sync.Mutex
+	curX    int16
+	curY    int16
+	hasCur  bool
+	lastCur time.Time
+}
+
+// setCursor records this connection's latest pointer position (from readPump).
+func (c *Client) setCursor(x, y int16) {
+	c.curMu.Lock()
+	c.curX, c.curY, c.hasCur = x, y, true
+	c.curMu.Unlock()
+}
+
+// cursor returns the last reported position and whether one is set (from Hub.Tick).
+func (c *Client) cursor() (int16, int16, bool) {
+	c.curMu.Lock()
+	defer c.curMu.Unlock()
+	return c.curX, c.curY, c.hasCur
+}
+
+// clearCursor drops the stored cursor so a stale position from a finished round
+// isn't sampled into the next window (called from Hub.Pending at the arming stage).
+func (c *Client) clearCursor() {
+	c.curMu.Lock()
+	c.hasCur = false
+	c.curMu.Unlock()
 }
 
 func NewClient(conn *websocket.Conn, steamID, tag, username, ip string, hub *Hub) *Client {
@@ -207,6 +245,9 @@ func (h *Hub) Pending(p game.PendingFrame) {
 	base.Roster = h.roster()
 	full := mustJSON(base)
 	for _, c := range h.clientList() {
+		// New window: drop any cursor held from the last round so the first ticks of
+		// this window only carry cursors players actually moved after arming.
+		c.clearCursor()
 		if tickCapable(c) {
 			c.trySend(full)
 		} else {
@@ -231,31 +272,67 @@ func (h *Hub) roster() []rosterEntry {
 	return out
 }
 
-// Tick fans out the live-window frame (clicks-remaining + sampled opponent pips)
-// to every tick-capable client. One binary marshal, reused for all — linear in
-// players. Implements game.Broadcaster.
+// Tick fans out the live-window frame (clicks-remaining + the board mutations since
+// the last tick + a sample of opponent cursors) to every tick-capable client. One
+// binary marshal, reused for all — linear in players. Implements game.Broadcaster.
 func (h *Hub) Tick(f game.TickFrame) {
+	cursors := h.sampleCursors()
 	var blob []byte
 	for _, c := range h.clientList() {
 		if !tickCapable(c) {
 			continue
 		}
 		if blob == nil {
-			blob = encodeTick(f) // marshal once, lazily (skip entirely if nobody's v5)
+			blob = encodeTick(f, cursors) // marshal once, lazily (skip entirely if nobody's v5)
 		}
 		c.trySendBin(blob)
 	}
+}
+
+// sampleCursors collects up to CursorSampleK tick-capable clients' current cursor
+// positions for the tick frame. Cosmetic, so a simple first-K sample is fine; the
+// cap keeps the cursor section bounded regardless of crowd size.
+func (h *Hub) sampleCursors() []cursorSample {
+	k := 0
+	if h.engine != nil {
+		k = h.engine.CursorSampleK()
+	}
+	if k <= 0 {
+		return nil
+	}
+	out := make([]cursorSample, 0, k)
+	for _, c := range h.clientList() {
+		if !tickCapable(c) {
+			continue
+		}
+		if x, y, ok := c.cursor(); ok {
+			out = append(out, cursorSample{Tag: c.Tag, X: x, Y: y})
+			if len(out) >= k {
+				break
+			}
+		}
+	}
+	return out
 }
 
 // Armed fans out the armed frame. The unpenalised majority share one precomputed
 // frame; penalised connections get theirs after a delay (the spam deterrent)
 // with their own penalty_ms echoed in, so they can see they're being throttled.
 func (h *Hub) Armed(a game.ArmedFrame) {
-	base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Nonce: strconv.FormatUint(a.Nonce, 16), Players: a.Players, Clicks: a.Clicks}
-	clean := mustJSON(base)
+	// Two payload shapes: v5+ clients get the initial board of buttons; below-v5 clients
+	// get the single persistent legacy nonce. Each shares one precomputed clean copy; a
+	// penalised connection gets its own copy (its delay echoed in) after the hold.
+	v5base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Buttons: buttonsToWire(a.Buttons), Players: a.Players, Clicks: a.Clicks}
+	v4base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Nonce: strconv.FormatUint(a.Nonce, 16), Players: a.Players, Clicks: a.Clicks}
+	cleanV5 := mustJSON(v5base)
+	cleanV4 := mustJSON(v4base)
 	for _, c := range h.clientList() {
 		if a.Blocked[c.SteamID] {
-			continue // benched by anticheat: withhold the nonce until they pass their test
+			continue // benched by anticheat: withhold the nonce/buttons until they pass their test
+		}
+		base, clean := v4base, cleanV4
+		if tickCapable(c) {
+			base, clean = v5base, cleanV5
 		}
 		if d := a.Penalties[c.SteamID]; d > 0 {
 			w := base
@@ -267,6 +344,19 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 			c.trySend(clean)
 		}
 	}
+}
+
+// buttonsToWire converts the engine's initial board into the armed-frame button list
+// (nonces hex-encoded like the legacy nonce). nil/empty stays nil so omitempty drops it.
+func buttonsToWire(bs []game.Button) []buttonWire {
+	if len(bs) == 0 {
+		return nil
+	}
+	out := make([]buttonWire, len(bs))
+	for i, b := range bs {
+		out[i] = buttonWire{ID: b.SlotID, Nonce: strconv.FormatUint(b.Nonce, 16), X: b.X, Y: b.Y}
+	}
+	return out
 }
 
 // BroadcastBountyUpdate tells every connected client the active bounty changed, so
@@ -525,6 +615,19 @@ func (c *Client) readPump() {
 					HasPos:   hasPos,
 				})
 			}
+		case "cursor":
+			// Opponent-cursor position (v5+). Throttled per-connection so a flood of
+			// cursor frames can't crowd out clicks (no shared WS rate bucket exists yet;
+			// any future one must budget cursors separately — see PLAN). Stored, then
+			// sampled into the next tick; ignored from below-v5 clients.
+			if !tickCapable(c) || in.X == nil || in.Y == nil {
+				continue
+			}
+			if now.Sub(c.lastCur) < cursorMinGap {
+				continue
+			}
+			c.lastCur = now
+			c.setCursor(clampI16(*in.X), clampI16(*in.Y))
 		case "test_answer":
 			if c.Legacy {
 				continue // outdated client: never under test
