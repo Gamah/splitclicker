@@ -43,7 +43,8 @@ CREATE INDEX idx_round_scores_round  ON round_scores (round_id);
 
 -- Final per-game standings + placement, DERIVED (not stored — keeps it 3NF).
 -- A player's points = the number of slots they took across the game; placement
--- is points desc, steam_id asc tiebreak (matches the engine's standingsOf).
+-- is points desc, steam_id asc tiebreak. (00012 later recreates this view to
+-- break ties by who reached the total first, matching the engine's standingsOf.)
 CREATE VIEW game_standings AS
 SELECT r.game_id,
        rs.steam_id,

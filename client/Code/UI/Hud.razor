@@ -279,6 +279,37 @@
 		<div class="skin-caption">@($"{SkinLeaderName()}'s Skin")</div>
 	</div>
 
+	@* ── per-round scores flash: a transient panel listing who scored the round that
+	     just ended (the round's winners, in first-click order, with the points each
+	     grabbed THIS round), shown briefly after every round_result then fading out.
+	     Non-interactive (pointer-events:none) so it never eats a click. Each text line
+	     is a single interpolated expression (the mixed-text-node reorder bug). ── *@
+	@if ( FlashVisible )
+	{
+		<div class="round-flash">
+			<div class="rf-panel">
+				<div class="rf-title">@($"ROUND {_flashRound} SCORES")</div>
+				<div class="divider"></div>
+				@if ( _flashWinners.Count == 0 )
+				{
+					<div class="rf-empty">Nobody scored this round</div>
+				}
+				else
+				{
+					@for ( int i = 0; i < _flashWinners.Count && i < DisplayLimit; i++ )
+					{
+						var w = _flashWinners[i];
+						<div class="rf-row @(IsMe( w ) ? "me" : "")">
+							<div class="rf-rank">@(i + 1)</div>
+							<div class="rf-name">@DisplayName( w )</div>
+							<div class="rf-pts">@($"+{w.Points}")</div>
+						</div>
+					}
+				}
+			</div>
+		</div>
+	}
+
 	@* ── transient "copied profile link" toast, top-center for ~a second ── *@
 	@if ( ToastVisible )
 	{
@@ -983,6 +1014,85 @@
 		z-index: 210;
 	}
 
+	/* ── per-round scores flash: a card centred over the play area, shown for
+	   FlashDuration after each round closes then fading out. The .round-flash layer
+	   fills the screen and centres the card; the keyframe (pop in → hold → fade) runs
+	   for the full 4s so the card unmounts as the fade ends. Non-interactive and above
+	   the boards/button but below the how-to popup (160) and the anticheat gate (200).
+	   The card is sized to its content (no scroll — an overflow range becomes
+	   drag-pannable in s&box). */
+	.round-flash {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		pointer-events: none;
+		z-index: 140;
+		animation-name: round-flash-anim;
+		animation-duration: 4s;
+		animation-timing-function: ease-out;
+		animation-fill-mode: forwards;
+	}
+
+	@@keyframes round-flash-anim {
+		0%   { opacity: 0; }
+		6%   { opacity: 1; }
+		82%  { opacity: 1; }
+		100% { opacity: 0; }
+	}
+
+	/* the visible card: same dark panel look as the boards. */
+	.round-flash .rf-panel {
+		flex-direction: column;
+		flex-shrink: 0;
+		width: 360px;
+		padding: 16px 20px;
+		gap: 3px;
+		background-color: rgba(3, 13, 7, 0.95);
+		border: 1.5px solid rgba(255, 255, 255, 0.12);
+		border-radius: 12px;
+	}
+
+	.round-flash .rf-title {
+		font-size: 22px;
+		font-weight: bold;
+		color: rgba(255, 255, 255, 0.9);
+		letter-spacing: 2px;
+		justify-content: center;
+		margin-bottom: 2px;
+	}
+
+	.round-flash .divider {
+		height: 1px;
+		background-color: rgba(255, 255, 255, 0.1);
+		margin-bottom: 6px;
+	}
+
+	.round-flash .rf-row {
+		flex-direction: row;
+		align-items: center;
+		font-size: 18px;
+		color: rgba(255, 255, 255, 0.85);
+		padding: 3px 6px;
+		border-radius: 4px;
+	}
+
+	.round-flash .rf-rank { width: 30px; color: rgba(255, 255, 255, 0.4); font-size: 15px; }
+	.round-flash .rf-name { flex-grow: 1; overflow: hidden; white-space: nowrap; }
+	.round-flash .rf-pts { color: #06d6a0; font-weight: bold; }
+	.round-flash .rf-row.me { background-color: rgba(6, 214, 160, 0.15); }
+
+	.round-flash .rf-empty {
+		justify-content: center;
+		font-size: 15px;
+		color: rgba(255, 255, 255, 0.5);
+		padding: 4px 0;
+	}
+
 	/* ── anticheat test gate: a full-screen dim overlay that captures input (above
 	   everything else) with a centred card holding the question + answer box. ── */
 	.test-overlay {
@@ -1214,6 +1324,29 @@
 	RealTimeSince _toastSince = 1000f; // start expired
 	bool ToastVisible => _toastSince < ToastDuration;
 
+	// ── per-round scores flash: a transient panel of the round's scorers (the
+	//    round_result `winners`, carrying the points each grabbed THAT round), shown
+	//    for FlashDuration when a round closes. Triggered on the phase change into
+	//    Result (the final round folds into game_over, whose GAME OVER standings stand
+	//    in for its flash). A snapshot is taken so it survives the next round overwriting
+	//    C.Winners. _flashSince starts expired so nothing shows until the first round. ──
+	const float FlashDuration = 4f;
+	List<Standing> _flashWinners = new();
+	int _flashRound;
+	RealTimeSince _flashSince = 1000f;
+	bool FlashVisible => _flashSince < FlashDuration;
+
+	// ── post-game board refresh: the server credits the session win and refreshes
+	//    the board cache asynchronously (afterGame) AFTER it broadcasts game_over, so
+	//    a fetch fired the instant game_over lands races ahead of that write and shows
+	//    the games/hours-won boards a game behind ("lags by 1"). When a game ends we
+	//    arm a one-shot refresh a short delay later — past the async write (a sub-second
+	//    local DB write; the 5s intermission easily covers it) — so the just-finished
+	//    game is reflected while the GAME OVER standings are still up. ──
+	const float PostGameRefreshDelay = 2f;
+	bool _postGamePending;
+	RealTimeSince _postGameSince = 1000f;
+
 	protected override void OnTreeFirstBuilt()
 	{
 		_ = LoadConfig();
@@ -1278,9 +1411,22 @@
 			// landed, including between rounds/games. It's only ever centred once, on
 			// first load (the _positioned block above).
 
+			// A round just closed: flash its scores. Snapshot the winners (the next
+			// round overwrites C.Winners) and restart the flash timer. Only on Result —
+			// the final round folds into GAME OVER, whose standings are its own display.
+			if ( phase == GamePhase.Result )
+			{
+				_flashWinners = C?.Winners != null ? new List<Standing>( C.Winners ) : new();
+				_flashRound = C?.Round ?? 0;
+				_flashSince = 0f;
+			}
+
 			// Refresh the boards when a round just closed (player is reading scores
 			// between presses), throttled so rapid result→pending churn can't spam.
-			if ( phase == GamePhase.Result || phase == GamePhase.GameOver )
+			// GAME OVER is deliberately excluded: a fetch here races the server's async
+			// post-game write (see below), so the games/hours-won boards would show a
+			// game behind. Game-end refresh is handled by the delayed one-shot instead.
+			if ( phase == GamePhase.Result )
 			{
 				if ( _hourlyLast > RefreshInterval ) _ = RefreshHourly();
 				if ( _hoursWonLast > RefreshInterval ) _ = RefreshHoursWon();
@@ -1288,8 +1434,28 @@
 				if ( _allTimeLast > RefreshInterval ) _ = RefreshAllTime();
 			}
 
+			// A game just ended: arm the one-shot post-game refresh so the boards pick
+			// up this game's session win once the server's afterGame write has landed.
+			if ( phase == GamePhase.GameOver )
+			{
+				_postGamePending = true;
+				_postGameSince = 0f;
+			}
+
 			_lastPhase = phase;
 			StateHasChanged();
+		}
+
+		// Fire the armed post-game refresh once the delay has elapsed (the server's
+		// async session-win write is done by now), so the games/hours-won boards reflect
+		// the just-finished game instead of lagging a game behind.
+		if ( _postGamePending && _postGameSince >= PostGameRefreshDelay )
+		{
+			_postGamePending = false;
+			_ = RefreshHourly();
+			_ = RefreshHoursWon();
+			_ = RefreshSessionsWon();
+			_ = RefreshAllTime();
 		}
 	}
 
@@ -1577,5 +1743,8 @@
 		_howtoOpen,
 		// sanction overlay state (the per-second countdown tick is already covered by
 		// the seconds term in the second combine above).
-		HashCode.Combine( C?.TestMessage, C?.SanctionState, C?.SanctionUntilMs ) );
+		HashCode.Combine( C?.TestMessage, C?.SanctionState, C?.SanctionUntilMs ),
+		// round-scores flash: FlashVisible flips the panel off on time; round + count
+		// rebuild it when a new round's scores come up.
+		HashCode.Combine( FlashVisible, _flashRound, _flashWinners.Count ) );
 }

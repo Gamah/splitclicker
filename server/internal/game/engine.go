@@ -100,9 +100,11 @@ type ArmedFrame struct {
 	Blocked map[string]bool
 }
 
-// ResultFrame is the post-round leaderboard. Deltas is per-SteamID points scored
-// this round; the hub merges each connection's own delta + RoundID into its copy
-// so the client can drive its `points` achievement stat exactly once.
+// ResultFrame is the post-round leaderboard. Winners is the round's scorers in
+// first-click order with the points each took THIS round (the client flashes it);
+// Standings is the cumulative game board. Deltas is per-SteamID points scored this
+// round; the hub merges each connection's own delta + RoundID into its copy so the
+// client can drive its `points` achievement stat exactly once.
 type ResultFrame struct {
 	Round     int
 	Of        int
@@ -587,9 +589,10 @@ func (e *Engine) waitForPlayers(ctx context.Context) bool {
 func (e *Engine) playGame(ctx context.Context) {
 	gameID := newID()
 	startedAt := time.Now().UTC()
-	scores := map[string]int{}      // cumulative game points by SteamID
-	info := map[string]playerInfo{} // latest display info by SteamID
-	roundLogs := []RoundLog{}       // durable per-round history, flushed at game end
+	scores := map[string]int{}           // cumulative game points by SteamID
+	info := map[string]playerInfo{}      // latest display info by SteamID
+	reached := map[string]time.Time{}    // when each player reached their score (tie-break)
+	roundLogs := []RoundLog{}            // durable per-round history, flushed at game end
 	x := e.cfg.RoundsPerGame
 
 	// Refresh the host-editable broadcast note once per game and push it to every
@@ -623,7 +626,7 @@ func (e *Engine) playGame(ctx context.Context) {
 			return
 		}
 		final := round == x
-		deltas, roundID, clicks, armedAt := e.race(ctx, round, x, players, n, scores, info, final)
+		deltas, roundID, clicks, armedAt := e.race(ctx, round, x, players, n, scores, info, reached, final)
 		if ctx.Err() != nil {
 			return
 		}
@@ -651,7 +654,7 @@ func (e *Engine) playGame(ctx context.Context) {
 		return
 	}
 
-	final := standingsOf(scores, info)
+	final := standingsOf(scores, info, reached)
 	e.annotateStatus(final)
 	placements := make(map[string]int, len(final))
 	won := make(map[string]bool, len(final))
@@ -747,7 +750,7 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 // nothing — playGame folds straight into game_over (which carries the returned
 // deltas/roundID), so the last round shows the final standings once instead of a
 // redundant ROUND OVER → GAME OVER pair.
-func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, final bool) (map[string]int, string, []ScoredClick, time.Time) {
+func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, reached map[string]time.Time, final bool) (map[string]int, string, []ScoredClick, time.Time) {
 	nonce := newNonce()
 	penalties := e.penaltiesFrom(e.badClicks)
 	blocked := e.blockedMap()
@@ -784,6 +787,10 @@ raceLoop:
 	for i, ev := range rs.scored {
 		deltas[ev.SteamID]++
 		scores[ev.SteamID]++
+		// Record the arrival time of each scoring click; the last one wins, so
+		// reached[sid] ends up as when this player reached their current total —
+		// the tie-break standingsOf uses ("who got there first").
+		reached[ev.SteamID] = ev.At
 		clicks[i] = ScoredClick{SteamID: ev.SteamID, SlotNo: i, OffsetMs: int(ev.At.Sub(armedAt).Milliseconds())}
 	}
 	if len(deltas) > 0 && e.store != nil {
@@ -800,7 +807,10 @@ raceLoop:
 	e.setPhase(PhaseResult, round)
 
 	// One entry per scoring player in first-arrival order; a masher who took
-	// several slots still shows once, with their cumulative game points.
+	// several slots still shows once. Points is the score from THIS round (the
+	// delta), not the cumulative game total — the standings list already carries
+	// the running totals, so the winners list is the per-round "round scores" the
+	// client flashes after each round.
 	winners := make([]Standing, 0, len(deltas))
 	seen := make(map[string]bool, len(deltas))
 	for _, ev := range rs.scored {
@@ -809,10 +819,10 @@ raceLoop:
 		}
 		seen[ev.SteamID] = true
 		pi := info[ev.SteamID]
-		winners = append(winners, Standing{Tag: pi.tag, Username: pi.username, Points: scores[ev.SteamID], SteamID: ev.SteamID})
+		winners = append(winners, Standing{Tag: pi.tag, Username: pi.username, Points: deltas[ev.SteamID], SteamID: ev.SteamID})
 	}
 	e.annotateStatus(winners)
-	standings := topK(standingsOf(scores, info), e.cfg.BoardSize)
+	standings := topK(standingsOf(scores, info, reached), e.cfg.BoardSize)
 	e.annotateStatus(standings)
 	e.bc.Result(ResultFrame{
 		Round:     round,
@@ -1377,9 +1387,12 @@ func recordInfo(info map[string]playerInfo, ev ClickEvent) {
 	info[ev.SteamID] = playerInfo{tag: ev.Tag, username: ev.Username}
 }
 
-// standingsOf builds the full board sorted by points desc, SteamID asc as a
-// stable tiebreak (so placements are deterministic).
-func standingsOf(scores map[string]int, info map[string]playerInfo) []Standing {
+// standingsOf orders players by points (desc). Ties are broken by who reached
+// their current total FIRST: reached[sid] is the arrival time of the click that
+// brought that player to their score, so the earlier timestamp ranks higher.
+// SteamID is a final, stable fallback (missing/equal timestamps — e.g. a player
+// with no recorded scoring click).
+func standingsOf(scores map[string]int, info map[string]playerInfo, reached map[string]time.Time) []Standing {
 	out := make([]Standing, 0, len(scores))
 	for sid, pts := range scores {
 		pi := info[sid]
@@ -1388,6 +1401,10 @@ func standingsOf(scores map[string]int, info map[string]playerInfo) []Standing {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Points != out[j].Points {
 			return out[i].Points > out[j].Points
+		}
+		ti, tj := reached[out[i].SteamID], reached[out[j].SteamID]
+		if !ti.Equal(tj) {
+			return ti.Before(tj) // reached the tied total earlier ⇒ ranks first
 		}
 		return out[i].SteamID < out[j].SteamID
 	})

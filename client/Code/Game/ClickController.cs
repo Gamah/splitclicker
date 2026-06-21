@@ -291,6 +291,12 @@ public sealed class ClickController : Component
 					Of = p.Of;
 					Players = p.Players;
 					ClicksToWin = p.Clicks;
+					// A new game's first round is arming: clear the previous game's session
+					// standings now (the arming signal for round 1) so the board doesn't keep
+					// showing the last game's totals through this game's first round — it's
+					// repopulated by this round's round_result. Fixes the session board
+					// "lagging a game behind" after game_over.
+					if ( p.Round == 1 ) Standings = new();
 					// NB: the throttle is NOT reset here — bad clicks accrue across phases
 					// (result/game-over/intermission included) and are forgiven only at the
 					// next arm, mirroring the server. The armed frame resets _idleClicks.
