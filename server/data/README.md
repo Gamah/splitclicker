@@ -15,7 +15,7 @@ directory is bind-mounted into the container at `/data` (see
      "winner_lock_time": "2026-06-16T07:00:00Z",
      "dev_note": "",
 
-     "live_version": 3,
+     "live_version": 4,
 
      "arm_min_sec": 2,
      "arm_max_sec": 6,
@@ -26,6 +26,8 @@ directory is bind-mounted into the container at `/data` (see
      "result_display_ms": 4000,
      "intermission_ms": 5000,
      "board_size": 20,
+     "tick_hz": 20,
+     "tick_sample_k": 8,
      "fast_click_ms": 130,
      "max_click_factor": 2,
      "solo_lead_margin": 15,
@@ -47,7 +49,7 @@ directory is bind-mounted into the container at `/data` (see
   lower version get the troll leaderboards + an "out of date" note; live-or-newer
   are respected. Bump it to disable an old build (e.g. set `4` once v4 is rolled
   out), or leave it below a new build's version to test that build alongside the
-  live one. Omit ⇒ default `3`.
+  live one. Omit ⇒ default `4`.
 
 **Game tunables (read at startup → `docker compose restart app` to apply):**
 - `arm_min_sec` / `arm_max_sec` — random arming-delay window.
@@ -55,6 +57,12 @@ directory is bind-mounted into the container at `/data` (see
   at min_clicks.
 - `rounds_per_game`, `race_max_ms`, `result_display_ms`, `intermission_ms`,
   `board_size`.
+- `tick_hz` — live-window broadcast cadence: while the button is armed the server
+  pushes the clicks-remaining count + a sampled batch of opponent pips this many
+  times a second (default 20; `0` disables the tick entirely). `tick_sample_k` —
+  max opponent pips sampled per tick (default 8); the remaining count is always
+  exact, only the positioned-pip sample is capped, which is what keeps tick egress
+  linear in player count.
 - `penalty_base_ms` / `penalty_step_ms` — idle-click arm-delay escalation.
 - `fast_click_ms` — anticheat: two consecutive scoring clicks closer than this
   (default 130) flag the player. `max_click_factor` — anticheat: more than

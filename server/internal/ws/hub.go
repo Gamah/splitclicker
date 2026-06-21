@@ -29,15 +29,17 @@ const (
 	pingPeriod     = 60 * time.Second // server-driven keepalive (PLAN §3.5b)
 	maxMessageSize = 1024
 
-	// minTestVersion is the oldest client API version that understands anticheat
-	// tests. Older clients still have their checks run/logged but are never benched
-	// (they can't render or answer a test), so the engine won't gate them.
-	minTestVersion = 3
-
-	// minSanctionVersion is the oldest client that can render the cooldown/ignored
-	// countdown frames (v4). A v3 client on those rungs is still blocked from scoring
-	// (the engine withholds the nonce), it just isn't sent a frame it can't display.
-	minSanctionVersion = 4
+	// minTickVersion is the oldest client API version that understands the
+	// live-window `tick` frame, the round_pending roster, and click x/y positions
+	// (all the v5 wire). Below it, a client is still a normal respected connection
+	// (≥ the live floor) — it just isn't sent ticks/roster and its clicks carry no
+	// position. Mirrors the old minTest/minSanction capability gates.
+	//
+	// Floor note: the live floor is v4, so every non-legacy connection is already
+	// sanction-capable (≥ v4). The former minTestVersion(3)/minSanctionVersion(4)
+	// split is therefore dead — TestCapable/SanctionCapable now collapse to
+	// !Legacy. When the floor next moves to v5, this gate collapses the same way.
+	minTickVersion = 5
 
 	// outdatedNote replaces the dev note for outdated (below-live) clients, telling
 	// them to update — shown alongside the troll leaderboards.
@@ -71,11 +73,19 @@ func NewHub(log *zap.Logger) *Hub {
 // and engine reference each other, so one must be constructed first).
 func (h *Hub) SetEngine(e *game.Engine) { h.engine = e }
 
+// outMsg is one queued outbound frame: its bytes plus whether to write it as a
+// WebSocket binary message. Almost everything is JSON text; only the live-window
+// `tick` frame is binary (see tick.go).
+type outMsg struct {
+	data   []byte
+	binary bool
+}
+
 // Client is one connected player.
 type Client struct {
 	hub      *Hub
 	conn     *websocket.Conn
-	send     chan []byte
+	send     chan outMsg
 	SteamID  string
 	Tag      string
 	Username string
@@ -89,7 +99,8 @@ type Client struct {
 	Legacy bool
 
 	// Version is the client's API version (from the /ws/{ver} path; bare /ws ⇒ 1).
-	// Drives TestCapable — only minTestVersion+ clients are issued anticheat tests.
+	// Drives TickCapable — only minTickVersion+ clients receive the live-window
+	// tick/roster wire and have their click positions honoured.
 	Version int
 
 	smu        sync.Mutex // guards sendClosed + the send channel
@@ -100,7 +111,7 @@ func NewClient(conn *websocket.Conn, steamID, tag, username, ip string, hub *Hub
 	return &Client{
 		hub:      hub,
 		conn:     conn,
-		send:     make(chan []byte, 32),
+		send:     make(chan outMsg, 32),
 		SteamID:  steamID,
 		Tag:      tag,
 		Username: username,
@@ -187,9 +198,52 @@ func (h *Hub) ActivePlayerCount(benched map[string]bool) int {
 // --- game.Broadcaster ---
 
 func (h *Hub) Pending(p game.PendingFrame) {
-	msg := mustJSON(pendingWire{T: "round_pending", Round: p.Round, Of: p.Of, Players: p.Players, Clicks: p.Clicks})
+	// Tick-capable (v5+) clients get the full roster ride-along so they can resolve
+	// every pip's tag → username before the window opens; everyone else gets the
+	// lean frame (older clients ignore the field anyway, but skipping it saves the
+	// O(M²) roster bytes on connections that can't use them).
+	base := pendingWire{T: "round_pending", Round: p.Round, Of: p.Of, Players: p.Players, Clicks: p.Clicks}
+	lean := mustJSON(base)
+	base.Roster = h.roster()
+	full := mustJSON(base)
 	for _, c := range h.clientList() {
-		c.trySend(msg)
+		if tickCapable(c) {
+			c.trySend(full)
+		} else {
+			c.trySend(lean)
+		}
+	}
+}
+
+// roster is the {tag, username} of every connected non-legacy player — the
+// name-resolution map sent in round_pending so pips (which carry only a tag) can
+// be labelled. Built fresh each arming stage; knowingly O(M²) at scale (accepted
+// for MVP — see protocol.go / PLAN §19).
+func (h *Hub) roster() []rosterEntry {
+	h.mu.RLock()
+	out := make([]rosterEntry, 0, len(h.clients))
+	for c := range h.clients {
+		if !c.Legacy {
+			out = append(out, rosterEntry{Tag: c.Tag, Username: c.Username})
+		}
+	}
+	h.mu.RUnlock()
+	return out
+}
+
+// Tick fans out the live-window frame (clicks-remaining + sampled opponent pips)
+// to every tick-capable client. One binary marshal, reused for all — linear in
+// players. Implements game.Broadcaster.
+func (h *Hub) Tick(f game.TickFrame) {
+	var blob []byte
+	for _, c := range h.clientList() {
+		if !tickCapable(c) {
+			continue
+		}
+		if blob == nil {
+			blob = encodeTick(f) // marshal once, lazily (skip entirely if nobody's v5)
+		}
+		c.trySendBin(blob)
 	}
 }
 
@@ -245,22 +299,29 @@ func (h *Hub) SendTest(steamID string, f game.TestFrame) {
 }
 
 // TestCapable reports whether steamID's connected client understands anticheat
-// tests (a minTestVersion+ build). Implements game.Broadcaster.
+// tests. With the live floor at v4 every non-legacy connection qualifies, so this
+// is just "connected and not legacy". Implements game.Broadcaster.
 func (h *Hub) TestCapable(steamID string) bool {
 	h.mu.RLock()
 	c := h.bySteam[steamID]
 	h.mu.RUnlock()
-	return c != nil && !c.Legacy && c.Version >= minTestVersion
+	return c != nil && !c.Legacy
 }
 
-// SanctionCapable reports whether steamID's connected client understands the v4
-// cooldown/ignored countdown frames (a minSanctionVersion+ build). Implements
-// game.Broadcaster.
+// SanctionCapable reports whether steamID's connected client can render the
+// cooldown/ignored countdown frames. As with TestCapable, the v4 floor means
+// every non-legacy connection qualifies. Implements game.Broadcaster.
 func (h *Hub) SanctionCapable(steamID string) bool {
 	h.mu.RLock()
 	c := h.bySteam[steamID]
 	h.mu.RUnlock()
-	return c != nil && !c.Legacy && c.Version >= minSanctionVersion
+	return c != nil && !c.Legacy
+}
+
+// tickCapable reports whether c receives the v5 live-window wire (tick frames,
+// the round_pending roster, honoured click positions).
+func tickCapable(c *Client) bool {
+	return c != nil && !c.Legacy && c.Version >= minTickVersion
 }
 
 // FireAchievement pushes a manual achievement unlock to every open connection
@@ -350,20 +411,28 @@ func (h *Hub) hello(c *Client) {
 			ArmMin: snap.ArmMinSec, ArmMax: snap.ArmMaxSec,
 			PenaltyBase: snap.PenaltyBaseMs, PenaltyStep: snap.PenaltyStepMs,
 			DevNote: devNote,
+			TickMs:  snap.TickMs,
 		},
 	}))
 }
 
 // --- per-client send (concurrency-safe vs. delayed/penalised writes) ---
 
-func (c *Client) trySend(b []byte) {
+func (c *Client) trySend(b []byte) { c.enqueue(outMsg{data: b}) }
+
+// trySendBin queues a binary frame (the live-window tick). Same drop-on-full
+// policy as trySend — a missed tick is recoverable (the next one re-states the
+// count), a stalled hub is not.
+func (c *Client) trySendBin(b []byte) { c.enqueue(outMsg{data: b, binary: true}) }
+
+func (c *Client) enqueue(m outMsg) {
 	c.smu.Lock()
 	defer c.smu.Unlock()
 	if c.sendClosed {
 		return
 	}
 	select {
-	case c.send <- b:
+	case c.send <- m:
 	default:
 		// Slow client: drop. A missed frame is recoverable; a stalled hub is not.
 		c.hub.log.Warn("slow client, dropping frame", zap.String("steam_id", c.SteamID))
@@ -388,6 +457,11 @@ type inbound struct {
 	Nonce  string `json:"nonce"`
 	ID     string `json:"id"`     // test_answer: the test token being answered
 	Answer string `json:"answer"` // test_answer: the player's answer text
+	// X, Y are the click's normalized on-screen position (int16 range, 0 = centre),
+	// for the opponent pip. Pointers so "absent" (an older, below-v5 client) is
+	// distinct from a real 0,0 — absent ⇒ the click scores but carries no position.
+	X *int `json:"x"`
+	Y *int `json:"y"`
 }
 
 func (c *Client) readPump() {
@@ -419,6 +493,14 @@ func (c *Client) readPump() {
 				continue // outdated client: its clicks never reach the game
 			}
 			nonce, _ := strconv.ParseUint(in.Nonce, 16, 64) // bad/empty → 0, scores nothing
+			// Honour the click position only from tick-capable (v5+) clients; older
+			// builds send none, so their scoring clicks are simply omitted from the
+			// pip sample (they still score).
+			var px, py int16
+			hasPos := false
+			if tickCapable(c) && in.X != nil && in.Y != nil {
+				px, py, hasPos = clampI16(*in.X), clampI16(*in.Y), true
+			}
 			if c.hub.engine != nil {
 				c.hub.engine.Submit(game.ClickEvent{
 					SteamID:  c.SteamID,
@@ -426,6 +508,9 @@ func (c *Client) readPump() {
 					Username: c.Username,
 					Nonce:    nonce,
 					At:       now,
+					X:        px,
+					Y:        py,
+					HasPos:   hasPos,
 				})
 			}
 		case "test_answer":
@@ -455,7 +540,11 @@ func (c *Client) writePump() {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			mt := websocket.TextMessage
+			if msg.binary {
+				mt = websocket.BinaryMessage
+			}
+			if err := c.conn.WriteMessage(mt, msg.data); err != nil {
 				return
 			}
 		case <-ticker.C:
@@ -470,4 +559,16 @@ func (c *Client) writePump() {
 func mustJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+// clampI16 clamps a client-supplied click coordinate into int16 range so a
+// malformed/oversized value can't overflow the binary tick encoding.
+func clampI16(v int) int16 {
+	if v > 32767 {
+		return 32767
+	}
+	if v < -32767 {
+		return -32767
+	}
+	return int16(v)
 }

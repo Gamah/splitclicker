@@ -19,6 +19,18 @@ type Config struct {
 
 	BoardSize int // top-K standings included in result/game_over frames
 
+	// Live-round tick (the coalesced armed-window broadcast; see Engine.race). While
+	// the button is armed the engine emits a `tick` frame TickHz times a second
+	// carrying the running clicks-remaining count plus a bounded sample of the
+	// scoring clicks that landed since the last tick (for the opponent pips). The
+	// fan-out is linear in players (one precomputed broadcast per tick, capped at K
+	// pips) — never a per-click broadcast. TickHz<=0 disables ticking entirely.
+	//   TickHz      — ticks per second while armed (0 = off).
+	//   TickSampleK — max scoring clicks sampled per tick for the positioned pips;
+	//                 the count itself is always exact, only the pip sample is capped.
+	TickHz      int
+	TickSampleK int
+
 	// Bad-click penalty escalation (ms): the kth bad click since the last arm adds
 	// PenaltyBaseMs + PenaltyStepMs·(k−1) to that connection's held arm delay. Sent
 	// to clients on connect so they mirror the live estimate. See idlePenalty.
@@ -65,6 +77,8 @@ func DefaultConfig() Config {
 		ResultDisplay:   4 * time.Second,
 		Intermission:    5 * time.Second,
 		BoardSize:       20,
+		TickHz:          20,
+		TickSampleK:     8,
 		PenaltyBaseMs:   500,
 		PenaltyStepMs:   100,
 		FastClickMs:         130,
@@ -91,6 +105,8 @@ func ConfigFromEnv() Config {
 	c.ResultDisplay = envDur("RESULT_DISPLAY_MS", c.ResultDisplay, time.Millisecond)
 	c.Intermission = envDur("INTERMISSION_MS", c.Intermission, time.Millisecond)
 	c.BoardSize = envInt("BOARD_SIZE", c.BoardSize)
+	c.TickHz = envInt("TICK_HZ", c.TickHz)
+	c.TickSampleK = envInt("TICK_SAMPLE_K", c.TickSampleK)
 	c.PenaltyBaseMs = envInt("PENALTY_BASE_MS", c.PenaltyBaseMs)
 	c.PenaltyStepMs = envInt("PENALTY_STEP_MS", c.PenaltyStepMs)
 	c.FastClickMs = envInt("FAST_CLICK_MS", c.FastClickMs)

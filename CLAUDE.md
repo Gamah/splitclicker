@@ -9,8 +9,9 @@ Facepunch auth, the bounty + leaderboard boards, the anticheat checks + per-boun
 sanction ladder, Docker/Caddy, and unit tests. `client/` is a playable s&box game:
 `ClickController` (WS lifecycle/phase), the single-root `Hud.razor` (boards, roaming
 button, GAME INFO popup, anticheat overlays), the Skafinity music library, and
-s&box-Services achievements. **The live API version is `v4`** (anticheat sanction
-ladder); the config-driven `live_version` floor is `v3`.
+s&box-Services achievements. **The live API version is `v5`** (the live-window
+tick: descending counter + opponent click pips); the config-driven `live_version`
+floor is `v4`.
 
 ---
 
@@ -157,10 +158,23 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   (WS standings); additive, so older clients ignore it.
 - **API versioning.** REST/WS are versioned (`/api/{ver}`, `/ws/{ver}`); the live floor is
   config-driven (`live_version`). Below-live clients get the troll boards + "out of date" note;
-  live-or-newer are respected (so a new build is testable before the floor moves up). Capability
-  gates live in `ws/hub.go` (`minTestVersion`, `minSanctionVersion`). **Cleanup rule:** support
-  only N and N-1 — once a new build goes live, prune handling two+ versions back (when v5 is live,
-  drop all v3-and-older special-casing). See the note at `api/router.go`'s `liveVersionDefault`.
+  live-or-newer are respected (so a new build is testable before the floor moves up). The sole
+  capability gate now is `ws/hub.go`'s `minTickVersion` (v5: tick/roster/click-x-y) — with the
+  floor at v4 every non-legacy conn is sanction-capable, so `TestCapable`/`SanctionCapable`
+  collapsed to `!Legacy`. **Cleanup rule:** support only N and N-1 — once a new build goes live,
+  prune handling two+ versions back (when v6 is live, drop all v4-and-older special-casing,
+  collapsing `minTickVersion` the same way). See the note at `api/router.go`'s `liveVersionDefault`.
+- **Live-window tick (v5).** While the button is armed the engine emits a coalesced `tick`
+  frame `TickHz`×/s (binary; the one hot-path binary frame) carrying the exact clicks-remaining
+  count + up to `TickSampleK` sampled scoring clicks (`{tag, x, y, t_arm}`) — linear in players,
+  never a per-click broadcast. The client animates the descending counter, plays a pip (the click
+  sound a fifth up at half volume) per sampled opponent click, and renders each as a half-size
+  fading button at its normalized x/y with the clicker's username. Names resolve from the full
+  `{tag→username}` roster broadcast in `round_pending` (knowingly O(M²), accepted for MVP). Pips
+  replay at their true moment via a client jitter buffer (trail `D ≈ tick interval + margin`):
+  the tail (incl. the winning click) drains over `round_result`, and the buffer clears at the next
+  arming stage — never cancels on result, never bleeds into the next live window. `click` gains
+  normalized int16 x/y (center 0); all v5 wire is additive + gated, so v4 clients are unaffected.
 - **Traffic minimization.** Persistent WS, never polling. Idle is silent. Cheap idle conns
   (epoll lib), infrequent/long heartbeats, one precomputed broadcast on arm, race closes the
   instant click N lands (losing clicks read-and-dropped), leaderboard pushed inside
@@ -183,9 +197,12 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
 
 ## WebSocket protocol (summary — full in PLAN.md §8)
 
-- Hot-path frames (`armed` out, `click` in) should be **binary** at scale; the rest JSON.
-- Client→server: `click {seq}`, `test_answer {id, answer}`, `ping`.
-- Server→client: `hello`, `round_pending`, `armed`, `round_result` (with `you.points_delta`,
+- Hot-path frames: the live-window `tick` (out) is **binary**; `click` (in) stays JSON
+  (sent immediately, never coalesced) with additive int16 `x`/`y`. The rest JSON.
+- Client→server: `click {nonce, x?, y?}`, `test_answer {id, answer}`, `ping`.
+- Server→client: `hello` (+`tick_ms`), `round_pending` (+`roster` `[{tag,username}]`, v5 only),
+  `armed`, `tick` (binary: `round`, `remaining`, sampled `{tag,x,y,t_arm}` pips — v5 only),
+  `round_result` (with `you.points_delta`,
   `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`), `too_late`/`rejected`,
   `test {state, id?, prompt?, message, until_ms?, cleared?}` (anticheat rung: `state` =
   `test`/`cooldown`/`ignored`; `cleared` dismisses it), `achievement` (`{ident}` — out-of-band

@@ -121,7 +121,7 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	// looks alive; the leaderboard + ws handlers compare the client's version to live
 	// and either respect it (live-or-newer) or troll it (below live: the "UPDATE
 	// UPDATE / 67" boards + a benched, click-ignored socket). A NEWER-than-live
-	// version is respected, so a v3 build can be tested before v2 is disabled.
+	// version is respected, so a v5 build can be tested before v4 is disabled.
 	mux.HandleFunc("GET /api/{ver}/config", h.config)
 	mux.HandleFunc("GET /api/{ver}/skin", h.skin)
 	mux.HandleFunc("POST /api/{ver}/auth", rl.wrap(h.auth))
@@ -279,15 +279,17 @@ func boardLimit(r *http.Request) int {
 }
 
 // liveVersionDefault is the live API version assumed when config.json doesn't set
-// live_version. v3 is the floor; the current build is v4 (anticheat sanction
-// ladder), respected as newer-than-live during rollout.
+// live_version. v4 is the floor; the current build is v5 (the live-window tick:
+// descending counter + opponent pips), respected as newer-than-live during rollout.
 //
 // VERSION CLEANUP: keep only the live version and the one build above it (N and
-// N-1). Once a new build goes live, prune anything two or more versions back —
-// e.g. when v5 is live, nothing should still special-case v3 or older. Audit
-// these on every bump: this default, ws.minTestVersion / ws.minSanctionVersion,
-// the parseVer/troll fallbacks here, and the legacy bare-/ws handling.
-const liveVersionDefault = 3
+// N-1). With the floor at v4, every non-legacy connection is sanction-capable, so
+// the old minTestVersion(3)/minSanctionVersion(4) split is gone — both capability
+// methods collapsed to !Legacy, and the sole remaining gate is ws.minTickVersion
+// (v5). Once v5 goes live, prune the v4 special-casing the same way. Audit on every
+// bump: this default, ws.minTickVersion, the parseVer/troll fallbacks here, and the
+// legacy bare-/ws handling.
+const liveVersionDefault = 4
 
 // liveVersion is the configured "live" client API version (config.json's
 // live_version), re-read per request so it can be toggled without a restart.

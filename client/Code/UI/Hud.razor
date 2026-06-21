@@ -114,6 +114,17 @@
 				<div class="penalty-pop" style="left: @(p.Left)%; top: @(p.Top)%;">+ PENALTY</div>
 			}
 
+			@* Opponent click pips: each a half-size button that fades quickly (CSS
+			   keyframe) at the clicker's normalized position with their name over it.
+			   Positioned in the same box-% space as the global button, so a pip lands
+			   where that player's button was when they clicked. *@
+			@foreach ( var pip in PipsToShow() )
+			{
+				<div class="pip" style="left: @(PipPct( pip.X ))%; top: @(PipPct( pip.Y ))%;">
+					<div class="pip-name">@pip.Name</div>
+				</div>
+			}
+
 			@* Each line below is a SINGLE interpolated expression on purpose: mixing
 			   literal text with razor expressions in one element emits several text nodes,
 			   which s&box's panel reconciler reorders across rebuilds (the "arms in 2-6s"
@@ -126,6 +137,12 @@
 				</div>
 				<div class="round">@($"Round {c?.Round ?? 0} / {c?.Of ?? 0}")</div>
 				<div class="state @PhaseClass()">@PhaseText()</div>
+				@* live clicks-remaining counter: descends from N as the race fills,
+				   driven by the server tick (clamped at 0). Only while the window is open. *@
+				@if ( c?.Phase == GamePhase.Armed )
+				{
+					<div class="remaining">@($"{RemainingShown( c )} left")</div>
+				}
 				@if ( c?.Phase == GamePhase.Pending && (c?.ArmMaxSec ?? 0) > 0 )
 				{
 					<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
@@ -914,6 +931,56 @@
 		100% { opacity: 0; transform: translateY(-90px); }
 	}
 
+	/* Opponent click pip: a half-size (70px vs the button's 140px) green circle that
+	   pops in and fades over ~0.45s (matched to PipLifetime so it's gone before
+	   ClickController prunes it). Positioned in the box's % space (left/top set inline),
+	   with margin offsets of −half so the inline %, which is the clicker's button
+	   CENTRE, places the pip centred there. pointer-events:none so it never eats a
+	   click; below the penalty pops, above the button. */
+	.pip {
+		position: absolute;
+		width: 70px;
+		height: 70px;
+		margin-left: -35px;
+		margin-top: -35px;
+		border-radius: 50%;
+		background-color: #06d6a0;
+		border: 2px solid rgba(255, 255, 255, 0.8);
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		pointer-events: none;
+		z-index: 110;
+		animation-name: pip-fade;
+		animation-duration: 0.45s;
+		animation-timing-function: ease-out;
+		animation-fill-mode: forwards;
+	}
+
+	@@keyframes pip-fade {
+		0%   { opacity: 0.9; transform: scale(0.6); }
+		25%  { opacity: 0.85; transform: scale(1); }
+		100% { opacity: 0; transform: scale(1.1); }
+	}
+
+	/* The clicker's name centred over their pip. */
+	.pip-name {
+		font-size: 13px;
+		font-weight: bold;
+		color: #ffffff;
+		text-stroke: 1px #000000;
+		text-align: center;
+		white-space: nowrap;
+	}
+
+	/* Live clicks-remaining counter, green, shown while the window is open. */
+	.remaining {
+		font-size: 40px;
+		font-weight: bold;
+		color: #06d6a0;
+		text-stroke: 1px rgba(0, 0, 0, 0.5);
+	}
+
 	/* HUD pinned to the top edge of the screen, centred horizontally over the box;
 	   the button roams below/behind it and clicks fall through. */
 	.hud {
@@ -1661,7 +1728,10 @@
 		// penalised bad click (idle / wrong phase); spawn a popup for each one, so
 		// rapid mashing stacks several on screen at once.
 		int px = _btnLeftPct, py = _btnTopPct;
-		bool bad = ClickController.Instance?.SendClick() ?? false;
+		// Capture the button's centre normalized to the box (−1..1 per axis) at click
+		// time, so a scoring click renders as a positioned pip on other players' screens.
+		var ( nx, ny, hasPos ) = ButtonNorm();
+		bool bad = ClickController.Instance?.SendClick( nx, ny, hasPos ) ?? false;
 		if ( bad )
 		{
 			_pops.Add( new PenaltyPop { Left = px, Top = py, Since = 0f } );
@@ -1670,6 +1740,33 @@
 		( _btnLeftPct, _btnTopPct ) = RandomPos();
 		StateHasChanged();
 	}
+
+	// The button's centre as a normalized box position (−1..1 per axis, 0 = box
+	// centre), derived from the live measured rects (same space as the opponent pips
+	// render in, so positions round-trip). Returns hasPos=false until the rects are
+	// valid, so an unmeasured click simply sends no position.
+	(float nx, float ny, bool hasPos) ButtonNorm()
+	{
+		float bw = _box?.Box.Rect.Width ?? 0f, bh = _box?.Box.Rect.Height ?? 0f;
+		if ( _btn == null || bw <= 0f || bh <= 0f ) return ( 0f, 0f, false );
+		var bc = _box.Box.Rect.Center;
+		var tc = _btn.Box.Rect.Center;
+		float nx = Math.Clamp( ( tc.x - bc.x ) / ( bw / 2f ), -1f, 1f );
+		float ny = Math.Clamp( ( tc.y - bc.y ) / ( bh / 2f ), -1f, 1f );
+		return ( nx, ny, true );
+	}
+
+	// ── opponent pips (read from ClickController, rendered + faded by CSS) ──
+	static readonly List<ClickController.PipButton> NoPips = new();
+	IReadOnlyList<ClickController.PipButton> PipsToShow() => ClickController.Instance?.ActivePips ?? NoPips;
+
+	// Normalized −1..1 position → box left/top percentage (0..100), clamped so an
+	// off-screen pip pins to the box edge rather than overflowing. Integer math keeps
+	// the inline style locale-safe (no culture-sensitive float formatting).
+	static int PipPct( float n ) => (int)Math.Clamp( ( n + 1f ) / 2f * 100f, 0f, 100f );
+
+	// The live clicks-remaining counter, floored at 0 (a late tick can't show negative).
+	static int RemainingShown( ClickController c ) => Math.Max( 0, c.RemainingThisRound );
 
 	// ── "+ PENALTY" popups: one per bad click, each floats up and fades over PopLife
 	//    seconds (CSS keyframe), then is pruned. Several can be live at once. Left/Top
@@ -1746,5 +1843,8 @@
 		HashCode.Combine( C?.TestMessage, C?.SanctionState, C?.SanctionUntilMs ),
 		// round-scores flash: FlashVisible flips the panel off on time; round + count
 		// rebuild it when a new round's scores come up.
-		HashCode.Combine( FlashVisible, _flashRound, _flashWinners.Count ) );
+		HashCode.Combine( FlashVisible, _flashRound, _flashWinners.Count ),
+		// live-window tick: the descending counter (changes ~tick-rate while armed) and
+		// the on-screen pip count (a pip spawning/expiring changes it) drive re-render.
+		HashCode.Combine( C?.RemainingThisRound ?? 0, PipsToShow().Count ) );
 }

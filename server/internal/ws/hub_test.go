@@ -13,9 +13,9 @@ func drainAchievements(t *testing.T, c *Client) []string {
 	var out []string
 	for {
 		select {
-		case b := <-c.send:
+		case m := <-c.send:
 			var f achievementWire
-			if json.Unmarshal(b, &f) == nil && f.T == "achievement" {
+			if !m.binary && json.Unmarshal(m.data, &f) == nil && f.T == "achievement" {
 				out = append(out, f.Ident)
 			}
 		default:

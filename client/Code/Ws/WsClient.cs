@@ -20,6 +20,11 @@ namespace Splitclicker.Ws;
 public sealed class WsClient : Component
 {
 	public Action<string> OnMessage { get; set; }
+	// Binary frames (the live-window `tick`). The handler receives a COPY of the
+	// bytes: the engine hands the callback a Span over a pooled buffer that is
+	// reused the instant the callback returns, so we ToArray() before forwarding —
+	// the consumer may keep the data past the callback (it's queued into a buffer).
+	public Action<byte[]> OnData { get; set; }
 	public Action OnDone { get; set; }
 
 	WebSocket _socket;
@@ -35,6 +40,7 @@ public sealed class WsClient : Component
 	{
 		_socket = new WebSocket();
 		_socket.OnMessageReceived += msg => OnMessage?.Invoke( msg );
+		_socket.OnDataReceived += data => OnData?.Invoke( data.ToArray() );
 		_socket.OnDisconnected += ( status, reason ) =>
 		{
 			_connected = false;

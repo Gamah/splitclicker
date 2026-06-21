@@ -5,7 +5,7 @@
   "winner_lock_time": "",
   "dev_note": "Update coming soon! Database tracks everything don't worry winner will be picked fairly!",
 
-  "live_version": 3,
+  "live_version": 4,
 
   "arm_min_sec": 2,
   "arm_max_sec": 6,
@@ -16,6 +16,8 @@
   "result_display_ms": 4000,
   "intermission_ms": 5000,
   "board_size": 20,
+  "tick_hz": 20,
+  "tick_sample_k": 8,
   "penalty_base_ms": 500,
   "penalty_step_ms": 100,
   "fast_click_ms": 130,
