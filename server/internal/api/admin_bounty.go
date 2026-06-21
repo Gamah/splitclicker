@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/gamah/splitclicker/internal/runtimecfg"
+	"github.com/gamah/splitclicker/internal/skin"
+	"go.uber.org/zap"
 )
 
 // maxSkinUpload caps an uploaded skin image (generous for a PNG, ruinous for an
@@ -52,6 +55,12 @@ func (h *handler) adminBountyCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provide a skin image or an inspect link", http.StatusBadRequest)
 		return
 	}
+	// No explicit upload but a link was given: build the fallback image from the
+	// link server-side so /api/v1/skin still has something when a client can't
+	// decode the link. Best-effort — a miss just leaves the bounty link-only.
+	if image == "" && link != "" {
+		image = h.saveInspectImage(r.Context(), link)
+	}
 	if err := h.store.CreateBounty(r.Context(), image, link, strings.TrimSpace(r.FormValue("label")), winTime); err != nil {
 		h.adminError(w, "create bounty", err)
 		return
@@ -85,6 +94,12 @@ func (h *handler) adminBountyEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	link := strings.TrimSpace(r.FormValue("inspect_link"))
+	// Regenerate the fallback image from the link when no new file was uploaded
+	// (an explicit upload always wins). On a miss saveInspectImage returns "",
+	// which UpdateBounty treats as "keep the existing image".
+	if image == "" && link != "" {
+		image = h.saveInspectImage(r.Context(), link)
+	}
 	if err := h.store.UpdateBounty(r.Context(), id, image, link, strings.TrimSpace(r.FormValue("label")), winTime); err != nil {
 		h.adminError(w, "update bounty", err)
 		return
@@ -171,6 +186,44 @@ func saveSkinUpload(r *http.Request) (string, error) {
 		return "", fmt.Errorf("could not write image")
 	}
 	return name, nil
+}
+
+// inspectImageTimeout bounds the dataset+image fetch so a slow host can't hang
+// the interactive admin save; on timeout the bounty is just stored link-only.
+const inspectImageTimeout = 20 * time.Second
+
+// saveInspectImage best-effort builds the fallback skin image for an inspect
+// link: it resolves the link to the weapon image (mirroring what the client
+// renders), downloads it, and writes it to the media dir under a unique name,
+// returning that base filename. It returns "" (logging the cause) when there is
+// no link or the image can't be resolved/fetched — the link still works
+// client-side, so a miss only means there's no server-side fallback image.
+func (h *handler) saveInspectImage(ctx context.Context, link string) string {
+	if strings.TrimSpace(link) == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, inspectImageTimeout)
+	defer cancel()
+
+	data, ext, ok, err := skin.Resolve(ctx, link)
+	if err != nil {
+		h.log.Warn("bounty inspect image: resolve", zap.Error(err))
+		return ""
+	}
+	if !ok {
+		return "" // link couldn't be decoded or matched a known skin
+	}
+
+	if err := os.MkdirAll(runtimecfg.MediaDir(), 0o755); err != nil {
+		h.log.Warn("bounty inspect image: prepare media dir", zap.Error(err))
+		return ""
+	}
+	name := fmt.Sprintf("%d_inspect%s", time.Now().UnixNano(), ext)
+	if err := os.WriteFile(filepath.Join(runtimecfg.MediaDir(), name), data, 0o644); err != nil {
+		h.log.Warn("bounty inspect image: write", zap.Error(err))
+		return ""
+	}
+	return name
 }
 
 // parseAdminTime parses an HTML datetime-local value (no zone) as UTC, so it

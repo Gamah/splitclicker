@@ -715,6 +715,12 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 img.skin{height:40px;border-radius:6px;display:block;background:#0b0d12}
 input.inspect{min-width:18rem}
 .addbounty input.inspect{min-width:22rem}
+/* the per-bounty inspect link is locked (readonly) until its "edit" button is
+   clicked, so it can't be changed by accident on an unrelated save. */
+input.inspect[readonly]{opacity:.55;cursor:not-allowed}
+.inspect-edit{display:inline-flex;gap:.3rem;align-items:center}
+button.editbtn{font-size:.8rem;cursor:pointer;background:var(--panel2);color:var(--text);
+  border:1px solid var(--line);border-radius:6px;padding:.25rem .5rem}
 td input,td button,td select{font-size:.85rem;background:var(--panel2);color:var(--text);
   border:1px solid var(--line);border-radius:6px;padding:.25rem .4rem}
 td button{cursor:pointer}
@@ -796,7 +802,7 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
     <td>
       {{if .SkinImage}}<img class="skin" src="/admin/media?f={{.SkinImage}}" alt="">{{end}}
       {{if ne .Status "won"}}<input form="b{{.ID}}" type="file" name="skin" accept="image/*">
-      <input form="b{{.ID}}" type="text" name="inspect_link" value="{{.InspectLink}}" placeholder="inspect link (optional)" class="inspect">{{else if .InspectLink}}<span class="muted">inspect link</span>{{end}}
+      <span class="inspect-edit"><input form="b{{.ID}}" type="text" name="inspect_link" value="{{.InspectLink}}" placeholder="inspect link (optional)" class="inspect" readonly><button type="button" class="editbtn" onclick="editInspect(this)">edit</button></span>{{else if .InspectLink}}<span class="muted">inspect link</span>{{end}}
     </td>
     <td>{{if eq .Status "won"}}{{.Label}}{{else}}<input form="b{{.ID}}" type="text" name="label" value="{{.Label}}" placeholder="label">{{end}}</td>
     <td><span class="pill {{.Status}}">{{.Status}}</span></td>
@@ -901,7 +907,14 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
     {{template "pager" .AllTimePage}}
   </div>
 </div>
-</div></body></html>`))
+</div>
+<script>
+// Unlock a bounty's inspect-link field for editing (it's readonly by default so an
+// unrelated save can't change the skin); the button removes itself once clicked.
+function editInspect(btn){var i=btn.parentElement.querySelector('input.inspect');
+  i.readOnly=false;i.focus();btn.remove();}
+</script>
+</body></html>`))
 
 var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

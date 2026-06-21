@@ -272,6 +272,10 @@
 		{
 			<div class="skin-note">unable to fetch skin from steam</div>
 		}
+		@if ( !string.IsNullOrWhiteSpace( _inspectLink ) )
+		{
+			<div class="skin-copy clickable" onclick="@CopyInspect">Copy inspect link</div>
+		}
 		<div class="skin-caption">@($"{SkinLeaderName()}'s Skin")</div>
 	</div>
 
@@ -695,6 +699,19 @@
 		justify-content: center;
 		text-align: center;
 	}
+
+	/* click-to-copy the bounty's CS2 inspect link (no in-game URL open; Clipboard
+	   works, so it copies). Underlines on hover like the other clickable lines. */
+	.skin-copy {
+		font-size: 12px;
+		font-weight: bold;
+		color: #8b93f5;
+		justify-content: center;
+		text-align: center;
+		pointer-events: all;
+		cursor: pointer;
+	}
+	.skin-copy:hover { color: #ffffff; text-decoration: underline; }
 
 	/* the decoded skin's name (from the inspect link's dataset lookup). */
 	.skin-name {
@@ -1134,6 +1151,11 @@
 	// its DecodeOk/ImageOk flags drive what the skin panel shows vs. the server image.
 	SkinInspect.Skin _skin;
 
+	// The active bounty's raw inspect link ("" when the skin is an uploaded image
+	// only). Kept verbatim so the "copy inspect link" line can hand it to players to
+	// paste into CS2, independent of whether it decoded/resolved locally.
+	string _inspectLink = "";
+
 	// Image URL for the panel: the resolved Steam CDN weapon image when available,
 	// otherwise the server-served fallback image (also used when no link is set).
 	string SkinImgUrl() => _skin != null && _skin.ImageOk ? _skin.ImageUrl : _skinUrl;
@@ -1209,6 +1231,7 @@
 		if ( cfg == null ) return;
 		_skinUrl = ApiClient.AbsoluteUrl( cfg.SkinUrl ) ?? "";
 		_winnerLockMs = cfg.WinnerLockMs;
+		_inspectLink = cfg.InspectLink ?? "";
 		StateHasChanged();
 
 		// If the active bounty was set by an inspect link, decode it locally and
@@ -1386,6 +1409,18 @@
 		try { Clipboard.SetText( DiscordUrl ); }
 		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
 		_toast = "Copied the Discord invite — see you there!";
+		_toastSince = 0f;
+		StateHasChanged();
+	}
+
+	// Copy the active bounty's CS2 inspect link to the clipboard so the player can
+	// paste it into the game and inspect the exact skin. No-op when there's no link.
+	void CopyInspect()
+	{
+		if ( string.IsNullOrWhiteSpace( _inspectLink ) ) return;
+		try { Clipboard.SetText( _inspectLink ); }
+		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
+		_toast = "Copied the skin's inspect link";
 		_toastSince = 0f;
 		StateHasChanged();
 	}
