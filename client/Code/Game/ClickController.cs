@@ -98,6 +98,14 @@ public sealed class ClickController : Component
 	/// below-v5 single persistent button driven by <c>_nonce</c>).</summary>
 	public bool HasBoard => LiveButtons.Count > 0;
 
+	/// <summary>True when this build talks v5+ (the multi-button board). In board mode
+	/// the only scoring surface is the server-placed board, which exists only while
+	/// armed — so the client NEVER draws its own big roaming button: during the arming
+	/// wait, or for stray bad clicks, there is simply no button. Below v5 (v4/legacy/raw)
+	/// the single roaming button is still the scoring + idle-click surface, so it's drawn.
+	/// Derived once from the configured <see cref="ApiVersion"/> at startup.</summary>
+	public bool BoardMode { get; private set; }
+
 	/// <summary>Opponent cursors to draw this frame: each a labelled dot at a normalized
 	/// position, refreshed from the tick's cursor sample and expired shortly after (so a
 	/// cursor that drops out of the sample fades rather than freezing). Armed-only;
@@ -221,6 +229,9 @@ public sealed class ClickController : Component
 		// paths (/api/… and /ws) for talking to a legacy backend like the live old
 		// master (its socket is bare /ws). Skipping blank would keep the v2 default.
 		ApiClient.ApiVersion = (ApiVersion ?? "").Trim().Trim( '/' );
+		// Board mode = v5 or newer (the multi-button board). A blank/raw or vN<5 version
+		// is the legacy single-button path that still draws the roaming button.
+		BoardMode = ParseVersionMajor( ApiClient.ApiVersion ) >= 5;
 		_ws = GameObject.Components.GetOrCreate<WsClient>();
 		_ws.OnMessage = OnMessage;
 		_ws.OnData = OnData;
@@ -407,6 +418,15 @@ public sealed class ClickController : Component
 		}
 		_roster.TryGetValue( Hex8( tag ), out var name );
 		Cursors.Add( new CursorDot { Tag = tag, X = x, Y = y, Name = name ?? "", Seen = 0f } );
+	}
+
+	// The integer major from a version segment like "v5" → 5; 0 for blank/raw or any
+	// unparseable form (so blank and below-v5 both fall to the legacy single-button path).
+	static int ParseVersionMajor( string ver )
+	{
+		if ( string.IsNullOrWhiteSpace( ver ) ) return 0;
+		ver = ver.Trim().TrimStart( 'v', 'V' );
+		return int.TryParse( ver, out var n ) ? n : 0;
 	}
 
 	static ulong ReadU64( byte[] b, int off )
