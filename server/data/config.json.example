@@ -22,7 +22,7 @@
   "penalty_base_ms": 500,
   "penalty_step_ms": 100,
   "fast_click_ms": 130,
-  "max_click_factor": 2,
+  "max_click_factor": 2.5,
 
   "solo_lead_margin": 15,
   "dominant_runner_up_min": 5,

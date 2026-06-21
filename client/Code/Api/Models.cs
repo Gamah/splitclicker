@@ -5,9 +5,14 @@ namespace Splitclicker.Api;
 
 // POST /api/v1/auth response: the public tag/username plus a single-use WS ticket
 // (mint immediately before connecting; expires after ttl_ms).
+// Username is the *claimed* handle only (empty when the player never set one) —
+// persist/re-send only this, never DisplayName, or the Steam name gets bounced
+// back as a username and 422s on reconnect. DisplayName is the resolved string
+// to show (claimed handle, else Steam name, else hex tag).
 public record AuthResponse(
 	[property: JsonPropertyName( "tag" )] string Tag,
 	[property: JsonPropertyName( "username" )] string Username,
+	[property: JsonPropertyName( "display_name" )] string DisplayName,
 	[property: JsonPropertyName( "ticket" )] string Ticket,
 	[property: JsonPropertyName( "ttl_ms" )] long TtlMs
 );

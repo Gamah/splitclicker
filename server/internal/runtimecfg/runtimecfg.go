@@ -39,22 +39,22 @@ type File struct {
 
 	// Game tunables (applied at startup; a `restart` reloads them). Units are in
 	// the field names. See game.Config for meaning.
-	ArmMinSec       *int `json:"arm_min_sec"`
-	ArmMaxSec       *int `json:"arm_max_sec"`
-	ClicksPerPlayer *int `json:"clicks_per_player"`
-	MinClicks       *int `json:"min_clicks"`
-	RoundsPerGame   *int `json:"rounds_per_game"`
-	ButtonsOnScreen *int `json:"buttons_on_screen"`
-	RaceMaxMs       *int `json:"race_max_ms"`
-	ResultDisplayMs *int `json:"result_display_ms"`
-	IntermissionMs  *int `json:"intermission_ms"`
-	BoardSize       *int `json:"board_size"`
-	TickHz          *int `json:"tick_hz"`
-	TickSampleK     *int `json:"tick_sample_k"`
-	PenaltyBaseMs   *int `json:"penalty_base_ms"`
-	PenaltyStepMs   *int `json:"penalty_step_ms"`
-	FastClickMs     *int `json:"fast_click_ms"`
-	MaxClickFactor  *int `json:"max_click_factor"`
+	ArmMinSec       *int     `json:"arm_min_sec"`
+	ArmMaxSec       *int     `json:"arm_max_sec"`
+	ClicksPerPlayer *int     `json:"clicks_per_player"`
+	MinClicks       *int     `json:"min_clicks"`
+	RoundsPerGame   *int     `json:"rounds_per_game"`
+	ButtonsOnScreen *int     `json:"buttons_on_screen"`
+	RaceMaxMs       *int     `json:"race_max_ms"`
+	ResultDisplayMs *int     `json:"result_display_ms"`
+	IntermissionMs  *int     `json:"intermission_ms"`
+	BoardSize       *int     `json:"board_size"`
+	TickHz          *int     `json:"tick_hz"`
+	TickSampleK     *int     `json:"tick_sample_k"`
+	PenaltyBaseMs   *int     `json:"penalty_base_ms"`
+	PenaltyStepMs   *int     `json:"penalty_step_ms"`
+	FastClickMs     *int     `json:"fast_click_ms"`
+	MaxClickFactor  *float64 `json:"max_click_factor"`
 
 	// Anticheat check gating + the per-bounty sanction ladder. See game.Config.
 	SoloLeadMargin         *int `json:"solo_lead_margin"`

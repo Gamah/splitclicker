@@ -40,6 +40,11 @@ func gameConfig() game.Config {
 			*i = *p
 		}
 	}
+	setFloat := func(p *float64, f *float64) {
+		if p != nil {
+			*f = *p
+		}
+	}
 	setDurSec(f.ArmMinSec, &c.ArmMin)
 	setDurSec(f.ArmMaxSec, &c.ArmMax)
 	setInt(f.ClicksPerPlayer, &c.ClicksPerPlayer)
@@ -55,7 +60,7 @@ func gameConfig() game.Config {
 	setInt(f.PenaltyBaseMs, &c.PenaltyBaseMs)
 	setInt(f.PenaltyStepMs, &c.PenaltyStepMs)
 	setInt(f.FastClickMs, &c.FastClickMs)
-	setInt(f.MaxClickFactor, &c.MaxClickFactor)
+	setFloat(f.MaxClickFactor, &c.MaxClickFactor)
 	setInt(f.SoloLeadMargin, &c.SoloLeadMargin)
 	setInt(f.DominantRunnerUpMin, &c.DominantRunnerUpMin)
 	setInt(f.CheckCooldownThreshold, &c.CheckCooldownThreshold)

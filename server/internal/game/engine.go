@@ -1061,7 +1061,8 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 		if fair < 1 {
 			fair = 1
 		}
-		limit = e.cfg.MaxClickFactor * fair
+		// Fractional factor (e.g. 2.5) is floored to a whole click count.
+		limit = int(e.cfg.MaxClickFactor * float64(fair))
 	}
 
 	var out []CheckResult

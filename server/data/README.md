@@ -29,7 +29,7 @@ directory is bind-mounted into the container at `/data` (see
      "tick_hz": 20,
      "tick_sample_k": 8,
      "fast_click_ms": 130,
-     "max_click_factor": 2,
+     "max_click_factor": 2.5,
      "solo_lead_margin": 15,
      "dominant_runner_up_min": 5,
      "check_cooldown_threshold": 20,
@@ -67,7 +67,8 @@ directory is bind-mounted into the container at `/data` (see
 - `fast_click_ms` — anticheat: two consecutive scoring clicks closer than this
   (default 130) flag the player. `max_click_factor` — anticheat: more than
   `max_click_factor ×` the round's fair share (N ÷ active players) of the scoring
-  clicks flags them (default 2); skipped in solo rounds.
+  clicks flags them (default 2.5; fractional allowed, the limit floors to a whole
+  click count); skipped in solo rounds.
 - `solo_lead_margin` — anticheat: solo_round only flags a lone leader once their
   games-won lead over second place is at least this (default 15).
 - `dominant_runner_up_min` — anticheat: dominant_winner only fires when the

@@ -49,8 +49,9 @@ type Config struct {
 	//                         landed less than this many ms apart (autoclicker-fast).
 	//   MaxClickFactor      — flags a player who took more than MaxClickFactor × the
 	//                         round's fair share (N / active players) of the scoring
-	//                         slots. Skipped in solo rounds (one player legitimately
-	//                         takes every slot).
+	//                         slots. Fractional (e.g. 2.5) is allowed; the limit is
+	//                         floored to a whole click count. Skipped in solo rounds
+	//                         (one player legitimately takes every slot).
 	//   SoloLeadMargin      — solo_round only fires once a lone leader's games-won
 	//                         lead over second place is at least this many wins, so a
 	//                         newcomer alone on the server isn't punished.
@@ -58,7 +59,7 @@ type Config struct {
 	//                         competed (scored at least this many clicks); guards the
 	//                         "one player clicks, the other is idle" false positive.
 	FastClickMs         int
-	MaxClickFactor      int
+	MaxClickFactor      float64
 	SoloLeadMargin      int
 	DominantRunnerUpMin int
 
@@ -90,7 +91,7 @@ func DefaultConfig() Config {
 		PenaltyBaseMs:   500,
 		PenaltyStepMs:   100,
 		FastClickMs:         130,
-		MaxClickFactor:      2,
+		MaxClickFactor:      2.5,
 		SoloLeadMargin:      15,
 		DominantRunnerUpMin: 5,
 
@@ -119,7 +120,7 @@ func ConfigFromEnv() Config {
 	c.PenaltyBaseMs = envInt("PENALTY_BASE_MS", c.PenaltyBaseMs)
 	c.PenaltyStepMs = envInt("PENALTY_STEP_MS", c.PenaltyStepMs)
 	c.FastClickMs = envInt("FAST_CLICK_MS", c.FastClickMs)
-	c.MaxClickFactor = envInt("MAX_CLICK_FACTOR", c.MaxClickFactor)
+	c.MaxClickFactor = envFloat("MAX_CLICK_FACTOR", c.MaxClickFactor)
 	c.SoloLeadMargin = envInt("SOLO_LEAD_MARGIN", c.SoloLeadMargin)
 	c.DominantRunnerUpMin = envInt("DOMINANT_RUNNER_UP_MIN", c.DominantRunnerUpMin)
 	c.CheckCooldownThreshold = envInt("CHECK_COOLDOWN_THRESHOLD", c.CheckCooldownThreshold)
@@ -131,6 +132,15 @@ func ConfigFromEnv() Config {
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
 			return n
 		}
 	}
