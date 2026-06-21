@@ -284,6 +284,11 @@
 				<div class="state-row"><span class="tag over">SOLO FARM</span><span class="desc">Padding a runaway bounty lead by clicking alone, once that lead is already huge.</span></div>
 				<div class="state-row"><span class="tag over">RUNAWAY</span><span class="desc">You out-clicked a runner-up who was genuinely competing by an impossible margin (beating an idle player is fine).</span></div>
 				<div class="line penalty-note">Keep getting flagged in one bounty and it escalates: too many flags puts you on a timed cooldown, and a few more after that sidelines you until the skin is won. Play fair and none of this ever fires — these only catch automation.</div>
+
+				<div class="divider"></div>
+				@* Single interpolated string (mixed literal + @() text nodes reorder on
+				   rebuild — see CLAUDE.md). Click copies the invite; toast confirms. *@
+				<div class="discord-line clickable" onclick="@CopyDiscord">@($"Think a flag was wrong, or want a heads-up on upcoming changes? Click here to copy our Discord invite ({DiscordInvite}) and come say hi.")</div>
 			</div>
 		</div>
 	}
@@ -508,6 +513,18 @@
 		color: rgba(255, 255, 255, 0.6);
 		white-space: normal;
 	}
+
+	/* click-to-copy Discord invite blurb (there's no in-game URL open; Clipboard
+	   works, so it copies). Discord blurple, underlines on hover. */
+	.howto-card .discord-line {
+		font-size: 13px;
+		font-weight: bold;
+		color: #8b93f5;
+		white-space: normal;
+		pointer-events: all;
+		cursor: pointer;
+	}
+	.howto-card .discord-line:hover { color: #ffffff; text-decoration: underline; }
 
 	/* The music opener lives on the Skafinity panel's own ScreenPanel (see scene
 	   ShowFab/WideFab/FabLabel), not here. */
@@ -855,9 +872,10 @@
 		color: #4cc9f0;
 		letter-spacing: 1px;
 		pointer-events: none;
-		/* above the .center box (z-index:100) so the confirmation isn't hidden behind
-		   the centred status HUD when both are near the top of the screen. */
-		z-index: 110;
+		/* Above every overlay (the .center box at 100, the how-to popup at 160, the
+		   anticheat gate at 200) so the "copied" confirmation is visible no matter what's
+		   open — e.g. copying the Discord invite from inside the how-to popup. */
+		z-index: 210;
 	}
 
 	/* ── anticheat test gate: a full-screen dim overlay that captures input (above
@@ -1221,6 +1239,23 @@
 		try { Clipboard.SetText( url ); }
 		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
 		_toast = $"Copied {DisplayName( s )}'s profile link";
+		_toastSince = 0f;
+		StateHasChanged();
+	}
+
+	// Discord invite (shared with the rotaliate family). No in-game URL-open API, so
+	// the how-to popup's blurb copies it to the clipboard instead. DiscordInvite is the
+	// short display form; DiscordUrl is what lands on the clipboard.
+	const string DiscordInvite = "discord.gg/GG8HWUfFpD";
+	const string DiscordUrl = "https://discord.gg/GG8HWUfFpD";
+
+	// Copy the Discord invite and flash the confirmation toast (visible above the
+	// how-to popup — see the toast's z-index).
+	void CopyDiscord()
+	{
+		try { Clipboard.SetText( DiscordUrl ); }
+		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
+		_toast = "Copied the Discord invite — see you there!";
 		_toastSince = 0f;
 		StateHasChanged();
 	}
