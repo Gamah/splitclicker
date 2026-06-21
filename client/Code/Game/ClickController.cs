@@ -595,8 +595,11 @@ public sealed class ClickController : Component
 				return;
 			}
 			Tag = auth.Tag;
-			Username = auth.Username;
-			pd.Username = auth.Username;
+			// Show the resolved display name; persist ONLY a genuinely-claimed
+			// handle. Saving the display-name fallback here is what caused the
+			// Steam name to be re-sent as a username and 422 on every reconnect.
+			Username = string.IsNullOrEmpty( auth.DisplayName ) ? auth.Username : auth.DisplayName;
+			pd.Username = auth.Username ?? "";
 			pd.PlayerTag = auth.Tag;
 			pd.Save();
 

@@ -213,11 +213,18 @@ func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 	name := player.Name()
 	ticket := randToken()
 	h.tickets.Put(ticket, identity{SteamID: player.SteamID, Tag: player.Tag, Username: name}, wsTicketTTL)
+	// `username` is the *claimed* handle only (empty when the player never set
+	// one) so the client never re-sends the Steam display name back as a
+	// username on reconnect — display names routinely fail ValidateUsername,
+	// which used to 422 every reconnect. `display_name` is the resolved string
+	// to show. (Older clients read only `username`; the empty value is benign —
+	// they just show the hex tag until a real handle is claimed.)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tag":      player.Tag,
-		"username": name,
-		"ticket":   ticket,
-		"ttl_ms":   wsTicketTTL.Milliseconds(),
+		"tag":          player.Tag,
+		"username":     player.Username,
+		"display_name": name,
+		"ticket":       ticket,
+		"ttl_ms":       wsTicketTTL.Milliseconds(),
 	})
 }
 
