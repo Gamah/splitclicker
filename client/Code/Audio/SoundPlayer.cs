@@ -13,4 +13,17 @@ public static class SoundPlayer
 	public static void PlayClick()    => Sound.Play( "sounds/click.sound" );
 	public static void PlayDisarm()   => Sound.Play( "sounds/disarm.sound" );
 	public static void PlayThrottle() => Sound.Play( "sounds/throttle.sound" );
+
+	// An opponent's scoring click during the live window: the click blip a major
+	// fifth up (3:2 ratio ⇒ Pitch 1.5) at half volume, so the field of other
+	// players' clicks reads as related-but-subordinate to your own click.
+	public static void PlayPip()
+	{
+		var h = Sound.Play( "sounds/click.sound" );
+		if ( h != null && h.IsValid )
+		{
+			h.Pitch = 1.5f;
+			h.Volume = 0.5f;
+		}
+	}
 }

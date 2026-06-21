@@ -137,6 +137,7 @@ func newCaptureBC() *captureBC {
 }
 
 func (b *captureBC) Pending(PendingFrame)     {}
+func (b *captureBC) Tick(TickFrame)           {}
 func (b *captureBC) Armed(a ArmedFrame)       { b.armed <- a }
 func (b *captureBC) Result(r ResultFrame)     { b.result <- r }
 func (b *captureBC) GameOver(g GameOverFrame) { b.gameOver <- g }

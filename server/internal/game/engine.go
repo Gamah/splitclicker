@@ -56,6 +56,13 @@ type ClickEvent struct {
 	Username string
 	Nonce    uint64
 	At       time.Time
+
+	// X, Y are the clicker's on-screen click position, normalized to int16 range
+	// (−32767..32767 per axis, 0 = centre), used to place the opponent pip on other
+	// players' screens. HasPos is false when the client sent no position (an older,
+	// below-v5 build): such clicks still score but are omitted from the pip sample.
+	X, Y   int16
+	HasPos bool
 }
 
 // Standing is one player's position on a board. SteamID64 is public information
@@ -128,12 +135,37 @@ type GameOverFrame struct {
 	RoundID    string
 }
 
+// TickPip is one sampled scoring click in a TickFrame: the clicker's public Tag
+// (resolved to a username client-side via the round_pending roster), their
+// normalized int16 click position, and TArmMs = ms since the round armed (so the
+// client can replay the pip at its true relative moment via the jitter buffer).
+type TickPip struct {
+	Tag    string
+	X, Y   int16
+	TArmMs uint16
+}
+
+// TickFrame is the coalesced live-window broadcast emitted while the button is
+// armed (see Engine.race): the running clicks-remaining count plus up to
+// TickSampleK sampled scoring clicks landed since the last tick. One precomputed
+// frame fans out to every tick-capable client — linear in players, never
+// per-click. The hot path encodes it as a binary frame (see ws.encodeTick).
+type TickFrame struct {
+	Round     int
+	Remaining int
+	Pips      []TickPip
+}
+
 // Broadcaster is how the engine reaches connected clients. All methods are
 // called from the engine's single Run goroutine, except PlayerCount which must
 // be safe from any goroutine (the engine reads it to size each round's race).
 type Broadcaster interface {
 	Pending(PendingFrame)
 	Armed(ArmedFrame)
+	// Tick fans out the coalesced live-window frame (count + sampled pips) to
+	// tick-capable clients while the button is armed. Called at the configured
+	// cadence from the race loop; a no-op fan-out is fine when nobody's tick-capable.
+	Tick(TickFrame)
 	Result(ResultFrame)
 	GameOver(GameOverFrame)
 	// DevNote pushes the current host-editable broadcast note to every client
@@ -302,6 +334,10 @@ type Engine struct {
 	store Store
 	log   *zap.Logger
 
+	// tickInterval is the live-window broadcast cadence (time.Second / cfg.TickHz),
+	// precomputed once; 0 disables ticking. See race.
+	tickInterval time.Duration
+
 	clicks chan ClickEvent
 
 	// wake nudges Run to re-check the player count, sent by the hub when a client
@@ -395,11 +431,16 @@ func New(cfg Config, bc Broadcaster, store Store, log *zap.Logger) *Engine {
 	if log == nil {
 		log = zap.NewNop()
 	}
+	tickInterval := time.Duration(0)
+	if cfg.TickHz > 0 {
+		tickInterval = time.Second / time.Duration(cfg.TickHz)
+	}
 	return &Engine{
 		cfg:    cfg,
 		bc:     bc,
 		store:  store,
 		log:    log,
+		tickInterval: tickInterval,
 		clicks:       make(chan ClickEvent, 4096),
 		wake:         make(chan struct{}, 1),
 		answers:      make(chan answerEvent, 256),
@@ -485,6 +526,10 @@ type Snapshot struct {
 	// DevNote is the current host-editable broadcast note (empty = none); carried
 	// in hello so a mid-game joiner sees it without waiting for the next game.
 	DevNote string
+	// TickMs is the live-window tick interval in ms (0 = ticking disabled), sent on
+	// connect so the client can size its pip jitter-buffer playback delay (D ≥ one
+	// tick interval + jitter margin) to the server's cadence.
+	TickMs int
 }
 
 func (e *Engine) Snapshot() Snapshot {
@@ -501,6 +546,7 @@ func (e *Engine) Snapshot() Snapshot {
 		ArmMinSec: int(e.cfg.ArmMin / time.Second), ArmMaxSec: int(e.cfg.ArmMax / time.Second),
 		PenaltyBaseMs: e.cfg.PenaltyBaseMs, PenaltyStepMs: e.cfg.PenaltyStepMs,
 		DevNote: devNote,
+		TickMs:  int(e.tickInterval / time.Millisecond),
 	}
 }
 
@@ -765,6 +811,24 @@ func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map
 	timer := time.NewTimer(e.cfg.RaceMax)
 	defer timer.Stop()
 
+	// Live-window tick: every tickInterval, broadcast the running clicks-remaining
+	// count plus a bounded sample of the scoring clicks that landed since the last
+	// tick (the opponent pips). sentIdx tracks how many scored clicks have already
+	// been sampled out, so each tick only carries the new ones. A nil tickC (ticking
+	// disabled) simply never fires.
+	var tickC <-chan time.Time
+	if e.tickInterval > 0 {
+		t := time.NewTicker(e.tickInterval)
+		defer t.Stop()
+		tickC = t.C
+	}
+	sentIdx := 0
+	emitTick := func() {
+		pips := samplePips(rs.scored[sentIdx:], armedAt, e.cfg.TickSampleK)
+		sentIdx = len(rs.scored)
+		e.bc.Tick(TickFrame{Round: round, Remaining: n - len(rs.scored), Pips: pips})
+	}
+
 raceLoop:
 	for !rs.full() {
 		select {
@@ -777,9 +841,17 @@ raceLoop:
 			}
 		case ans := <-e.answers:
 			e.handleAnswer(ans)
+		case <-tickC:
+			emitTick()
 		case <-timer.C:
 			break raceLoop // safety: fewer than N clicks arrived
 		}
+	}
+	// Flush the final batch: the clicks that closed the race (including the winning
+	// click) landed after the last tick, so emit one more so the count hits its
+	// floor and the decisive pips go out — they drain over round_result client-side.
+	if e.tickInterval > 0 {
+		emitTick()
 	}
 
 	deltas := map[string]int{}
@@ -891,6 +963,50 @@ func (e *Engine) randArmDelay() time.Duration {
 }
 
 // --- pure helpers (unit-tested directly) ---
+
+// samplePips turns the scoring clicks landed since the last tick into at most k
+// positioned pips for a TickFrame. Clicks with no position (older clients) are
+// skipped. When more than k positioned clicks landed, they're evenly subsampled
+// across the batch (a constant stride) so the surviving pips stay spread over the
+// interval rather than clumped — the cap is what keeps tick egress linear in
+// players. Order is preserved so the client's jitter buffer replays them in time.
+func samplePips(clicks []ClickEvent, armedAt time.Time, k int) []TickPip {
+	if k <= 0 {
+		return nil
+	}
+	positioned := make([]ClickEvent, 0, len(clicks))
+	for _, ev := range clicks {
+		if ev.HasPos {
+			positioned = append(positioned, ev)
+		}
+	}
+	if len(positioned) == 0 {
+		return nil
+	}
+	toPip := func(ev ClickEvent) TickPip {
+		ms := ev.At.Sub(armedAt).Milliseconds()
+		if ms < 0 {
+			ms = 0
+		} else if ms > 65535 {
+			ms = 65535
+		}
+		return TickPip{Tag: ev.Tag, X: ev.X, Y: ev.Y, TArmMs: uint16(ms)}
+	}
+	if len(positioned) <= k {
+		out := make([]TickPip, len(positioned))
+		for i, ev := range positioned {
+			out[i] = toPip(ev)
+		}
+		return out
+	}
+	out := make([]TickPip, 0, k)
+	// Evenly spaced indices across [0, len): i·len/k lands one pip in each of k
+	// equal buckets, preserving temporal spread without floating-point.
+	for i := 0; i < k; i++ {
+		out = append(out, toPip(positioned[i*len(positioned)/k]))
+	}
+	return out
+}
 
 // raceState accepts the first N valid clicks for one arm. It is the whole
 // scoring rule in one place: nonce gating (anti-pre-fire) and the hard N cutoff.

@@ -49,6 +49,8 @@ func gameConfig() game.Config {
 	setDurMs(f.ResultDisplayMs, &c.ResultDisplay)
 	setDurMs(f.IntermissionMs, &c.Intermission)
 	setInt(f.BoardSize, &c.BoardSize)
+	setInt(f.TickHz, &c.TickHz)
+	setInt(f.TickSampleK, &c.TickSampleK)
 	setInt(f.PenaltyBaseMs, &c.PenaltyBaseMs)
 	setInt(f.PenaltyStepMs, &c.PenaltyStepMs)
 	setInt(f.FastClickMs, &c.FastClickMs)

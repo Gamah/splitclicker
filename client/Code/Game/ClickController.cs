@@ -32,13 +32,14 @@ public sealed class ClickController : Component
 	/// http://localhost:8080 for a local play-test. Applied to ApiClient at startup.</summary>
 	[Property] public string BackendUrl { get; set; } = "";
 
-	/// <summary>API version to talk to, editable in the scene inspector. "v4" is the
-	/// real game (anticheat test gate + the cooldown/ignored sanction ladder); "v3"
-	/// understands the test gate but not the sanction countdowns; "v2"/"v1" exercise
-	/// the legacy/troll path the server gives clients below its live version. LEAVE
-	/// BLANK to use raw, unversioned paths (bare /ws) — for the live old master
-	/// backend. Applied to <see cref="ApiClient.ApiVersion"/> at startup.</summary>
-	[Property] public string ApiVersion { get; set; } = "v4";
+	/// <summary>API version to talk to, editable in the scene inspector. "v5" is the
+	/// real game (the live-window tick: descending counter + opponent pips, on top of
+	/// the v4 anticheat sanction ladder); "v4" is the previous live build (no tick);
+	/// "v3" and below exercise the legacy/troll path the server gives clients below
+	/// its live version. LEAVE BLANK to use raw, unversioned paths (bare /ws) — for
+	/// the live old master backend. Applied to <see cref="ApiClient.ApiVersion"/> at
+	/// startup.</summary>
+	[Property] public string ApiVersion { get; set; } = "v5";
 
 	public GamePhase Phase { get; private set; } = GamePhase.Connecting;
 	public int Round { get; private set; }
@@ -67,6 +68,17 @@ public sealed class ClickController : Component
 	/// <summary>Click frames actually sent to the API during the current/just-ended
 	/// CLICK! phase. Reset on each arm; shown under the button.</summary>
 	public int ClicksSent { get; private set; }
+
+	/// <summary>Clicks remaining in the live window, counted down from the live tick
+	/// frame (server-authoritative) so the player watches the race fill in real time.
+	/// Reset to the full N on each arm; the descending counter is shown while armed.</summary>
+	public int RemainingThisRound { get; private set; }
+
+	/// <summary>Opponent click pips currently fading on screen: each a half-size
+	/// button at a normalized x/y with the clicker's username, spawned from the
+	/// jitter buffer at its true relative moment (see <see cref="OnData"/>). Read by
+	/// the Hud, which renders + fades them. Own clicks are never added (self-dedupe).</summary>
+	public List<PipButton> ActivePips { get; } = new();
 
 	/// <summary>The arming-window bounds (seconds) from the server config; the
 	/// per-round delay itself stays secret. Shown while the round is arming.</summary>
@@ -107,6 +119,48 @@ public sealed class ClickController : Component
 	int _reconnectAttempt;
 	float _reconnectAt;
 
+	// ── live-window pips (the opponent click visualization) ──
+	// _roster maps a player's public tag → username, delivered in round_pending so a
+	// pip (which carries only the 4-byte tag) can be labelled. _tickMs is the server
+	// tick interval (sizes the jitter-buffer delay). _localArmReceive is RealTime.Now
+	// when this client received `armed` — the origin each pip's t_arm offset is added
+	// to, so per-client latency just shifts everything uniformly (invisible).
+	readonly Dictionary<string, string> _roster = new();
+	int _tickMs;
+	float _localArmReceive;
+
+	// The jitter buffer: sampled opponent clicks waiting to play at their true
+	// relative moment (FireAt). Pips trail real time by PipDelay so timestamps that
+	// are already in the past on arrival don't all clump at "fire now". Drains over
+	// round_result; cleared at the next round_pending (the arming stage).
+	readonly List<PendingPip> _pipBuffer = new();
+
+	const float PipLifetime = 0.45f;  // how long a spawned pip button fades over
+	const int PipActiveCap = 16;      // max concurrent fading buttons (drop oldest)
+	const int PipBufferCap = 96;      // max buffered pending pips (drop overflow)
+	const int PipMarginMs = 40;       // jitter margin added on top of one tick interval
+
+	// One buffered opponent click awaiting its scheduled play moment.
+	struct PendingPip
+	{
+		public float X, Y;     // normalized −1..1 click position (0 = centre)
+		public string Name;    // resolved username (may be "" if unknown)
+		public float FireAt;   // RealTime.Now at which to spawn it
+	}
+
+	// One opponent pip currently on screen (fading). Born drives the fade/expiry.
+	public sealed class PipButton
+	{
+		public float X, Y;
+		public string Name;
+		public RealTimeSince Born;
+	}
+
+	// Playback delay D: at least one tick interval + a jitter margin, so the trailing
+	// real-time replay never collapses to "fire now". Falls back to a small fixed
+	// delay if the server didn't advertise a cadence.
+	float PipDelay() => ( _tickMs > 0 ? _tickMs + PipMarginMs : 60 ) / 1000f;
+
 	protected override void OnAwake()
 	{
 		Instance = this;
@@ -118,6 +172,7 @@ public sealed class ClickController : Component
 		ApiClient.ApiVersion = (ApiVersion ?? "").Trim().Trim( '/' );
 		_ws = GameObject.Components.GetOrCreate<WsClient>();
 		_ws.OnMessage = OnMessage;
+		_ws.OnData = OnData;
 		_ws.OnDone = OnDisconnected;
 	}
 
@@ -128,6 +183,106 @@ public sealed class ClickController : Component
 		// Jittered reconnect: only re-attempt once the backoff window elapses.
 		if ( Phase == GamePhase.Disconnected && !_connecting && RealTime.Now >= _reconnectAt )
 			_ = ConnectFlow();
+
+		ProcessPips();
+	}
+
+	// Drive the pip jitter buffer: spawn any buffered pip whose scheduled moment has
+	// arrived (playing its sound), and retire any on-screen pip past its fade. Run
+	// every frame so replay timing is frame-accurate and fades end on time.
+	void ProcessPips()
+	{
+		float now = RealTime.Now;
+		for ( int i = _pipBuffer.Count - 1; i >= 0; i-- )
+		{
+			if ( now >= _pipBuffer[i].FireAt )
+			{
+				var p = _pipBuffer[i];
+				_pipBuffer.RemoveAt( i );
+				SpawnPip( p );
+			}
+		}
+		for ( int i = ActivePips.Count - 1; i >= 0; i-- )
+		{
+			if ( ActivePips[i].Born >= PipLifetime )
+				ActivePips.RemoveAt( i );
+		}
+	}
+
+	// Move a due pip onto the screen and play its blip. Caps the concurrent count by
+	// dropping the oldest (same spirit as the server-side sample cap) so a burst can't
+	// flood the layer or the voices.
+	void SpawnPip( PendingPip p )
+	{
+		if ( ActivePips.Count >= PipActiveCap )
+			ActivePips.RemoveAt( 0 );
+		ActivePips.Add( new PipButton { X = p.X, Y = p.Y, Name = p.Name, Born = 0f } );
+		SoundPlayer.PlayPip();
+	}
+
+	// OnData decodes the binary live-window `tick` frame (the only binary frame; see
+	// the server's ws/tick.go for the layout):
+	//   u8 opcode | u16 round | u32 remaining | u8 count | count×(u32 tag, i16 x, i16 y, u16 t_arm)
+	// It updates the descending counter and schedules each opponent pip into the
+	// jitter buffer at its true relative moment. Own clicks are skipped (self-dedupe).
+	// Runs on the socket's sync context (the main thread, same as OnMessage), so it
+	// touches the buffers without locking.
+	const byte TickOpcode = 1;
+
+	void OnData( byte[] b )
+	{
+		try
+		{
+			if ( b == null || b.Length < 8 || b[0] != TickOpcode ) return;
+			int round = b[1] | (b[2] << 8);
+			long remaining = (uint)(b[3] | (b[4] << 8) | (b[5] << 16) | (b[6] << 24));
+			int count = b[7];
+
+			// Only the current armed round's counter is meaningful; a late tick from a
+			// closed round must not stomp the next round's count.
+			if ( Phase == GamePhase.Armed && round == Round )
+				RemainingThisRound = (int)remaining;
+
+			int off = 8;
+			for ( int i = 0; i < count && off + 10 <= b.Length; i++, off += 10 )
+			{
+				uint tag = (uint)(b[off] | (b[off + 1] << 8) | (b[off + 2] << 16) | (b[off + 3] << 24));
+				short x = (short)(b[off + 4] | (b[off + 5] << 8));
+				short y = (short)(b[off + 6] | (b[off + 7] << 8));
+				ushort tArm = (ushort)(b[off + 8] | (b[off + 9] << 8));
+
+				string tagHex = Hex8( tag );
+				if ( tagHex == Tag ) continue; // self-dedupe: never show our own clicks as opponent pips
+
+				if ( _pipBuffer.Count >= PipBufferCap ) continue; // overflow: drop (visual only)
+				_roster.TryGetValue( tagHex, out var name );
+				_pipBuffer.Add( new PendingPip
+				{
+					X = x / 32767f,
+					Y = y / 32767f,
+					Name = name ?? "",
+					// Schedule at the click's true moment relative to our local arm receipt,
+					// trailed by D so past-dated timestamps don't all fire at once.
+					FireAt = _localArmReceive + tArm / 1000f + PipDelay(),
+				} );
+			}
+		}
+		catch ( Exception e )
+		{
+			Log.Warning( $"[Splitclicker] bad tick frame: {e.Message}" );
+		}
+	}
+
+	// Lower-case, zero-padded 8-char hex of a 32-bit tag — matches the server's
+	// PlayerTag (first 8 hex chars of a sha256). Built by hand to stay clear of any
+	// culture-sensitive number formatting the sandbox doesn't whitelist.
+	static string Hex8( uint v )
+	{
+		const string h = "0123456789abcdef";
+		var c = new char[8];
+		for ( int i = 7; i >= 0; i--, v >>= 4 )
+			c[i] = h[(int)(v & 0xF)];
+		return new string( c );
 	}
 
 	// SendClick is the hot path. While armed, fire the nonce frame (it scores) and
@@ -137,7 +292,7 @@ public sealed class ClickController : Component
 	// throttle they're inflicting on themselves no matter when they mash. Returns true
 	// when a bad click was actually sent (so the HUD can pop a "+ PENALTY"); false for
 	// a scoring click or when there's no socket to penalise it.
-	public bool SendClick()
+	public bool SendClick( float nx = 0f, float ny = 0f, bool hasPos = false )
 	{
 		// Local audio feedback, independent of socket state and mirroring exactly what the
 		// button shows: the "click" blip only while the race is live (the CLICK! window),
@@ -148,7 +303,19 @@ public sealed class ClickController : Component
 		if ( _ws == null || !_ws.Connected ) return false;
 		if ( CanClick )
 		{
-			_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{_nonce}\"}}" );
+			// A scoring click carries the button's normalized centre (−1..1 per axis,
+			// int16-scaled) so other players see it as a positioned pip. Older servers
+			// ignore the extra x/y fields. Integer interpolation is locale-safe.
+			if ( hasPos )
+			{
+				int xi = (int)Math.Clamp( nx * 32767f, -32767f, 32767f );
+				int yi = (int)Math.Clamp( ny * 32767f, -32767f, 32767f );
+				_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{_nonce}\",\"x\":{xi},\"y\":{yi}}}" );
+			}
+			else
+			{
+				_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{_nonce}\"}}" );
+			}
 			ClicksSent++;
 			return false;
 		}
@@ -281,6 +448,7 @@ public sealed class ClickController : Component
 					// didn't send one) so the local throttle estimate matches the authority.
 					if ( h.Game.PenaltyBaseMs > 0 ) _penaltyBaseMs = h.Game.PenaltyBaseMs;
 					if ( h.Game.PenaltyStepMs > 0 ) _penaltyStepMs = h.Game.PenaltyStepMs;
+					_tickMs = h.Game.TickMs;
 					DevNote = h.Game.DevNote ?? "";
 					Phase = PhaseFrom( h.Game.Phase );
 					break;
@@ -291,6 +459,19 @@ public sealed class ClickController : Component
 					Of = p.Of;
 					Players = p.Players;
 					ClicksToWin = p.Clicks;
+					// Refresh the tag→username roster for this round's pips, and clear the
+					// pip jitter buffer + any on-screen pips at the arming stage: there are
+					// several seconds here, so the previous round's tail has long since
+					// drained over its result, and this guarantees no stale pip survives into
+					// the next live window (the deliberate "clear at arming, not at armed").
+					_roster.Clear();
+					if ( p.Roster != null )
+					{
+						foreach ( var e in p.Roster )
+							if ( !string.IsNullOrEmpty( e.Tag ) ) _roster[e.Tag] = e.Username ?? "";
+					}
+					_pipBuffer.Clear();
+					ActivePips.Clear();
 					// A new game's first round is arming: clear the previous game's session
 					// standings now (the arming signal for round 1) so the board doesn't keep
 					// showing the last game's totals through this game's first round — it's
@@ -313,6 +494,8 @@ public sealed class ClickController : Component
 					PenaltyMs = a.PenaltyMs;
 					_idleClicks = 0; // the server forgave the accrued bad clicks at this arm
 					ClicksSent = 0;  // fresh CLICK! phase: start the sent tally over
+					RemainingThisRound = a.Clicks; // start the live counter at full N; ticks count it down
+					_localArmReceive = RealTime.Now; // origin for every pip's t_arm replay offset
 					_nonce = a.Nonce;
 					Phase = GamePhase.Armed;
 					// Receiving an arm means we're no longer benched — clear any stale test.
@@ -352,7 +535,7 @@ public sealed class ClickController : Component
 				case "test":
 					// Anticheat: we failed end-of-round checks. The state field picks the
 					// rung — a cleared frame dismisses everything; "cooldown"/"ignored" show
-					// a countdown (no test); anything else (incl. a v3-era frame) is the math
+					// a countdown (no test); anything else (incl. an empty state) is the math
 					// test gate. The three states are mutually exclusive, so each path clears
 					// the others.
 					var tm = Deser<TestMsg>( json );

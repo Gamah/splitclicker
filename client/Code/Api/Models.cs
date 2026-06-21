@@ -56,7 +56,10 @@ public record HelloGame(
 	[property: JsonPropertyName( "arm_max" )] int ArmMax,
 	[property: JsonPropertyName( "penalty_base_ms" )] int PenaltyBaseMs,
 	[property: JsonPropertyName( "penalty_step_ms" )] int PenaltyStepMs,
-	[property: JsonPropertyName( "dev_note" )] string DevNote
+	[property: JsonPropertyName( "dev_note" )] string DevNote,
+	// Live-window tick interval in ms (0 = ticking off). Sizes the pip jitter-buffer
+	// playback delay so opponent pips replay at their true relative moment.
+	[property: JsonPropertyName( "tick_ms" )] int TickMs
 );
 
 public record HelloMsg(
@@ -64,11 +67,20 @@ public record HelloMsg(
 	[property: JsonPropertyName( "game" )] HelloGame Game
 );
 
+// roster is the full {tag → username} map of connected players (v5+ only), sent at
+// the arming stage so opponent pips — which carry only a 4-byte tag — can be
+// labelled with a name. Absent on older servers/clients (null).
+public record RosterEntry(
+	[property: JsonPropertyName( "tag" )] string Tag,
+	[property: JsonPropertyName( "username" )] string Username
+);
+
 public record PendingMsg(
 	[property: JsonPropertyName( "round" )] int Round,
 	[property: JsonPropertyName( "of" )] int Of,
 	[property: JsonPropertyName( "players" )] int Players,
-	[property: JsonPropertyName( "clicks" )] int Clicks
+	[property: JsonPropertyName( "clicks" )] int Clicks,
+	[property: JsonPropertyName( "roster" )] List<RosterEntry> Roster
 );
 
 // nonce is a hex string (an unguessable 64-bit token); echo it back verbatim in
@@ -125,8 +137,8 @@ public record DevNoteMsg(
 //   "ignored"  — sidelined until until_ms (the bounty's resolve time); no test.
 // message is the player-facing explanation for every state; until_ms is the epoch
 // ms the cooldown/ignored state ends (the client shows a countdown to it).
-// cleared=true means we're back in play — dismiss any overlay. (state may be empty
-// on a v3-era frame; treat empty as "test".)
+// cleared=true means we're back in play — dismiss any overlay. (an empty state is
+// treated as "test".)
 public record TestMsg(
 	[property: JsonPropertyName( "state" )] string State,
 	[property: JsonPropertyName( "id" )] string Id,

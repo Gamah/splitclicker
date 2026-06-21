@@ -28,6 +28,10 @@ type helloGame struct {
 	// DevNote is the current host-editable broadcast note (empty = none), so a
 	// mid-game joiner shows it without waiting for the next game's dev_note frame.
 	DevNote string `json:"dev_note"`
+	// TickMs is the live-window tick interval in ms (0 = ticking off), so the client
+	// can size its pip jitter-buffer playback delay to the server cadence. Additive;
+	// older clients ignore it.
+	TickMs int `json:"tick_ms"`
 }
 
 // devNoteWire pushes the host-editable broadcast note. An empty note clears it
@@ -74,6 +78,19 @@ type pendingWire struct {
 	Of      int    `json:"of"`
 	Players int    `json:"players"`
 	Clicks  int    `json:"clicks"`
+	// Roster is the full {tag → username} map of connected non-legacy players,
+	// broadcast at the arming stage so the client holds every name before any pip
+	// can land (pips carry only the 4-byte tag; the client resolves the username
+	// from here). Sent only to tick-capable (v5+) clients — see Hub.Pending — and
+	// omitted (omitempty) otherwise. Knowingly O(M²); accepted for MVP (PLAN/§19).
+	Roster []rosterEntry `json:"roster,omitempty"`
+}
+
+// rosterEntry is one player in the round_pending roster: their public tag (the
+// pip identity) and current username (what the pip button shows).
+type rosterEntry struct {
+	Tag      string `json:"tag"`
+	Username string `json:"username"`
 }
 
 // penalty_ms is this connection's own arm-delay penalty (the spam deterrent),
