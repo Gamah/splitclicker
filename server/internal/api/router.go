@@ -281,17 +281,18 @@ func boardLimit(r *http.Request) int {
 }
 
 // liveVersionDefault is the live API version assumed when config.json doesn't set
-// live_version. v4 is the floor; the current build is v5 (the live-window tick:
-// descending counter + opponent pips), respected as newer-than-live during rollout.
+// live_version. v5 is the floor (the multi-button board + opponent cursors, on top of
+// the live-window tick); v4 is the one supported build below it (N-1: the single
+// persistent legacy button + no tick), respected as the older live version.
 //
-// VERSION CLEANUP: keep only the live version and the one build above it (N and
-// N-1). With the floor at v4, every non-legacy connection is sanction-capable, so
-// the old minTestVersion(3)/minSanctionVersion(4) split is gone — both capability
-// methods collapsed to !Legacy, and the sole remaining gate is ws.minTickVersion
-// (v5). Once v5 goes live, prune the v4 special-casing the same way. Audit on every
-// bump: this default, ws.minTickVersion, the parseVer/troll fallbacks here, and the
-// legacy bare-/ws handling.
-const liveVersionDefault = 4
+// VERSION CLEANUP: keep only the live version and the one below it (N and N-1). With
+// the floor now at v5 == ws.minTickVersion, every non-legacy connection is tick-capable,
+// so tickCapable() is equivalent to !Legacy (kept explicit for clarity). When v6 goes
+// live, prune the v4 special-casing the same way — drop the legacy single-button
+// (armed nonce) path in the engine/hub and collapse tickCapable to !Legacy. Audit on
+// every bump: this default, ws.minTickVersion, the parseVer/troll fallbacks here, and
+// the legacy bare-/ws handling.
+const liveVersionDefault = 5
 
 // liveVersion is the configured "live" client API version (config.json's
 // live_version), re-read per request so it can be toggled without a restart.

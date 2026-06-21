@@ -44,6 +44,7 @@ type File struct {
 	ClicksPerPlayer *int `json:"clicks_per_player"`
 	MinClicks       *int `json:"min_clicks"`
 	RoundsPerGame   *int `json:"rounds_per_game"`
+	ButtonsOnScreen *int `json:"buttons_on_screen"`
 	RaceMaxMs       *int `json:"race_max_ms"`
 	ResultDisplayMs *int `json:"result_display_ms"`
 	IntermissionMs  *int `json:"intermission_ms"`

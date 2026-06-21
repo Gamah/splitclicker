@@ -7,11 +7,12 @@ this file is the quick orientation; PLAN.md is the source of truth for architect
 **Status:** both halves are built out. `server/` has the engine state machine, WS hub,
 Facepunch auth, the bounty + leaderboard boards, the anticheat checks + per-bounty
 sanction ladder, Docker/Caddy, and unit tests. `client/` is a playable s&box game:
-`ClickController` (WS lifecycle/phase), the single-root `Hud.razor` (boards, roaming
-button, GAME INFO popup, anticheat overlays), the Skafinity music library, and
-s&box-Services achievements. **The live API version is `v5`** (the live-window
-tick: descending counter + opponent click pips); the config-driven `live_version`
-floor is `v4`.
+`ClickController` (WS lifecycle/phase), the single-root `Hud.razor` (boards, the
+multi-button board + opponent cursors, GAME INFO popup, anticheat overlays), the
+Skafinity music library, and s&box-Services achievements. **The live API version is
+`v5`** (the multi-button board + opponent cursors, on top of the live-window tick);
+the config-driven `live_version` floor is now `v5`, with `v4` (single persistent
+button, no tick) as the supported N-1.
 
 ---
 
