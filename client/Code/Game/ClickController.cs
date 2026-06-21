@@ -87,6 +87,23 @@ public sealed class ClickController : Component
 	/// the Hud, which renders + fades them. Own clicks are never added (self-dedupe).</summary>
 	public List<PipButton> ActivePips { get; } = new();
 
+	/// <summary>The live multi-button board (v5): the buttons currently clickable this
+	/// armed window, each at a server-placed normalized position. Seeded from the armed
+	/// frame's buttons and kept in sync by the tick claim events (claimed buttons removed,
+	/// their replacements added). Empty when below-v5 (single-button via <c>_nonce</c>) or
+	/// not armed. The Hud renders one clickable button per entry.</summary>
+	public List<LiveButton> LiveButtons { get; } = new();
+
+	/// <summary>True while the v5 multi-button board is the scoring surface (vs the
+	/// below-v5 single persistent button driven by <c>_nonce</c>).</summary>
+	public bool HasBoard => LiveButtons.Count > 0;
+
+	/// <summary>Opponent cursors to draw this frame: each a labelled dot at a normalized
+	/// position, refreshed from the tick's cursor sample and expired shortly after (so a
+	/// cursor that drops out of the sample fades rather than freezing). Armed-only;
+	/// cleared at the arming stage and on round/game end.</summary>
+	public List<CursorDot> Cursors { get; } = new();
+
 	/// <summary>The arming-window bounds (seconds) from the server config; the
 	/// per-round delay itself stays secret. Shown while the round is arming.</summary>
 	public int ArmMinSec { get; private set; }
@@ -111,9 +128,10 @@ public sealed class ClickController : Component
 	public long SanctionUntilMs { get; private set; }
 	public string SanctionMessage { get; private set; } = "";
 
-	/// <summary>True only while a valid click can score — drives both the button's
-	/// enabled state and scoring eligibility from one source.</summary>
-	public bool CanClick => Phase == GamePhase.Armed && !string.IsNullOrEmpty( _nonce );
+	/// <summary>True only while a valid click can score — drives the button's enabled
+	/// state and scoring eligibility from one source. Armed with either a live board
+	/// (v5) or a persistent legacy nonce (below-v5).</summary>
+	public bool CanClick => Phase == GamePhase.Armed && ( HasBoard || !string.IsNullOrEmpty( _nonce ) );
 
 	static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
@@ -162,6 +180,32 @@ public sealed class ClickController : Component
 		public string Name;
 		public RealTimeSince Born;
 	}
+
+	// One live, clickable button on the v5 board. Slot is the wire handle (tick claims
+	// reference it); Nonce is what a scoring click on it echoes; X,Y is its normalized
+	// −1..1 position (same box-% space as the pips).
+	public sealed class LiveButton
+	{
+		public ushort Slot;
+		public string Nonce;
+		public float X, Y;
+	}
+
+	// One opponent cursor to draw. Seen drives expiry when it stops being sampled.
+	public sealed class CursorDot
+	{
+		public uint Tag;
+		public float X, Y;
+		public string Name;
+		public RealTimeSince Seen;
+	}
+
+	const float CursorTtl = 0.3f; // drop a cursor this long after its last tick sample
+
+	// Outbound cursor throttle: send our pointer position at most this often while armed
+	// (matches the server's ~25/s ceiling; the server samples a subset into each tick).
+	const float CursorSendInterval = 1f / 15f;
+	float _lastCursorSent;
 
 	// Playback delay D: at least one tick interval + a jitter margin, so the trailing
 	// real-time replay never collapses to "fire now". Falls back to a small fixed
@@ -214,6 +258,13 @@ public sealed class ClickController : Component
 			if ( ActivePips[i].Born >= PipLifetime )
 				ActivePips.RemoveAt( i );
 		}
+		// Expire opponent cursors that stopped being sampled, so they fade rather than
+		// freezing at a stale position.
+		for ( int i = Cursors.Count - 1; i >= 0; i-- )
+		{
+			if ( Cursors[i].Seen >= CursorTtl )
+				Cursors.RemoveAt( i );
+		}
 	}
 
 	// Move a due pip onto the screen and play its blip. Caps the concurrent count by
@@ -227,57 +278,154 @@ public sealed class ClickController : Component
 		SoundPlayer.PlayPip();
 	}
 
-	// OnData decodes the binary live-window `tick` frame (the only binary frame; see
-	// the server's ws/tick.go for the layout):
-	//   u8 opcode | u16 round | u32 remaining | u8 count | count×(u32 tag, i16 x, i16 y, u16 t_arm)
-	// It updates the descending counter and schedules each opponent pip into the
-	// jitter buffer at its true relative moment. Own clicks are skipped (self-dedupe).
-	// Runs on the socket's sync context (the main thread, same as OnMessage), so it
-	// touches the buffers without locking.
+	// OnData decodes the binary live-window `tick` frame (the only binary frame; see the
+	// server's ws/tick.go for the layout):
+	//   u8 opcode | u16 round | u32 remaining | u16 claimCount
+	//   claimCount × ( u16 slot, u32 claimer_tag, u16 t_arm, u8 spawned,
+	//                  [if spawned] u16 new_slot, u64 new_nonce, i16 x, i16 y )
+	//   u8 cursorCount | cursorCount × ( u32 tag, i16 x, i16 y )
+	// It updates the descending counter, applies the board mutations (removing each
+	// claimed button and adding its replacement) while scheduling a pip at the claimed
+	// button's position, and refreshes the opponent cursors. Own clicks/cursors are
+	// skipped (self-dedupe). Runs on the socket's sync context (the main thread, same as
+	// OnMessage), so it touches the buffers without locking.
 	const byte TickOpcode = 1;
 
 	void OnData( byte[] b )
 	{
 		try
 		{
-			if ( b == null || b.Length < 8 || b[0] != TickOpcode ) return;
+			if ( b == null || b.Length < 9 || b[0] != TickOpcode ) return;
 			int round = b[1] | (b[2] << 8);
 			long remaining = (uint)(b[3] | (b[4] << 8) | (b[5] << 16) | (b[6] << 24));
-			int count = b[7];
 
-			// Only the current armed round's counter is meaningful; a late tick from a
-			// closed round must not stomp the next round's count.
-			if ( Phase == GamePhase.Armed && round == Round )
+			// Only the current armed round's state is meaningful; a late tick from a
+			// closed round must not stomp the next round's counter or board.
+			bool currentRound = Phase == GamePhase.Armed && round == Round;
+			if ( currentRound )
 				RemainingThisRound = (int)remaining;
 
-			int off = 8;
-			for ( int i = 0; i < count && off + 10 <= b.Length; i++, off += 10 )
+			int claimCount = b[7] | (b[8] << 8);
+			int off = 9;
+			for ( int i = 0; i < claimCount; i++ )
 			{
-				uint tag = (uint)(b[off] | (b[off + 1] << 8) | (b[off + 2] << 16) | (b[off + 3] << 24));
-				short x = (short)(b[off + 4] | (b[off + 5] << 8));
-				short y = (short)(b[off + 6] | (b[off + 7] << 8));
-				ushort tArm = (ushort)(b[off + 8] | (b[off + 9] << 8));
+				if ( off + 9 > b.Length ) return; // truncated frame
+				ushort slot = (ushort)(b[off] | (b[off + 1] << 8));
+				uint claimerTag = (uint)(b[off + 2] | (b[off + 3] << 8) | (b[off + 4] << 16) | (b[off + 5] << 24));
+				ushort tArm = (ushort)(b[off + 6] | (b[off + 7] << 8));
+				byte spawned = b[off + 8];
+				off += 9;
 
-				string tagHex = Hex8( tag );
-				if ( tagHex == Tag ) continue; // self-dedupe: never show our own clicks as opponent pips
-
-				if ( _pipBuffer.Count >= PipBufferCap ) continue; // overflow: drop (visual only)
-				_roster.TryGetValue( tagHex, out var name );
-				_pipBuffer.Add( new PendingPip
+				// Remove the claimed button (board stays in sync with the server) and, for
+				// someone else's click in the current round, schedule a pip where it sat.
+				var claimed = TakeButton( slot );
+				string tagHex = Hex8( claimerTag );
+				if ( currentRound && tagHex != Tag && _pipBuffer.Count < PipBufferCap )
 				{
-					X = x / 32767f,
-					Y = y / 32767f,
-					Name = name ?? "",
-					// Schedule at the click's true moment relative to our local arm receipt,
-					// trailed by D so past-dated timestamps don't all fire at once.
-					FireAt = _localArmReceive + tArm / 1000f + PipDelay(),
-				} );
+					_roster.TryGetValue( tagHex, out var name );
+					_pipBuffer.Add( new PendingPip
+					{
+						X = claimed?.X ?? 0f,
+						Y = claimed?.Y ?? 0f,
+						Name = name ?? "",
+						// At the click's true moment relative to our local arm receipt, trailed
+						// by D so past-dated timestamps don't all fire at once.
+						FireAt = _localArmReceive + tArm / 1000f + PipDelay(),
+					} );
+				}
+
+				if ( spawned != 0 )
+				{
+					if ( off + 14 > b.Length ) return; // truncated frame
+					ushort newSlot = (ushort)(b[off] | (b[off + 1] << 8));
+					ulong nonce = ReadU64( b, off + 2 );
+					short nx = (short)(b[off + 10] | (b[off + 11] << 8));
+					short ny = (short)(b[off + 12] | (b[off + 13] << 8));
+					off += 14;
+					if ( currentRound )
+						AddButton( newSlot, HexNonce( nonce ), nx / 32767f, ny / 32767f );
+				}
+			}
+
+			// Cursor sample: refresh each named opponent cursor to this tick's position
+			// (expired by ProcessPips if it stops being sampled). Skip our own.
+			if ( off < b.Length )
+			{
+				int cursorCount = b[off];
+				off += 1;
+				for ( int i = 0; i < cursorCount && off + 8 <= b.Length; i++, off += 8 )
+				{
+					uint tag = (uint)(b[off] | (b[off + 1] << 8) | (b[off + 2] << 16) | (b[off + 3] << 24));
+					short cx = (short)(b[off + 4] | (b[off + 5] << 8));
+					short cy = (short)(b[off + 6] | (b[off + 7] << 8));
+					if ( !currentRound || Hex8( tag ) == Tag ) continue;
+					UpdateCursor( tag, cx / 32767f, cy / 32767f );
+				}
 			}
 		}
 		catch ( Exception e )
 		{
 			Log.Warning( $"[Splitclicker] bad tick frame: {e.Message}" );
 		}
+	}
+
+	// ── board + cursor helpers (touched only on the socket sync context) ──
+
+	// TakeButton removes and returns the live button with this slot, or null if it's
+	// already gone (a duplicate/late claim, or our own optimistic state).
+	LiveButton TakeButton( ushort slot )
+	{
+		for ( int i = 0; i < LiveButtons.Count; i++ )
+		{
+			if ( LiveButtons[i].Slot == slot )
+			{
+				var btn = LiveButtons[i];
+				LiveButtons.RemoveAt( i );
+				return btn;
+			}
+		}
+		return null;
+	}
+
+	void AddButton( ushort slot, string nonce, float x, float y )
+	{
+		LiveButtons.Add( new LiveButton { Slot = slot, Nonce = nonce, X = x, Y = y } );
+	}
+
+	// Refresh (or add) an opponent cursor by tag, resetting its expiry timer.
+	void UpdateCursor( uint tag, float x, float y )
+	{
+		for ( int i = 0; i < Cursors.Count; i++ )
+		{
+			if ( Cursors[i].Tag == tag )
+			{
+				Cursors[i].X = x;
+				Cursors[i].Y = y;
+				Cursors[i].Seen = 0f;
+				return;
+			}
+		}
+		_roster.TryGetValue( Hex8( tag ), out var name );
+		Cursors.Add( new CursorDot { Tag = tag, X = x, Y = y, Name = name ?? "", Seen = 0f } );
+	}
+
+	static ulong ReadU64( byte[] b, int off )
+	{
+		ulong v = 0;
+		for ( int i = 7; i >= 0; i-- )
+			v = (v << 8) | b[off + i];
+		return v;
+	}
+
+	// Lower-case hex of a 64-bit nonce. The server reads it back with ParseUint(_,16,64),
+	// so leading zeros are harmless — a fixed 16-char form is simplest and locale-safe.
+	static string HexNonce( ulong v )
+	{
+		const string h = "0123456789abcdef";
+		var c = new char[16];
+		for ( int i = 15; i >= 0; i--, v >>= 4 )
+			c[i] = h[(int)(v & 0xF)];
+		return new string( c );
 	}
 
 	// Lower-case, zero-padded 8-char hex of a 32-bit tag — matches the server's
@@ -301,14 +449,18 @@ public sealed class ClickController : Component
 	// a scoring click or when there's no socket to penalise it.
 	public bool SendClick( float nx = 0f, float ny = 0f, bool hasPos = false )
 	{
-		// Local audio feedback, independent of socket state and mirroring exactly what the
-		// button shows: the "click" blip only while the race is live (the CLICK! window),
-		// the "throttle" nope in every other state. Plays even while disconnected.
-		if ( CanClick ) SoundPlayer.PlayClick();
+		// Scoring here is the below-v5 single-button path only: armed, no v5 board, and a
+		// live legacy nonce. In v5 the board buttons score via SendButtonClick, so a bare
+		// SendClick (empty space) is a miss — a penalised idle click.
+		bool legacyScore = Phase == GamePhase.Armed && !HasBoard && !string.IsNullOrEmpty( _nonce );
+
+		// Local audio feedback, independent of socket state: the "click" blip for a real
+		// scoring click, the "throttle" nope otherwise. Plays even while disconnected.
+		if ( legacyScore ) SoundPlayer.PlayClick();
 		else SoundPlayer.PlayThrottle();
 
 		if ( _ws == null || !_ws.Connected ) return false;
-		if ( CanClick )
+		if ( legacyScore )
 		{
 			// A scoring click carries the button's normalized centre (−1..1 per axis,
 			// int16-scaled) so other players see it as a positioned pip. Older servers
@@ -327,8 +479,8 @@ public sealed class ClickController : Component
 			return false;
 		}
 
-		// Any non-armed phase: an idle (bad) click. Send it so the server sees and
-		// penalises it, even mid-round / between games.
+		// A miss or any non-armed phase: an idle (bad) click. Send it so the server sees
+		// and penalises it, even mid-round / between games.
 		_ = _ws.Send( "{\"t\":\"click\",\"nonce\":\"\"}" );
 		// Mirror the server's escalating bad-click penalty locally so the throttle
 		// climbs the instant the player mashes; the next armed frame's authoritative
@@ -336,6 +488,40 @@ public sealed class ClickController : Component
 		_idleClicks++;
 		PenaltyMs = IdlePenaltyMs( _idleClicks );
 		return true;
+	}
+
+	// SendButtonClick is the v5 hot path: a click that landed on board button `btn`. It
+	// echoes that button's nonce (scores) plus the button's position (for the opponent
+	// pip), plays the click blip, and counts it. It deliberately does NOT remove the
+	// button locally — the authoritative tick claim does that, so a lost race just
+	// resolves when the claim shows someone else took it. A null button or a non-armed
+	// phase falls through to the penalised idle path.
+	public bool SendButtonClick( LiveButton btn )
+	{
+		if ( btn == null || Phase != GamePhase.Armed )
+			return SendClick( btn?.X ?? 0f, btn?.Y ?? 0f, btn != null );
+
+		SoundPlayer.PlayClick();
+		if ( _ws == null || !_ws.Connected ) return false;
+		int xi = (int)Math.Clamp( btn.X * 32767f, -32767f, 32767f );
+		int yi = (int)Math.Clamp( btn.Y * 32767f, -32767f, 32767f );
+		_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{btn.Nonce}\",\"x\":{xi},\"y\":{yi}}}" );
+		ClicksSent++;
+		return false;
+	}
+
+	// SendCursor reports the local pointer to the server while armed (so others see our
+	// roaming cursor), throttled to CursorSendInterval. The Hud calls it each frame with
+	// the pointer in the same −1..1 box space the buttons/pips use. A no-op off-armed —
+	// cursors are an armed-window thing only.
+	public void SendCursor( float nx, float ny )
+	{
+		if ( Phase != GamePhase.Armed || _ws == null || !_ws.Connected ) return;
+		if ( RealTime.Now - _lastCursorSent < CursorSendInterval ) return;
+		_lastCursorSent = RealTime.Now;
+		int xi = (int)Math.Clamp( nx * 32767f, -32767f, 32767f );
+		int yi = (int)Math.Clamp( ny * 32767f, -32767f, 32767f );
+		_ = _ws.Send( $"{{\"t\":\"cursor\",\"x\":{xi},\"y\":{yi}}}" );
 	}
 
 	// Mirror of the server's bad-click penalty (game.idlePenalty): the kth bad click
@@ -420,6 +606,8 @@ public sealed class ClickController : Component
 	{
 		Phase = GamePhase.Disconnected;
 		_nonce = null;
+		LiveButtons.Clear();
+		Cursors.Clear();
 		ScheduleReconnect();
 	}
 
@@ -482,6 +670,10 @@ public sealed class ClickController : Component
 					}
 					_pipBuffer.Clear();
 					ActivePips.Clear();
+					// The live board + opponent cursors belong to a window; drop any held from
+					// the last one so nothing stale shows through this arming gap.
+					LiveButtons.Clear();
+					Cursors.Clear();
 					// A new game's first round is arming: clear the previous game's session
 					// standings now (the arming signal for round 1) so the board doesn't keep
 					// showing the last game's totals through this game's first round — it's
@@ -506,6 +698,17 @@ public sealed class ClickController : Component
 					ClicksSent = 0;  // fresh CLICK! phase: start the sent tally over
 					RemainingThisRound = a.Clicks; // start the live counter at full N; ticks count it down
 					_localArmReceive = RealTime.Now; // origin for every pip's t_arm replay offset
+					_lastCursorSent = 0f;          // allow the first cursor send immediately
+					// v5: seed the live board from the armed buttons; tick claims then keep it
+					// in sync. Below-v5 servers send no buttons and a single persistent nonce.
+					LiveButtons.Clear();
+					Cursors.Clear();
+					if ( a.Buttons != null )
+					{
+						foreach ( var bt in a.Buttons )
+							if ( !string.IsNullOrEmpty( bt.Nonce ) )
+								AddButton( (ushort)bt.Id, bt.Nonce, bt.X / 32767f, bt.Y / 32767f );
+					}
 					_nonce = a.Nonce;
 					Phase = GamePhase.Armed;
 					// Receiving an arm means we're no longer benched — clear any stale test.
@@ -521,6 +724,9 @@ public sealed class ClickController : Component
 					Standings = r.Standings ?? new();
 					Phase = GamePhase.Result;
 					_nonce = null;
+					// Round closed: the remaining (now meaningless) buttons + cursors disappear.
+					LiveButtons.Clear();
+					Cursors.Clear();
 					SoundPlayer.PlayDisarm();
 					AchievementTracker.OnRoundResult( r.You.PointsDelta, r.You.RoundId );
 					break;
@@ -530,6 +736,8 @@ public sealed class ClickController : Component
 					Standings = g.Standings ?? new();
 					Phase = GamePhase.GameOver;
 					_nonce = null;
+					LiveButtons.Clear();
+					Cursors.Clear();
 					SoundPlayer.PlayDisarm();
 					// The final round folds into game_over (no round_result of its own), so
 					// credit that round's points here too — same once-per-round-id guard.

@@ -101,13 +101,27 @@ public record PendingMsg(
 	[property: JsonPropertyName( "roster" )] List<RosterEntry> Roster
 );
 
-// nonce is a hex string (an unguessable 64-bit token); echo it back verbatim in
-// the click frame — never parse/reformat it. penalty_ms is this connection's own
-// arm-delay penalty (0 for honest clients), surfaced so a masher sees the throttle.
+// One live button in the v5 armed board: id is the compact slot handle (referenced
+// by tick claim events), nonce the secret a scoring click on it must echo, x/y its
+// server-placed normalized position (int16, 0 = centre). Same shape the tick frame's
+// spawned replacements carry.
+public record ButtonMsg(
+	[property: JsonPropertyName( "id" )] int Id,
+	[property: JsonPropertyName( "nonce" )] string Nonce,
+	[property: JsonPropertyName( "x" )] int X,
+	[property: JsonPropertyName( "y" )] int Y
+);
+
+// nonce is a hex string (an unguessable 64-bit token); echo it back verbatim in the
+// click frame — never parse/reformat it. v5 servers send `buttons` (the initial
+// multi-button board) and leave nonce empty; below-v5 servers send the single
+// persistent `nonce` and no buttons. penalty_ms is this connection's own arm-delay
+// penalty (0 for honest clients), surfaced so a masher sees the throttle.
 public record ArmedMsg(
 	[property: JsonPropertyName( "round" )] int Round,
 	[property: JsonPropertyName( "seq" )] int Seq,
 	[property: JsonPropertyName( "nonce" )] string Nonce,
+	[property: JsonPropertyName( "buttons" )] List<ButtonMsg> Buttons,
 	[property: JsonPropertyName( "players" )] int Players,
 	[property: JsonPropertyName( "clicks" )] int Clicks,
 	[property: JsonPropertyName( "penalty_ms" )] int PenaltyMs
