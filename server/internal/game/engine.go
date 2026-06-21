@@ -682,7 +682,7 @@ func (e *Engine) playGame(ctx context.Context) {
 		// Every flagged check is logged; applySanction then escalates the ladder for
 		// test-capable players (test → cooldown → ignored) and pushes them a frame.
 		checks := e.runChecks(clicks, checkCtx{
-			players: players, active: active, n: n,
+			players: players, n: n,
 			leaderID: bi.LeaderID, leadMargin: bi.LeadMargin,
 		})
 		for _, ch := range checks {
@@ -1014,12 +1014,12 @@ func (e *Engine) recordBad(ev ClickEvent) {
 // --- anticheat: checks + tests ---
 
 // checkCtx is the round context the checks need beyond the scoring clicks:
-// players (full connected crowd), active (the can-score count = divisor for the
-// fair-share rule and the round's N), n (the round's scoring-slot count), and the
-// active bounty's leader + games-won margin (for solo_round).
+// players (full connected crowd, for solo_round), n (the round's scoring-slot
+// count), and the active bounty's leader + games-won margin (for solo_round).
+// The too_many_clicks divisor is derived from the scoring clicks themselves (how
+// many players actually scored this round), not from a connection count.
 type checkCtx struct {
 	players    int
-	active     int
 	n          int
 	leaderID   string
 	leadMargin int
@@ -1030,7 +1030,7 @@ type checkCtx struct {
 // all using only this round's scoring clicks (already in wire-arrival order):
 //   - fast_clicks:     two consecutive scoring clicks < FastClickMs apart.
 //   - too_many_clicks: more than MaxClickFactor × the round's fair share
-//                      (N / active players); skipped in solo rounds.
+//                      (N / players who scored this round); needs ≥2 scorers.
 //   - solo_round:      a lone player padding a bounty lead of ≥ SoloLeadMargin.
 //   - dominant_winner: top scorer took > 2× a runner-up who actually competed
 //                      (scored ≥ DominantRunnerUpMin).
@@ -1048,16 +1048,16 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 		offsets[ev.SteamID] = append(offsets[ev.SteamID], ev.OffsetMs)
 	}
 
-	// too_many_clicks limit: MaxClickFactor × the round's fair share of slots. Fair
-	// share is N / active players (≈ ClicksPerPlayer, or higher when the MinClicks
-	// floor inflates N). Disabled in solo rounds — one player rightly takes them all.
+	// too_many_clicks limit: MaxClickFactor × this round's fair share of slots,
+	// where the share is N / the number of players who ACTUALLY scored this round
+	// (len(order)). The connected/active crowd is deliberately NOT the divisor —
+	// idle-but-connected lurkers would shrink the "fair share" and flag a lone
+	// clicker who legitimately took the whole window with nobody racing them. Needs
+	// ≥2 distinct scorers; with one there is no share to exceed (same gate as
+	// dominant_winner). N may exceed ClicksPerPlayer when the MinClicks floor lifts it.
 	limit := 0
-	if e.cfg.MaxClickFactor > 0 && c.players >= 2 {
-		div := c.active
-		if div < 1 {
-			div = 1
-		}
-		fair := c.n / div
+	if e.cfg.MaxClickFactor > 0 && len(order) >= 2 {
+		fair := c.n / len(order)
 		if fair < 1 {
 			fair = 1
 		}
