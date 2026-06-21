@@ -66,9 +66,10 @@ directory is bind-mounted into the container at `/data` (see
 - `penalty_base_ms` / `penalty_step_ms` — idle-click arm-delay escalation.
 - `fast_click_ms` — anticheat: two consecutive scoring clicks closer than this
   (default 130) flag the player. `max_click_factor` — anticheat: more than
-  `max_click_factor ×` the round's fair share (N ÷ active players) of the scoring
-  clicks flags them (default 2.5; fractional allowed, the limit floors to a whole
-  click count); skipped in solo rounds.
+  `max_click_factor ×` the round's fair share (N ÷ the players who actually scored
+  this round) of the scoring clicks flags them (default 2.5; fractional allowed, the
+  limit floors to a whole click count); needs ≥2 scorers, so a round only one player
+  clicked is never flagged.
 - `solo_lead_margin` — anticheat: solo_round only flags a lone leader once their
   games-won lead over second place is at least this (default 15).
 - `dominant_runner_up_min` — anticheat: dominant_winner only fires when the

@@ -47,7 +47,7 @@ func hasCheck(checks []CheckResult, sid, typ string) bool {
 
 // crowd is a multi-player round context with a generous fair-share limit, so the
 // fast_clicks / solo_round / dominant tests aren't perturbed by too_many_clicks.
-func crowd() checkCtx { return checkCtx{players: 5, active: 5, n: 500} }
+func crowd() checkCtx { return checkCtx{players: 5, n: 500} }
 
 // fast_clicks fires only when two consecutive scoring clicks are STRICTLY under
 // FastClickMs apart (boundary at 130: 129 flags, 130/131 don't).
@@ -69,40 +69,52 @@ func TestRunChecksFastClicks(t *testing.T) {
 	}
 }
 
+// fourScorers returns four other players each scoring once, so a round that also
+// has player "a" has 5 distinct scorers → fair share = N / 5.
+func fourScorers() []ScoredClick {
+	out := scoredAt("b", 50)
+	out = append(out, scoredAt("c", 60)...)
+	out = append(out, scoredAt("d", 70)...)
+	out = append(out, scoredAt("e", 80)...)
+	return out
+}
+
 // too_many_clicks fires when a player takes MORE than MaxClickFactor × the round's
-// fair share (N / active). Here N=10, active=5 → fair=2, factor=2 → limit=4: 5
-// flags, 4 doesn't. And it never fires in a solo round however many clicks land.
+// fair share, where the share is N / the players who actually SCORED this round.
+// With 5 scorers and N=10 → fair=2, factor=2 → limit=4: a taking 5 flags, 4 doesn't.
+// Crucially the divisor is who scored, not who was connected — a round only one
+// player clicked is never flagged, however many slots they take.
 func TestRunChecksTooMany(t *testing.T) {
 	e := checksEngine(130, 2, 2)
-	ctx := checkCtx{players: 5, active: 5, n: 10} // fair = 10/5 = 2, limit = 2*2 = 4
+	ctx := checkCtx{players: 5, n: 10} // 5 scorers below → fair = 10/5 = 2, limit = 2*2 = 4
 
-	four := scoredAt("a", 0, 200, 400, 600)
+	four := append(scoredAt("a", 0, 200, 400, 600), fourScorers()...)
 	if got := e.runChecks(four, ctx); hasCheck(got, "a", "too_many_clicks") {
 		t.Fatalf("4 clicks (==limit) should NOT flag too_many, got %+v", got)
 	}
-	five := scoredAt("a", 0, 200, 400, 600, 800)
+	five := append(scoredAt("a", 0, 200, 400, 600, 800), fourScorers()...)
 	if got := e.runChecks(five, ctx); !hasCheck(got, "a", "too_many_clicks") {
 		t.Fatalf("5 clicks (>limit) should flag too_many, got %+v", got)
 	}
-	// Solo round (one player): never flagged even taking every slot.
-	solo := checkCtx{players: 1, active: 1, n: 10}
-	many := scoredAt("a", 0, 100, 200, 300, 400, 500, 600, 700, 800, 900)
-	if got := e.runChecks(many, solo); hasCheck(got, "a", "too_many_clicks") {
-		t.Fatalf("a solo round should NEVER flag too_many, got %+v", got)
+	// Only ONE player scored (even with a 5-player crowd connected): never flagged,
+	// however many slots they take. This is the false positive the divisor fix removes.
+	lone := scoredAt("a", 0, 100, 200, 300, 400, 500, 600, 700, 800, 900)
+	if got := e.runChecks(lone, ctx); hasCheck(got, "a", "too_many_clicks") {
+		t.Fatalf("a round only one player scored should NEVER flag too_many, got %+v", got)
 	}
 }
 
 // A fractional MaxClickFactor floors to a whole click count: 2.5 × fair(2) = 5,
-// so 5 clicks are fine and 6 flag.
+// so 5 clicks are fine and 6 flag (with 5 distinct scorers, N=10).
 func TestRunChecksTooManyFractional(t *testing.T) {
 	e := checksEngine(130, 2, 2.5)
-	ctx := checkCtx{players: 5, active: 5, n: 10} // fair = 2, limit = int(2.5*2) = 5
+	ctx := checkCtx{players: 5, n: 10} // fair = 10/5 = 2, limit = int(2.5*2) = 5
 
-	five := scoredAt("a", 0, 200, 400, 600, 800)
+	five := append(scoredAt("a", 0, 200, 400, 600, 800), fourScorers()...)
 	if got := e.runChecks(five, ctx); hasCheck(got, "a", "too_many_clicks") {
 		t.Fatalf("5 clicks (==limit) should NOT flag too_many, got %+v", got)
 	}
-	six := scoredAt("a", 0, 200, 400, 600, 800, 1000)
+	six := append(scoredAt("a", 0, 200, 400, 600, 800, 1000), fourScorers()...)
 	if got := e.runChecks(six, ctx); !hasCheck(got, "a", "too_many_clicks") {
 		t.Fatalf("6 clicks (>limit) should flag too_many, got %+v", got)
 	}
@@ -113,7 +125,7 @@ func TestRunChecksTooManyFractional(t *testing.T) {
 func TestRunChecksSoloRound(t *testing.T) {
 	e := New(Config{SoloLeadMargin: 15}, nil, nil, nil)
 	lone := func(leader string, margin int) checkCtx {
-		return checkCtx{players: 1, active: 1, n: 50, leaderID: leader, leadMargin: margin}
+		return checkCtx{players: 1, n: 50, leaderID: leader, leadMargin: margin}
 	}
 
 	// 1 player, the leader, lead ≥ 15 → flag.
@@ -129,7 +141,7 @@ func TestRunChecksSoloRound(t *testing.T) {
 		t.Fatalf("lone non-leader should NOT flag solo_round, got %+v", got)
 	}
 	// More than one connected player → not a solo round.
-	if got := e.runChecks(scoredAt("a", 0, 500), checkCtx{players: 2, active: 2, n: 50, leaderID: "a", leadMargin: 99}); hasCheck(got, "a", "solo_round") {
+	if got := e.runChecks(scoredAt("a", 0, 500), checkCtx{players: 2, n: 50, leaderID: "a", leadMargin: 99}); hasCheck(got, "a", "solo_round") {
 		t.Fatalf("a 2-player round should NOT flag solo_round, got %+v", got)
 	}
 }
@@ -140,7 +152,7 @@ func TestRunChecksSoloRound(t *testing.T) {
 func TestRunChecksDominantWinner(t *testing.T) {
 	e := New(Config{DominantRunnerUpMin: 3}, nil, nil, nil)
 	const players = 3
-	ctx := checkCtx{players: players, active: players, n: 500} // limit high; isolate dominant
+	ctx := checkCtx{players: players, n: 500} // limit high; isolate dominant
 
 	// a:7, b:3 → runner-up competed (3≥3) and 7 > 2×3 → flag a.
 	clicks := append(scoredAt("a", 0, 100, 200, 300, 400, 500, 600), scoredAt("b", 50, 150, 250)...)

@@ -145,7 +145,8 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
 - **Anticheat checks + sanction ladder** (`game.runChecks` / `game.applySanction`; tunables in
   `data/config.json`). End of every round, the scoring clicks are inspected: **fast_clicks**
   (sub-human inter-click gap), **too_many_clicks** (over `max_click_factor ×` the round's fair
-  share N÷active; skipped solo), **solo_round** (lone leader padding a ≥`solo_lead_margin`
+  share N÷(players who scored this round); needs ≥2 scorers, so a lone clicker is never flagged),
+  **solo_round** (lone leader padding a ≥`solo_lead_margin`
   games-won lead), **dominant_winner** (>2× a runner-up who scored ≥`dominant_runner_up_min`, so
   beating an idle player is safe). Each carries a player-facing message. Flags escalate
   **per-bounty** (counts reset each bounty, persisted in `anticheat_sanctions`): test (math) →
