@@ -299,13 +299,24 @@
 	@* ── previous winner: a duplicate of the skin panel showing who won the last
 	     bounty and the skin it was (decoded from its inspect link, same as the live
 	     one). Shown once a bounty has settled; refreshed on a bounty_update push /
-	     reconnect. Display-only (pointer-events:none in CSS) so it never intercepts a
-	     click meant for the roaming button beneath it. ── *@
+	     reconnect. The panel is pointer-events:none so it can't intercept a click
+	     meant for the roaming button beneath it; only the winner line re-enables
+	     clicks, to copy their Steam profile link. ── *@
 	@if ( _prevBounty != null )
 	{
 		<div class="skin-panel previous">
 			<div class="prev-header">PREVIOUS WINNER</div>
-			<div class="prev-winner">@PrevWinnerName()</div>
+			@* The winner is the panel's identity — bold and (when we have a steamid)
+			   clickable to copy their profile link, the only interactive bit (the rest
+			   of the panel is pointer-events:none so it can't steal a button click). *@
+			@if ( !string.IsNullOrEmpty( _prevBounty.WinnerSteamId ) )
+			{
+				<div class="prev-winner clickable" onclick="@CopyPrevWinner">@PrevWinnerName()</div>
+			}
+			else
+			{
+				<div class="prev-winner">@PrevWinnerName()</div>
+			}
 			<div class="prev-wins">@($"won {_prevBounty.WinnerWins} games")</div>
 			<div class="skin-img" style="background-image: url( @PrevSkinImgUrl() );"></div>
 			@if ( _prevSkin != null && _prevSkin.DecodeOk )
@@ -328,7 +339,12 @@
 					<div class="wear-marker" style="left: @(PrevMarkerPct())%;"></div>
 				</div>
 			}
-			<div class="skin-caption">@(string.IsNullOrEmpty( _prevBounty.Label ) ? "Skin" : _prevBounty.Label)</div>
+			else if ( !string.IsNullOrEmpty( _prevBounty.Label ) )
+			{
+				@* Only as a skin-name fallback when the link didn't decode — never as the
+				   headline (the winner is the headline). *@
+				<div class="skin-caption">@_prevBounty.Label</div>
+			}
 		</div>
 	}
 
@@ -885,6 +901,11 @@
 		text-align: center;
 		justify-content: center;
 	}
+
+	/* the winner line re-enables pointer events over the panel's pointer-events:none
+	   (only this line is interactive — click to copy the winner's profile link). */
+	.prev-winner.clickable { pointer-events: all; cursor: pointer; }
+	.prev-winner.clickable:hover { color: #ffd166; text-decoration: underline; }
 
 	.prev-wins {
 		font-size: 12px;
@@ -1781,6 +1802,22 @@
 		try { Clipboard.SetText( url ); }
 		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
 		_toast = $"Copied {DisplayName( s )}'s profile link";
+		_toastSince = 0f;
+		StateHasChanged();
+	}
+
+	// Copy the previous bounty winner's Steam profile link (same as CopyProfile, but
+	// the winner is carried on the bounty record, not a Standing). No-op when the
+	// settled bounty had no winner (empty window → no steamid).
+	void CopyPrevWinner()
+	{
+		var sid = _prevBounty?.WinnerSteamId;
+		if ( string.IsNullOrEmpty( sid ) ) return;
+		var url = $"https://steamcommunity.com/profiles/{sid}";
+		try { Clipboard.SetText( url ); }
+		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
+		var who = string.IsNullOrEmpty( _prevBounty.WinnerName ) ? "winner" : _prevBounty.WinnerName;
+		_toast = $"Copied {who}'s profile link";
 		_toastSince = 0f;
 		StateHasChanged();
 	}
