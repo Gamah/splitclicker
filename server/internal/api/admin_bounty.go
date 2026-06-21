@@ -47,11 +47,12 @@ func (h *handler) adminBountyCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if image == "" {
-		http.Error(w, "a skin image is required", http.StatusBadRequest)
+	link := strings.TrimSpace(r.FormValue("inspect_link"))
+	if image == "" && link == "" {
+		http.Error(w, "provide a skin image or an inspect link", http.StatusBadRequest)
 		return
 	}
-	if err := h.store.CreateBounty(r.Context(), image, strings.TrimSpace(r.FormValue("label")), winTime); err != nil {
+	if err := h.store.CreateBounty(r.Context(), image, link, strings.TrimSpace(r.FormValue("label")), winTime); err != nil {
 		h.adminError(w, "create bounty", err)
 		return
 	}
@@ -83,7 +84,8 @@ func (h *handler) adminBountyEdit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.store.UpdateBounty(r.Context(), id, image, strings.TrimSpace(r.FormValue("label")), winTime); err != nil {
+	link := strings.TrimSpace(r.FormValue("inspect_link"))
+	if err := h.store.UpdateBounty(r.Context(), id, image, link, strings.TrimSpace(r.FormValue("label")), winTime); err != nil {
 		h.adminError(w, "update bounty", err)
 		return
 	}

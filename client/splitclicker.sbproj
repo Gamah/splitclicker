@@ -24,7 +24,9 @@
     "HttpAllowList": [
       "fart.notadomain.lol",
       "localhost",
-      "127.0.0.1"
+      "127.0.0.1",
+      "raw.githubusercontent.com",
+      "community.akamai.steamstatic.com"
     ],
     "StartupScene": "scenes/main.scene"
   }
