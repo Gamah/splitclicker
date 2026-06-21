@@ -17,9 +17,13 @@ public record AuthResponse(
 // a plain number so no date parsing is needed (the s&box sandbox doesn't
 // whitelist System.Globalization). SkinUrl is the server path the current
 // "skin to win" image is served from (made absolute against BaseUrl).
+// InspectLink is the active bounty's CS2 inspect link, or "" when the skin is an
+// uploaded image only. When set, the client decodes it locally and renders the
+// live float / seed / name / wear bar, falling back to SkinUrl's image on failure.
 public record ConfigResponse(
 	[property: JsonPropertyName( "winner_lock_ms" )] long WinnerLockMs,
-	[property: JsonPropertyName( "skin_url" )] string SkinUrl
+	[property: JsonPropertyName( "skin_url" )] string SkinUrl,
+	[property: JsonPropertyName( "inspect_link" )] string InspectLink
 );
 
 // One row of a leaderboard (GET /api/v1/leaderboard/*) and of the standings

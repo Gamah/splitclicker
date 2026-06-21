@@ -13,6 +13,7 @@ import (
 type Bounty struct {
 	ID          int64
 	SkinImage   string
+	InspectLink string // CS2 inspect link; "" = use the uploaded SkinImage only
 	Label       string
 	WinTime     time.Time
 	Status      string // pending | active | won
@@ -108,26 +109,30 @@ func (s *Store) SelectableBounties(ctx context.Context) ([]BountyWindow, error) 
 	return out, rows.Err()
 }
 
-// CreateBounty adds a pending bounty to the queue.
-func (s *Store) CreateBounty(ctx context.Context, skinImage, label string, winTime time.Time) error {
+// CreateBounty adds a pending bounty to the queue. inspectLink may be "" (the
+// skin is given by the uploaded image only) and skinImage may be "" (the skin is
+// given by the inspect link only) — the caller enforces that at least one is set.
+func (s *Store) CreateBounty(ctx context.Context, skinImage, inspectLink, label string, winTime time.Time) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO bounties (skin_image, label, win_time, status)
-		VALUES ($1, $2, $3, 'pending')
-	`, skinImage, label, winTime)
+		INSERT INTO bounties (skin_image, inspect_link, label, win_time, status)
+		VALUES ($1, $2, $3, $4, 'pending')
+	`, skinImage, inspectLink, label, winTime)
 	return err
 }
 
 // UpdateBounty edits a not-yet-won bounty's editable fields. A "" skinImage
-// leaves the image unchanged (the admin edited only the label/deadline). Won
+// leaves the image unchanged (the admin edited only the label/deadline/link); the
+// inspect link is always set as given (clear it by submitting an empty link). Won
 // bounties are immutable (the WHERE clause excludes them).
-func (s *Store) UpdateBounty(ctx context.Context, id int64, skinImage, label string, winTime time.Time) error {
+func (s *Store) UpdateBounty(ctx context.Context, id int64, skinImage, inspectLink, label string, winTime time.Time) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE bounties
 		   SET label = $2,
 		       win_time = $3,
+		       inspect_link = $5,
 		       skin_image = CASE WHEN $4 = '' THEN skin_image ELSE $4 END
 		 WHERE id = $1 AND status <> 'won'
-	`, id, label, winTime, skinImage)
+	`, id, label, winTime, skinImage, inspectLink)
 	return err
 }
 
@@ -259,14 +264,14 @@ func windowWinner(ctx context.Context, tx pgx.Tx, start, end time.Time) (id, nam
 
 // bountySelect is the shared column list / order for scanBounty.
 const bountySelect = `
-	SELECT id, skin_image, label, win_time, status, activated_at,
+	SELECT id, skin_image, inspect_link, label, win_time, status, activated_at,
 	       winner_id, winner_name, winner_wins, won_at, created_at
 	  FROM bounties`
 
 // scanBounty reads one bounty row (from QueryRow or an iterating Query).
 func (s *Store) scanBounty(row pgx.Row, b *Bounty) error {
 	var winnerID *string
-	if err := row.Scan(&b.ID, &b.SkinImage, &b.Label, &b.WinTime, &b.Status,
+	if err := row.Scan(&b.ID, &b.SkinImage, &b.InspectLink, &b.Label, &b.WinTime, &b.Status,
 		&b.ActivatedAt, &winnerID, &b.WinnerName, &b.WinnerWins, &b.WonAt, &b.CreatedAt); err != nil {
 		return err
 	}

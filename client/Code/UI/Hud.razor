@@ -243,7 +243,39 @@
 				</div>
 			}
 		}
-		<div class="skin-img" style="background-image: url( @_skinUrl );"></div>
+		<div class="skin-img" style="background-image: url( @SkinImgUrl() );"></div>
+		@if ( _skin != null && _skin.DecodeOk )
+		{
+			@if ( _skin.ImageOk )
+			{
+				<div class="skin-name">@_skin.Name</div>
+			}
+			<div class="skin-stats">
+				<div class="stat"><span class="k">Wear</span><span class="v">@_skin.WearName</span></div>
+				<div class="stat"><span class="k">Float</span><span class="v">@FloatStr()</span></div>
+				<div class="stat"><span class="k">Seed</span><span class="v">@_skin.PaintSeed</span></div>
+			</div>
+			<div class="wear-bar">
+				<div class="seg fn"></div>
+				<div class="seg mw"></div>
+				<div class="seg ft"></div>
+				<div class="seg ww"></div>
+				<div class="seg bs"></div>
+				<div class="wear-marker" style="left: @(MarkerPct())%;"></div>
+			</div>
+			@if ( !_skin.ImageOk )
+			{
+				<div class="skin-note">unable to fetch skin from steam</div>
+			}
+		}
+		else if ( _skin != null )
+		{
+			<div class="skin-note">unable to fetch skin from steam</div>
+		}
+		@if ( !string.IsNullOrWhiteSpace( _inspectLink ) )
+		{
+			<div class="skin-copy clickable" onclick="@CopyInspect">Copy inspect link</div>
+		}
 		<div class="skin-caption">@($"{SkinLeaderName()}'s Skin")</div>
 	</div>
 
@@ -668,6 +700,79 @@
 		text-align: center;
 	}
 
+	/* click-to-copy the bounty's CS2 inspect link (no in-game URL open; Clipboard
+	   works, so it copies). Underlines on hover like the other clickable lines. */
+	.skin-copy {
+		font-size: 12px;
+		font-weight: bold;
+		color: #8b93f5;
+		justify-content: center;
+		text-align: center;
+		pointer-events: all;
+		cursor: pointer;
+	}
+	.skin-copy:hover { color: #ffffff; text-decoration: underline; }
+
+	/* the decoded skin's name (from the inspect link's dataset lookup). */
+	.skin-name {
+		font-size: 14px;
+		font-weight: bold;
+		color: #ffffff;
+		text-align: center;
+		justify-content: center;
+	}
+
+	/* wear / float / seed rows decoded from the inspect link. */
+	.skin-stats {
+		width: 100%;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.skin-stats .stat {
+		flex-direction: row;
+		justify-content: space-between;
+		font-size: 12px;
+	}
+
+	.skin-stats .stat .k { color: rgba(255, 255, 255, 0.55); }
+	.skin-stats .stat .v { color: #e0e0e0; font-weight: bold; }
+
+	/* the FN→BS wear bar: five segments sized to the wear thresholds with a
+	   marker line at the float position. */
+	.wear-bar {
+		position: relative;
+		width: 100%;
+		height: 8px;
+		flex-direction: row;
+		border-radius: 3px;
+	}
+
+	.wear-bar .seg { height: 100%; }
+	.wear-bar .seg.fn { width: 7%;  background-color: #4cd964; }
+	.wear-bar .seg.mw { width: 8%;  background-color: #a8e05f; }
+	.wear-bar .seg.ft { width: 23%; background-color: #ffd166; }
+	.wear-bar .seg.ww { width: 7%;  background-color: #ff9f1c; }
+	.wear-bar .seg.bs { width: 55%; background-color: #ff4d4d; }
+
+	.wear-marker {
+		position: absolute;
+		top: -2px;
+		width: 2px;
+		height: 12px;
+		background-color: #ffffff;
+		border: 1px solid rgba(0, 0, 0, 0.6);
+	}
+
+	/* shown when the inspect link couldn't be decoded or its image fetched. */
+	.skin-note {
+		font-size: 11px;
+		font-weight: bold;
+		color: #ff9f1c;
+		text-align: center;
+		justify-content: center;
+	}
+
 	.board .empty {
 		justify-content: center;
 		font-size: 12px;
@@ -1041,6 +1146,38 @@
 	long _winnerLockMs;
 	string _skinUrl = "";
 
+	// ── inspect-link skin (decoded locally + name/image resolved off the dataset) ──
+	// Null until an inspect-linked bounty's config arrives and resolution completes;
+	// its DecodeOk/ImageOk flags drive what the skin panel shows vs. the server image.
+	SkinInspect.Skin _skin;
+
+	// The active bounty's raw inspect link ("" when the skin is an uploaded image
+	// only). Kept verbatim so the "copy inspect link" line can hand it to players to
+	// paste into CS2, independent of whether it decoded/resolved locally.
+	string _inspectLink = "";
+
+	// Image URL for the panel: the resolved Steam CDN weapon image when available,
+	// otherwise the server-served fallback image (also used when no link is set).
+	string SkinImgUrl() => _skin != null && _skin.ImageOk ? _skin.ImageUrl : _skinUrl;
+
+	// Wear-bar marker position as a 0..100 percentage at the float value, clamped.
+	int MarkerPct()
+	{
+		int pct = (int)((_skin?.Float ?? 0f) * 100f + 0.5f);
+		return pct < 0 ? 0 : pct > 100 ? 100 : pct;
+	}
+
+	// Float formatted to 10 dp without culture-sensitive APIs (the sandbox doesn't
+	// whitelist System.Globalization): integer part + zero-padded fractional digits.
+	string FloatStr()
+	{
+		double d = _skin?.Float ?? 0.0;
+		if ( d < 0 ) d = 0;
+		const long Scale = 10_000_000_000L; // 10 fractional digits, like the float checker
+		long scaled = (long)(d * Scale + 0.5);
+		return $"{scaled / Scale}.{(scaled % Scale).ToString().PadLeft( 10, '0' )}";
+	}
+
 	// ── anticheat test gate: the answer box (captured by @ref so SubmitTest can read
 	//    it) shown in the overlay while the player is benched. ──
 	TextEntry _testEntry;
@@ -1094,6 +1231,22 @@
 		if ( cfg == null ) return;
 		_skinUrl = ApiClient.AbsoluteUrl( cfg.SkinUrl ) ?? "";
 		_winnerLockMs = cfg.WinnerLockMs;
+		_inspectLink = cfg.InspectLink ?? "";
+		StateHasChanged();
+
+		// If the active bounty was set by an inspect link, decode it locally and
+		// resolve its name/image (cached dataset) in the background; the panel shows
+		// the server image until/unless this succeeds.
+		if ( !string.IsNullOrWhiteSpace( cfg.InspectLink ) )
+			_ = ResolveSkin( cfg.InspectLink );
+	}
+
+	// Decode the bounty's inspect link + resolve its name/image, then re-render. On
+	// any failure _skin is left with DecodeOk/ImageOk false so the panel falls back
+	// to the server image plus an "unable to fetch skin from steam" note.
+	async Task ResolveSkin( string link )
+	{
+		_skin = await SkinInspect.Resolve( link );
 		StateHasChanged();
 	}
 
@@ -1256,6 +1409,18 @@
 		try { Clipboard.SetText( DiscordUrl ); }
 		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
 		_toast = "Copied the Discord invite — see you there!";
+		_toastSince = 0f;
+		StateHasChanged();
+	}
+
+	// Copy the active bounty's CS2 inspect link to the clipboard so the player can
+	// paste it into the game and inspect the exact skin. No-op when there's no link.
+	void CopyInspect()
+	{
+		if ( string.IsNullOrWhiteSpace( _inspectLink ) ) return;
+		try { Clipboard.SetText( _inspectLink ); }
+		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
+		_toast = "Copied the skin's inspect link";
 		_toastSince = 0f;
 		StateHasChanged();
 	}

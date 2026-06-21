@@ -52,14 +52,20 @@ func winnerLockMs() int64 {
 // back to config.json/env when no bounty is active.
 func (h *handler) config(w http.ResponseWriter, r *http.Request) {
 	lock := winnerLockMs()
+	inspect := ""
 	if b, ok, err := h.store.ActiveBounty(r.Context()); err != nil {
 		h.log.Error("config: active bounty", zap.Error(err))
 	} else if ok {
 		lock = b.WinTime.UnixMilli()
+		inspect = b.InspectLink
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"winner_lock_ms": lock,
 		"skin_url":       "/api/v1/skin",
+		// The active bounty's CS2 inspect link, or "" when the skin is an uploaded
+		// image only. The client decodes it locally and renders the live float /
+		// seed / name / wear bar, falling back to skin_url's image on any failure.
+		"inspect_link": inspect,
 	})
 }
 
