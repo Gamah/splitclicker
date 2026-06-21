@@ -26,6 +26,10 @@ wire-arrival order) and flags bot-like play. Four checks, all tunable in
   runner-up who actually competed (scored ≥ `dominant_runner_up_min`, default 5),
   so beating an idle player is never flagged.
 
+Every leaderboard row (and the live standings) carries the player's current rung
+as a coloured **status dot** — green `live`, yellow `cooldown`, red `ignored` —
+stamped onto the boards at serve time from the engine's live state.
+
 Flags escalate on a **per-bounty ladder** (counts reset each bounty): the first
 `check_cooldown_threshold` flags (default 20) each just bench the player behind a
 quick math test; crossing the threshold starts a `check_cooldown_mins` cooldown

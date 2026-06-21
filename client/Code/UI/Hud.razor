@@ -49,6 +49,7 @@
 				var s = SessionEntries[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -72,6 +73,7 @@
 				var s = _allTime[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -165,6 +167,7 @@
 				var s = _hourly[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -188,6 +191,7 @@
 				var s = _hoursWon[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -212,6 +216,7 @@
 				var s = _sessionsWon[i];
 				<div class="row @(IsMe( s ) ? "me" : "")">
 					<div class="rank">@(i + 1)</div>
+					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
 					<div class="pts">@s.Points</div>
 				</div>
@@ -545,6 +550,18 @@
 	}
 
 	.board .rank { width: 24px; color: rgba(255, 255, 255, 0.4); font-size: 12px; }
+	/* anticheat status dot: green live / yellow cooldown / red ignored. */
+	.board .dot {
+		width: 8px;
+		height: 8px;
+		flex-shrink: 0;
+		margin-right: 7px;
+		border-radius: 50%;
+		background-color: #06d6a0;
+	}
+	.board .dot.live { background-color: #06d6a0; }
+	.board .dot.cooldown { background-color: #ffd166; }
+	.board .dot.ignored { background-color: #e63946; }
 	.board .name { flex-grow: 1; overflow: hidden; white-space: nowrap; }
 	.board .pts { color: #06d6a0; font-weight: bold; }
 	.board .row.me { background-color: rgba(6, 214, 160, 0.15); }
@@ -1213,6 +1230,15 @@
 		var tag = ClickController.Instance?.Tag;
 		return !string.IsNullOrEmpty( tag ) && s.Tag == tag;
 	}
+
+	// Anticheat status dot class for a board row: green when live (the default),
+	// yellow on a cooldown, red when ignored for the bounty. Empty/unknown ⇒ live.
+	static string StatusClass( Standing s ) => s?.Status switch
+	{
+		"cooldown" => "cooldown",
+		"ignored" => "ignored",
+		_ => "live",
+	};
 
 	// Show the player's name (claimed username or Steam display name, resolved
 	// server-side), never the opaque hex tag.

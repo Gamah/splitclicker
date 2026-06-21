@@ -104,6 +104,10 @@ type LeaderboardEntry struct {
 	Username string `json:"username"`
 	Points   int    `json:"points"`
 	SteamID  string `json:"steam_id"`
+	// Status is the player's live anticheat rung for the active bounty —
+	// "live" / "cooldown" / "ignored" — filled in by the API at serve time
+	// (not stored). The leaderboard renders a coloured dot from it.
+	Status string `json:"status"`
 }
 
 // The three competitive boards (top clickers, hours won, games won) are scoped

@@ -66,6 +66,9 @@ type Standing struct {
 	Username string `json:"username"`
 	Points   int    `json:"points"`
 	SteamID  string `json:"steam_id"`
+	// Status is the player's live anticheat rung for the active bounty —
+	// "live" / "cooldown" / "ignored" — for the leaderboard status dot.
+	Status string `json:"status"`
 }
 
 // --- broadcaster (implemented by the ws hub) ---
@@ -363,6 +366,13 @@ type Engine struct {
 	sanctions       map[string]*Sanction // per-player ladder state for the current bounty
 	benchMsg        map[string]string    // last triggering check message per test-rung player
 	notified        map[string]string    // last sanction state pushed to each client ("test"/"cooldown"/"ignored")
+
+	// sanctionSnap is a lock-guarded copy of the sanction state, republished from the
+	// Run goroutine after every change, so other goroutines (the API serving the
+	// leaderboard status dots) can read each player's rung without racing the Run
+	// loop's maps. Guarded by sanctionMu.
+	sanctionMu   sync.RWMutex
+	sanctionSnap map[string]Sanction
 }
 
 // SetGameEndHook registers a callback run after every game_over, once the
@@ -400,6 +410,7 @@ func New(cfg Config, bc Broadcaster, store Store, log *zap.Logger) *Engine {
 		sanctions:    map[string]*Sanction{},
 		benchMsg:     map[string]string{},
 		notified:     map[string]string{},
+		sanctionSnap: map[string]Sanction{},
 	}
 }
 
@@ -641,6 +652,7 @@ func (e *Engine) playGame(ctx context.Context) {
 	}
 
 	final := standingsOf(scores, info)
+	e.annotateStatus(final)
 	placements := make(map[string]int, len(final))
 	won := make(map[string]bool, len(final))
 	for i, s := range final {
@@ -799,11 +811,14 @@ raceLoop:
 		pi := info[ev.SteamID]
 		winners = append(winners, Standing{Tag: pi.tag, Username: pi.username, Points: scores[ev.SteamID], SteamID: ev.SteamID})
 	}
+	e.annotateStatus(winners)
+	standings := topK(standingsOf(scores, info), e.cfg.BoardSize)
+	e.annotateStatus(standings)
 	e.bc.Result(ResultFrame{
 		Round:     round,
 		Of:        of,
 		Winners:   winners,
-		Standings: topK(standingsOf(scores, info), e.cfg.BoardSize),
+		Standings: standings,
 		RoundID:   roundID,
 		Deltas:    deltas,
 	})
@@ -1096,6 +1111,7 @@ func (e *Engine) syncBounty(ctx context.Context, bi BountyInfo) {
 			e.sanctions[sid] = &sc
 		}
 	}
+	e.publishSanctions()
 }
 
 // applySanction escalates a flagged player's ladder for one check: bump the
@@ -1134,6 +1150,68 @@ func (e *Engine) applySanction(ch CheckResult, bi BountyInfo) {
 		e.benchMsg[ch.SteamID] = ch.Message
 	}
 	e.persistSanction(bi.ID, *s)
+	e.publishSanctions()
+}
+
+// statusOf is the player-visible rung for a sanction: "ignored", "cooldown" (while
+// the cooldown is still running), or "live". The math-test rung isn't a leaderboard
+// status — a benched-on-test player still reads as "live" here.
+func statusOf(s Sanction) string {
+	switch {
+	case s.Ignored:
+		return "ignored"
+	case s.CooldownUntil != nil && time.Now().Before(*s.CooldownUntil):
+		return "cooldown"
+	default:
+		return "live"
+	}
+}
+
+// liveStatus is the current rung for a player, read from the Run goroutine's own
+// maps (no lock). Used when the engine builds standings on that goroutine.
+func (e *Engine) liveStatus(steamID string) string {
+	if s, ok := e.sanctions[steamID]; ok {
+		return statusOf(*s)
+	}
+	return "live"
+}
+
+// annotateStatus stamps each standing with its player's current rung. Called from
+// the Run goroutine (reads the live maps via liveStatus), so the session board the
+// engine pushes carries status dots too.
+func (e *Engine) annotateStatus(standings []Standing) {
+	for i := range standings {
+		standings[i].Status = e.liveStatus(standings[i].SteamID)
+	}
+}
+
+// publishSanctions republishes the lock-guarded snapshot from the Run goroutine's
+// live state. Call after any mutation so external readers see the change.
+func (e *Engine) publishSanctions() {
+	snap := make(map[string]Sanction, len(e.sanctions))
+	for sid, s := range e.sanctions {
+		snap[sid] = *s
+	}
+	e.sanctionMu.Lock()
+	e.sanctionSnap = snap
+	e.sanctionMu.Unlock()
+}
+
+// SanctionStatuses returns the current non-"live" rung ("cooldown"/"ignored") for
+// every sanctioned player, as a fresh map. Safe from any goroutine; used by the API
+// to stamp the leaderboard status dots (absent ⇒ "live"). Cooldown expiry is
+// evaluated at call time, so an elapsed cooldown reads back "live" without an event.
+func (e *Engine) SanctionStatuses() map[string]string {
+	e.sanctionMu.RLock()
+	snap := e.sanctionSnap
+	e.sanctionMu.RUnlock()
+	out := make(map[string]string)
+	for sid, s := range snap {
+		if st := statusOf(s); st != "live" {
+			out[sid] = st
+		}
+	}
+	return out
 }
 
 // SanctionForChecks derives the full ladder state for a given flag count using the
@@ -1167,6 +1245,7 @@ func (e *Engine) applyExternalSanction(ev extSanctionEvent) {
 		e.sanctions[sid] = &s
 	}
 	e.notifySanctions()
+	e.publishSanctions()
 }
 
 // clearTestRung removes a player from the math-test bench (used when they move to

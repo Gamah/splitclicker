@@ -225,24 +225,44 @@ func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/leaderboard/hourly?limit=15 — top players for the current UTC hour.
 func (h *handler) hourlyLeaderboard(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.cache.Hourly(boardLimit(r)))
+	writeJSON(w, http.StatusOK, h.withStatus(h.cache.Hourly(boardLimit(r))))
 }
 
 // GET /api/v1/leaderboard/hours-won?limit=15 — career board of hours won.
 func (h *handler) hoursWonLeaderboard(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.cache.HoursWon(boardLimit(r)))
+	writeJSON(w, http.StatusOK, h.withStatus(h.cache.HoursWon(boardLimit(r))))
 }
 
 // GET /api/v1/leaderboard/sessions-won?limit=15 — games won in the current
 // bounty window (the board the bounty winner is read from).
 func (h *handler) sessionsWonLeaderboard(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.cache.SessionsWon(boardLimit(r)))
+	writeJSON(w, http.StatusOK, h.withStatus(h.cache.SessionsWon(boardLimit(r))))
 }
 
 // GET /api/v1/leaderboard/all-time-clicks?limit=15 — lifetime top clickers
 // (total scoring clicks across all bounties; never resets).
 func (h *handler) allTimeClickersLeaderboard(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.cache.AllTimeClickers(boardLimit(r)))
+	writeJSON(w, http.StatusOK, h.withStatus(h.cache.AllTimeClickers(boardLimit(r))))
+}
+
+// withStatus returns a copy of the cached board with each row's anticheat status
+// stamped from the engine's live sanction state ("live" by default; "cooldown" /
+// "ignored" for sanctioned players). Copies rather than mutating the shared cache
+// slice; a no-op default of "live" when no engine is wired.
+func (h *handler) withStatus(entries []store.LeaderboardEntry) []store.LeaderboardEntry {
+	var st map[string]string
+	if h.engine != nil {
+		st = h.engine.SanctionStatuses()
+	}
+	out := make([]store.LeaderboardEntry, len(entries))
+	for i, e := range entries {
+		e.Status = "live"
+		if s, ok := st[e.SteamID]; ok {
+			e.Status = s
+		}
+		out[i] = e
+	}
+	return out
 }
 
 // boardLimit reads the ?limit param, defaulting to (and capped at) the cache

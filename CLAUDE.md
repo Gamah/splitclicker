@@ -151,7 +151,10 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   (`check_ignore_after` more → until the bounty resolves). The server pushes the rung as a `test`
   frame with `state`/`message`/`until_ms`; the client shows the test, then a countdown. The
   bounty snapshot the checks need (id, leader+margin, resolve time) is supplied via
-  `Engine.SetBountyInfoFn` from the leaderboard cache.
+  `Engine.SetBountyInfoFn` from the leaderboard cache. Every leaderboard row + the WS
+  standings also carry a `status` field (`live`/`cooldown`/`ignored`) for a coloured dot —
+  stamped at serve time from `Engine.SanctionStatuses()` (HTTP boards) / `annotateStatus`
+  (WS standings); additive, so older clients ignore it.
 - **API versioning.** REST/WS are versioned (`/api/{ver}`, `/ws/{ver}`); the live floor is
   config-driven (`live_version`). Below-live clients get the troll boards + "out of date" note;
   live-or-newer are respected (so a new build is testable before the floor moves up). Capability

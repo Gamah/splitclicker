@@ -29,7 +29,10 @@ public record Standing(
 	[property: JsonPropertyName( "tag" )] string Tag,
 	[property: JsonPropertyName( "username" )] string Username,
 	[property: JsonPropertyName( "points" )] int Points,
-	[property: JsonPropertyName( "steam_id" )] string SteamId
+	[property: JsonPropertyName( "steam_id" )] string SteamId,
+	// Anticheat status for the active bounty: "live" / "cooldown" / "ignored".
+	// Drives the coloured status dot on every board row. Empty ⇒ treated as live.
+	[property: JsonPropertyName( "status" )] string Status
 );
 
 // --- WebSocket server→client frames (the "t" field selects the shape) ---
