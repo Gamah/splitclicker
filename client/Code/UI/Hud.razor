@@ -105,9 +105,12 @@
 	<div class="center @StateClass()" @ref="_box">
 		@if ( !MusicOpen )
 		{
-			@* The scoring surface. v5: one clickable button per live board slot, at its
-			   server-placed position (board-% space, same as the pips) — no client roam.
-			   Below-v5: the single legacy button that roams the box on every click. *@
+			@* The scoring surface. v5 (BoardMode): one clickable button per live board slot,
+			   at its server-placed position (board-% space, same as the pips) — no client
+			   roam, and NOTHING during the arming wait or for stray bad clicks (the board is
+			   the only surface and exists only while armed).
+			   Below-v5: the single legacy button that roams the box on every click — the
+			   scoring AND idle-click surface, so it's always drawn. *@
 			@if ( c != null && c.HasBoard )
 			{
 				@foreach ( var btn in c.LiveButtons )
@@ -116,7 +119,7 @@
 					     onclick="@(() => OnPressButton( btn ))"></div>
 				}
 			}
-			else
+			else if ( !( c?.BoardMode ?? false ) )
 			{
 				<div class="game-btn @StateClass()" @ref="_btn"
 				     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
