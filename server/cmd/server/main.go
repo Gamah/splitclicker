@@ -45,6 +45,7 @@ func gameConfig() game.Config {
 	setInt(f.ClicksPerPlayer, &c.ClicksPerPlayer)
 	setInt(f.MinClicks, &c.MinClicks)
 	setInt(f.RoundsPerGame, &c.RoundsPerGame)
+	setInt(f.ButtonsOnScreen, &c.ButtonsOnScreen)
 	setDurMs(f.RaceMaxMs, &c.RaceMax)
 	setDurMs(f.ResultDisplayMs, &c.ResultDisplay)
 	setDurMs(f.IntermissionMs, &c.Intermission)

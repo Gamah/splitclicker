@@ -95,9 +95,14 @@ type PendingFrame struct {
 // (the spam deterrent) and echoes that same delay back so the player can see
 // they're being throttled. Nonce must be echoed by a scoring click.
 type ArmedFrame struct {
-	Round     int
-	Seq       int
+	Round int
+	Seq   int
+	// Nonce is the persistent legacy button echoed by below-v5 ("v4") scoring clicks
+	// (a single button valid the whole window). Buttons is the initial board of live
+	// buttons for v5+ clients (each {SlotID, Nonce, X, Y}); the hub sends Buttons to
+	// tick-capable clients and Nonce to the rest. See board.legacyNonce.
 	Nonce     uint64
+	Buttons   []Button
 	Players   int
 	Clicks    int
 	Penalties map[string]time.Duration
@@ -135,25 +140,18 @@ type GameOverFrame struct {
 	RoundID    string
 }
 
-// TickPip is one sampled scoring click in a TickFrame: the clicker's public Tag
-// (resolved to a username client-side via the round_pending roster), their
-// normalized int16 click position, and TArmMs = ms since the round armed (so the
-// client can replay the pip at its true relative moment via the jitter buffer).
-type TickPip struct {
-	Tag    string
-	X, Y   int16
-	TArmMs uint16
-}
-
 // TickFrame is the coalesced live-window broadcast emitted while the button is
-// armed (see Engine.race): the running clicks-remaining count plus up to
-// TickSampleK sampled scoring clicks landed since the last tick. One precomputed
-// frame fans out to every tick-capable client — linear in players, never
-// per-click. The hot path encodes it as a binary frame (see ws.encodeTick).
+// armed (see Engine.race): the running clicks-remaining count plus every board
+// mutation (button claimed + its replacement) since the last tick. The mutations are
+// authoritative and complete (never sampled — a dropped claim would desync a client's
+// board); their byte cost is O(scoring clicks), never per-non-scoring-click. The hub
+// appends a bounded sample of opponent cursor positions at encode time (those live in
+// the hub's connection state, not here). One precomputed frame fans out to every
+// tick-capable client — linear in players. Encoded as a binary frame (ws.encodeTick).
 type TickFrame struct {
 	Round     int
 	Remaining int
-	Pips      []TickPip
+	Claims    []BoardClaim
 }
 
 // Broadcaster is how the engine reaches connected clients. All methods are
@@ -550,6 +548,10 @@ func (e *Engine) Snapshot() Snapshot {
 	}
 }
 
+// CursorSampleK is the max opponent cursors the hub samples into each tick frame
+// (Config.TickSampleK, repurposed now that claims are complete rather than sampled).
+func (e *Engine) CursorSampleK() int { return e.cfg.TickSampleK }
+
 // clicksFor is the per-round N: the scoring slots scale with the connected
 // crowd (ClicksPerPlayer each), floored so a near-empty server still races.
 func (e *Engine) clicksFor(players int) int {
@@ -797,46 +799,56 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 // deltas/roundID), so the last round shows the final standings once instead of a
 // redundant ROUND OVER → GAME OVER pair.
 func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, reached map[string]time.Time, final bool) (map[string]int, string, []ScoredClick, time.Time) {
-	nonce := newNonce()
+	legacyNonce := newNonce()
 	penalties := e.penaltiesFrom(e.badClicks)
 	blocked := e.blockedMap()
 	e.setPhase(PhaseArmed, round)
 	armedAt := time.Now()
-	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: nonce, Players: players, Clicks: n, Penalties: penalties, Blocked: blocked})
+
+	// Build the live board: mint up to ButtonsOnScreen buttons, each a fresh nonce at a
+	// non-overlapping server-RNG'd position. The initial set rides the armed frame to v5
+	// clients; legacyNonce is the single persistent button below-v5 clients click. mint
+	// also refills the board after each claim (see board.offer).
+	b := newBoard(n, legacyNonce, armedAt)
+	b.mint = func() Button {
+		x, y := e.randPos(b.positions())
+		return b.register(newNonce(), x, y)
+	}
+	buttons := make([]Button, 0, e.cfg.ButtonsOnScreen)
+	for i := 0; i < e.cfg.ButtonsOnScreen; i++ {
+		buttons = append(buttons, b.mint())
+	}
+
+	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: legacyNonce, Buttons: buttons, Players: players, Clicks: n, Penalties: penalties, Blocked: blocked})
 	// Each arm forgives the bad clicks accrued since the previous arm: the penalty
 	// above already reflects them, and the tally now restarts for the next arm.
 	e.badClicks = map[string]int{}
 
-	rs := newRaceState(nonce, n)
 	timer := time.NewTimer(e.cfg.RaceMax)
 	defer timer.Stop()
 
-	// Live-window tick: every tickInterval, broadcast the running clicks-remaining
-	// count plus a bounded sample of the scoring clicks that landed since the last
-	// tick (the opponent pips). sentIdx tracks how many scored clicks have already
-	// been sampled out, so each tick only carries the new ones. A nil tickC (ticking
-	// disabled) simply never fires.
+	// Live-window tick: every tickInterval, broadcast the running clicks-remaining count
+	// plus the board mutations (claims + their replacements) accumulated since the last
+	// tick. takePending drains them so each tick carries only the new ones; the hub adds
+	// the sampled opponent cursors. A nil tickC (ticking disabled) simply never fires.
 	var tickC <-chan time.Time
 	if e.tickInterval > 0 {
 		t := time.NewTicker(e.tickInterval)
 		defer t.Stop()
 		tickC = t.C
 	}
-	sentIdx := 0
 	emitTick := func() {
-		pips := samplePips(rs.scored[sentIdx:], armedAt, e.cfg.TickSampleK)
-		sentIdx = len(rs.scored)
-		e.bc.Tick(TickFrame{Round: round, Remaining: n - len(rs.scored), Pips: pips})
+		e.bc.Tick(TickFrame{Round: round, Remaining: n - len(b.scored), Claims: b.takePending()})
 	}
 
 raceLoop:
-	for !rs.full() {
+	for !b.full() {
 		select {
 		case <-ctx.Done():
 			return nil, "", nil, armedAt
 		case ev := <-e.clicks:
 			recordInfo(info, ev)
-			if !rs.offer(ev) {
+			if !b.offer(ev) {
 				e.recordBad(ev) // an idle click during the live window still penalises
 			}
 		case ans := <-e.answers:
@@ -847,16 +859,17 @@ raceLoop:
 			break raceLoop // safety: fewer than N clicks arrived
 		}
 	}
-	// Flush the final batch: the clicks that closed the race (including the winning
-	// click) landed after the last tick, so emit one more so the count hits its
-	// floor and the decisive pips go out — they drain over round_result client-side.
+	// Flush the final batch: the claims that closed the race (including the winning
+	// click and its nil-Spawn) landed after the last tick, so emit one more so the
+	// count hits its floor and the decisive claims go out — they drain over
+	// round_result client-side.
 	if e.tickInterval > 0 {
 		emitTick()
 	}
 
 	deltas := map[string]int{}
-	clicks := make([]ScoredClick, len(rs.scored))
-	for i, ev := range rs.scored {
+	clicks := make([]ScoredClick, len(b.scored))
+	for i, ev := range b.scored {
 		deltas[ev.SteamID]++
 		scores[ev.SteamID]++
 		// Record the arrival time of each scoring click; the last one wins, so
@@ -885,7 +898,7 @@ raceLoop:
 	// client flashes after each round.
 	winners := make([]Standing, 0, len(deltas))
 	seen := make(map[string]bool, len(deltas))
-	for _, ev := range rs.scored {
+	for _, ev := range b.scored {
 		if seen[ev.SteamID] {
 			continue
 		}
@@ -963,83 +976,6 @@ func (e *Engine) randArmDelay() time.Duration {
 }
 
 // --- pure helpers (unit-tested directly) ---
-
-// samplePips turns the scoring clicks landed since the last tick into at most k
-// positioned pips for a TickFrame. Clicks with no position (older clients) are
-// skipped. When more than k positioned clicks landed, they're evenly subsampled
-// across the batch (a constant stride) so the surviving pips stay spread over the
-// interval rather than clumped — the cap is what keeps tick egress linear in
-// players. Order is preserved so the client's jitter buffer replays them in time.
-func samplePips(clicks []ClickEvent, armedAt time.Time, k int) []TickPip {
-	if k <= 0 {
-		return nil
-	}
-	positioned := make([]ClickEvent, 0, len(clicks))
-	for _, ev := range clicks {
-		if ev.HasPos {
-			positioned = append(positioned, ev)
-		}
-	}
-	if len(positioned) == 0 {
-		return nil
-	}
-	toPip := func(ev ClickEvent) TickPip {
-		ms := ev.At.Sub(armedAt).Milliseconds()
-		if ms < 0 {
-			ms = 0
-		} else if ms > 65535 {
-			ms = 65535
-		}
-		return TickPip{Tag: ev.Tag, X: ev.X, Y: ev.Y, TArmMs: uint16(ms)}
-	}
-	if len(positioned) <= k {
-		out := make([]TickPip, len(positioned))
-		for i, ev := range positioned {
-			out[i] = toPip(ev)
-		}
-		return out
-	}
-	out := make([]TickPip, 0, k)
-	// Evenly spaced indices across [0, len): i·len/k lands one pip in each of k
-	// equal buckets, preserving temporal spread without floating-point.
-	for i := 0; i < k; i++ {
-		out = append(out, toPip(positioned[i*len(positioned)/k]))
-	}
-	return out
-}
-
-// raceState accepts the first N valid clicks for one arm. It is the whole
-// scoring rule in one place: nonce gating (anti-pre-fire) and the hard N cutoff.
-// The window stays open until N clicks are consumed (or RaceMax), and a single
-// player may take multiple slots — repeated clicks from the same player each
-// score, so a fast clicker is rewarded for mashing inside the live window.
-type raceState struct {
-	nonce  uint64
-	n      int
-	scored []ClickEvent
-}
-
-func newRaceState(nonce uint64, n int) *raceState {
-	if n < 1 {
-		n = 1
-	}
-	return &raceState{nonce: nonce, n: n}
-}
-
-func (rs *raceState) full() bool { return len(rs.scored) >= rs.n }
-
-// offer reports whether ev scored. A wrong/zero nonce (pre-fire or stale) or a
-// full race scores nothing; otherwise the click takes the next of the N slots.
-func (rs *raceState) offer(ev ClickEvent) bool {
-	if rs.full() {
-		return false
-	}
-	if ev.Nonce != rs.nonce {
-		return false
-	}
-	rs.scored = append(rs.scored, ev)
-	return true
-}
 
 // idlePenalty is the accumulated arm-delay penalty after n bad clicks accrued
 // since the last arm: sum_{k=1..n}(base + step·(k−1)) = base·n + step·n(n−1)/2,

@@ -5,13 +5,14 @@
   "winner_lock_time": "",
   "dev_note": "Update coming soon! Database tracks everything don't worry winner will be picked fairly!",
 
-  "live_version": 4,
+  "live_version": 5,
 
   "arm_min_sec": 2,
   "arm_max_sec": 6,
   "clicks_per_player": 5,
   "min_clicks": 15,
   "rounds_per_game": 5,
+  "buttons_on_screen": 10,
   "race_max_ms": 10000,
   "result_display_ms": 4000,
   "intermission_ms": 5000,

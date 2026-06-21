@@ -12,64 +12,114 @@ func click(steamID string, nonce uint64) ClickEvent {
 	return ClickEvent{SteamID: steamID, Tag: steamID, Username: steamID, Nonce: nonce, At: time.Now()}
 }
 
-// raceState is the whole scoring rule; test it directly (no timing).
-func TestRaceState(t *testing.T) {
-	const nonce = uint64(0xABCD)
+// board is the whole multi-button scoring rule; test it directly (no timing). The
+// helper mints buttons with sequential nonces so a test can claim a known one.
+func newTestBoard(n int, legacy uint64) *board {
+	b := newBoard(n, legacy, time.Now())
+	seq := uint64(1000)
+	b.mint = func() Button {
+		seq++
+		return b.register(seq, 0, 0)
+	}
+	return b
+}
 
-	t.Run("first N by arrival score, rest dropped", func(t *testing.T) {
-		rs := newRaceState(nonce, 2)
-		if !rs.offer(click("a", nonce)) {
-			t.Fatal("a should score")
+// oneLive returns the board's single live button (tests keep exactly one live).
+func oneLive(t *testing.T, b *board) Button {
+	t.Helper()
+	if len(b.live) != 1 {
+		t.Fatalf("want exactly 1 live button, got %d", len(b.live))
+	}
+	for _, btn := range b.live {
+		return btn
+	}
+	return Button{}
+}
+
+func TestBoard(t *testing.T) {
+	t.Run("claiming a live button scores, consumes it, and refills the board", func(t *testing.T) {
+		b := newTestBoard(3, 0)
+		a := b.mint()
+		if !b.offer(click("a", a.Nonce)) {
+			t.Fatal("claiming the live button should score")
 		}
-		if !rs.offer(click("b", nonce)) {
-			t.Fatal("b should score")
+		if b.offer(click("a", a.Nonce)) {
+			t.Fatal("a consumed button's nonce must not score again")
 		}
-		if !rs.full() {
-			t.Fatal("race should be full at N=2")
+		if len(b.pending) != 1 || b.pending[0].SlotID != a.SlotID || b.pending[0].Spawn == nil {
+			t.Fatalf("want one claim for the slot with a spawned replacement, got %+v", b.pending)
 		}
-		if rs.offer(click("c", nonce)) {
-			t.Fatal("c arrived after N — must not score")
-		}
-		if len(rs.scored) != 2 || rs.scored[0].SteamID != "a" || rs.scored[1].SteamID != "b" {
-			t.Fatalf("wrong winners/order: %+v", rs.scored)
+		if len(b.live) != 1 { // budget remained ⇒ refilled back to one
+			t.Fatalf("want board refilled to 1 live button, got %d", len(b.live))
 		}
 	})
 
-	t.Run("wrong or zero nonce never scores (anti-pre-fire)", func(t *testing.T) {
-		rs := newRaceState(nonce, 1)
-		if rs.offer(click("a", nonce+1)) {
-			t.Fatal("wrong nonce must not score")
-		}
-		if rs.offer(click("a", 0)) {
+	t.Run("zero nonce never scores (anti-pre-fire); unknown nonce drops", func(t *testing.T) {
+		b := newTestBoard(2, 0)
+		btn := b.mint()
+		if b.offer(click("a", 0)) {
 			t.Fatal("zero nonce must not score")
 		}
-		if rs.full() {
+		if b.offer(click("a", btn.Nonce+999)) {
+			t.Fatal("unknown nonce must not score")
+		}
+		if b.full() {
 			t.Fatal("nothing valid scored yet")
 		}
-		if !rs.offer(click("a", nonce)) {
+		if !b.offer(click("a", btn.Nonce)) {
 			t.Fatal("correct nonce should score")
 		}
 	})
 
-	t.Run("a single player can take multiple slots in one arm", func(t *testing.T) {
-		rs := newRaceState(nonce, 3)
-		if !rs.offer(click("a", nonce)) {
-			t.Fatal("a first click should score")
+	t.Run("legacy nonce scores into the budget without mutating the board", func(t *testing.T) {
+		const legacy = uint64(0xBEEF)
+		b := newTestBoard(2, legacy)
+		b.mint()
+		if !b.offer(click("v4", legacy)) {
+			t.Fatal("legacy nonce should score")
 		}
-		if !rs.offer(click("a", nonce)) {
-			t.Fatal("a second click in same arm should also score")
+		if len(b.pending) != 0 {
+			t.Fatalf("legacy claim must not produce a board mutation, got %+v", b.pending)
 		}
-		if !rs.offer(click("a", nonce)) {
-			t.Fatal("a third click should fill the race")
+		if len(b.scored) != 1 {
+			t.Fatalf("want 1 scored, got %d", len(b.scored))
 		}
-		if !rs.full() {
-			t.Fatal("race should be full at N=3")
+		if len(b.live) != 1 {
+			t.Fatalf("legacy claim must not consume a button, want 1 live, got %d", len(b.live))
 		}
-		if rs.offer(click("a", nonce)) {
-			t.Fatal("a fourth click after N must not score")
+	})
+
+	t.Run("round ends at N; the final claim spawns no replacement", func(t *testing.T) {
+		b := newTestBoard(1, 0)
+		btn := b.mint()
+		if !b.offer(click("a", btn.Nonce)) {
+			t.Fatal("first claim should score")
 		}
-		if len(rs.scored) != 3 {
-			t.Fatalf("expected 3 scores, got %d", len(rs.scored))
+		if !b.full() {
+			t.Fatal("board should be full at N=1")
+		}
+		if b.pending[0].Spawn != nil {
+			t.Fatal("the claim that ends the round must not spawn a replacement")
+		}
+	})
+
+	t.Run("a single player can take multiple slots across refills", func(t *testing.T) {
+		b := newTestBoard(3, 0)
+		b.mint() // initial board (one button); each claim refills it back to one
+		for i := 0; i < 3; i++ {
+			btn := oneLive(t, b)
+			if !b.offer(click("a", btn.Nonce)) {
+				t.Fatalf("claim %d should score", i)
+			}
+		}
+		if !b.full() {
+			t.Fatal("board should be full at N=3")
+		}
+		if btn := b.mint(); b.offer(click("a", btn.Nonce)) {
+			t.Fatal("a click after N must not score")
+		}
+		if len(b.scored) != 3 {
+			t.Fatalf("expected 3 scores, got %d", len(b.scored))
 		}
 	})
 }

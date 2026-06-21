@@ -7,11 +7,12 @@ this file is the quick orientation; PLAN.md is the source of truth for architect
 **Status:** both halves are built out. `server/` has the engine state machine, WS hub,
 Facepunch auth, the bounty + leaderboard boards, the anticheat checks + per-bounty
 sanction ladder, Docker/Caddy, and unit tests. `client/` is a playable s&box game:
-`ClickController` (WS lifecycle/phase), the single-root `Hud.razor` (boards, roaming
-button, GAME INFO popup, anticheat overlays), the Skafinity music library, and
-s&box-Services achievements. **The live API version is `v5`** (the live-window
-tick: descending counter + opponent click pips); the config-driven `live_version`
-floor is `v4`.
+`ClickController` (WS lifecycle/phase), the single-root `Hud.razor` (boards, the
+multi-button board + opponent cursors, GAME INFO popup, anticheat overlays), the
+Skafinity music library, and s&box-Services achievements. **The live API version is
+`v5`** (the multi-button board + opponent cursors, on top of the live-window tick);
+the config-driven `live_version` floor is now `v5`, with `v4` (single persistent
+button, no tick) as the supported N-1.
 
 ---
 
@@ -164,17 +165,36 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   collapsed to `!Legacy`. **Cleanup rule:** support only N and N-1 — once a new build goes live,
   prune handling two+ versions back (when v6 is live, drop all v4-and-older special-casing,
   collapsing `minTickVersion` the same way). See the note at `api/router.go`'s `liveVersionDefault`.
-- **Live-window tick (v5).** While the button is armed the engine emits a coalesced `tick`
-  frame `TickHz`×/s (binary; the one hot-path binary frame) carrying the exact clicks-remaining
-  count + up to `TickSampleK` sampled scoring clicks (`{tag, x, y, t_arm}`) — linear in players,
-  never a per-click broadcast. The client animates the descending counter, plays a pip (the click
-  sound a fifth up at half volume) per sampled opponent click, and renders each as a half-size
-  fading button at its normalized x/y with the clicker's username. Names resolve from the full
-  `{tag→username}` roster broadcast in `round_pending` (knowingly O(M²), accepted for MVP). Pips
-  replay at their true moment via a client jitter buffer (trail `D ≈ tick interval + margin`):
-  the tail (incl. the winning click) drains over `round_result`, and the buffer clears at the next
-  arming stage — never cancels on result, never bleeds into the next live window. `click` gains
-  normalized int16 x/y (center 0); all v5 wire is additive + gated, so v4 clients are unaffected.
+- **Multi-button live window + opponent cursors (v5).** An armed window shows up to
+  `ButtonsOnScreen` (X, default 10) live buttons at once (`game/board.go`). **1 button = 1 point**:
+  the first valid click echoing a button's nonce claims it (+1), the button is consumed, and — while
+  the round still has budget — a replacement spawns so the board stays refilled to X. The round still
+  ends the instant **N** total points are claimed (N is the crowd-scaled budget, X is just visual
+  density), so up to X−1 unclaimed buttons can be on screen at the final claim; they're discarded.
+  *(Future option, documented not built: shrink the board to `min(X, remaining)` as it drains.)*
+  - **Positions are server-authoritative and transmitted, never client-derived.** The initial X ride
+    the `armed` frame; each replacement's offset is server-RNG'd (`Engine.randPos`, `crypto`-seeded
+    `math/rand`, non-overlapping) and shipped in its tick claim event. There is **no shared seed /
+    deterministic generator** — a client cannot pre-compute where buttons appear and pre-aim.
+  - **Tick (binary, `TickHz`×/s)** carries `remaining` + **every** board mutation since the last tick
+    (`{slot, claimer_tag, t_arm, spawn?{id,nonce,x,y}}` — authoritative/**complete**, never sampled, or
+    a client would miss a live button) + a **sample** of opponent cursors (`{tag,x,y}`, capped at
+    `TickSampleK`). Mutation bytes are O(scoring clicks), never per-non-scoring-click.
+  - The client draws each button at its position, renders a claimed-button pip (sound a fifth up, half
+    volume) labelled with the claimer's username (resolved from the `round_pending` roster), and replays
+    pips at their true moment via the jitter buffer (tail drains over `round_result`, cleared at the next
+    arming stage). The pip position now comes from the **claimed button** (not the click's x/y).
+  - **Cursors**: client→server `cursor {x,y}` (~15/s, throttled `cursorMinGap`), **armed-only**, cleared
+    at the arming stage (`Hub.Pending`) and on round/game end. New inbound type; no shared WS click
+    bucket exists today, but any future one must budget cursors separately (else a moving mouse starves
+    clicks).
+  - **v4 (below-v5) clients**: the engine also mints a single **persistent legacy nonce** button (scores
+    into the same N budget, never consumed/replaced, no board mutation), sent as the lone `armed.nonce`
+    so an old client keeps today's single-button play with no new frames. During the v4↔v5 coexistence
+    window a v4 player's stationary button is easier than v5's moving board — **benign and short-lived**
+    (gone at cutover), not designed around.
+  - **`fast_clicks` tension**: sweeping X buttons fast is now intended play; current `FastClickMs`
+    default/prod config is kept, flagged here to retune later if it false-positives.
 - **Traffic minimization.** Persistent WS, never polling. Idle is silent. Cheap idle conns
   (epoll lib), infrequent/long heartbeats, one precomputed broadcast on arm, race closes the
   instant click N lands (losing clicks read-and-dropped), leaderboard pushed inside
@@ -208,9 +228,11 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
 
 - Hot-path frames: the live-window `tick` (out) is **binary**; `click` (in) stays JSON
   (sent immediately, never coalesced) with additive int16 `x`/`y`. The rest JSON.
-- Client→server: `click {nonce, x?, y?}`, `test_answer {id, answer}`, `ping`.
+- Client→server: `click {nonce, x?, y?}`, `cursor {x, y}` (v5; ~15/s, armed-only), `test_answer {id, answer}`, `ping`.
 - Server→client: `hello` (+`tick_ms`), `round_pending` (+`roster` `[{tag,username}]`, v5 only),
-  `armed`, `tick` (binary: `round`, `remaining`, sampled `{tag,x,y,t_arm}` pips — v5 only),
+  `armed` (+`buttons` `[{id,nonce,x,y}]` — the initial board — to v5; the single legacy `nonce` to v4),
+  `tick` (binary: `round`, `remaining`, the complete board mutations since the last tick
+  `{slot, claimer_tag, t_arm, spawn?{id,nonce,x,y}}` + sampled opponent cursors `{tag,x,y}` — v5 only),
   `round_result` (with `you.points_delta`,
   `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`),
   `bounty_update` (payload-less; "re-fetch `/config` + `/bounties/previous`" on rollover),

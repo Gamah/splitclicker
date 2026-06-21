@@ -102,16 +102,31 @@ type rosterEntry struct {
 	Username string `json:"username"`
 }
 
+// buttonWire is one live button in the v5 armed frame: its compact slot id (the wire
+// handle the tick frames reference), its secret nonce (hex, echoed by a scoring click),
+// and its server-RNG'd normalized position (0 = centre).
+type buttonWire struct {
+	ID    uint16 `json:"id"`
+	Nonce string `json:"nonce"`
+	X     int16  `json:"x"`
+	Y     int16  `json:"y"`
+}
+
 // penalty_ms is this connection's own arm-delay penalty (the spam deterrent),
 // surfaced so a masher can see they're being throttled. 0 for honest clients.
+//
+// Two shapes share this struct: tick-capable (v5+) clients get Buttons (the initial
+// board; Nonce omitted) while below-v5 clients get the single persistent Nonce
+// (Buttons omitted). The omitempty keeps each wire to just the fields its client uses.
 type armedWire struct {
-	T         string `json:"t"`
-	Round     int    `json:"round"`
-	Seq       int    `json:"seq"`
-	Nonce     string `json:"nonce"`
-	Players   int    `json:"players"`
-	Clicks    int    `json:"clicks"`
-	PenaltyMs int    `json:"penalty_ms"`
+	T         string       `json:"t"`
+	Round     int          `json:"round"`
+	Seq       int          `json:"seq"`
+	Nonce     string       `json:"nonce,omitempty"`
+	Buttons   []buttonWire `json:"buttons,omitempty"`
+	Players   int          `json:"players"`
+	Clicks    int          `json:"clicks"`
+	PenaltyMs int          `json:"penalty_ms"`
 }
 
 // youResult lets the client drive its `points` achievement stat exactly once:
