@@ -124,6 +124,8 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	// version is respected, so a v5 build can be tested before v4 is disabled.
 	mux.HandleFunc("GET /api/{ver}/config", h.config)
 	mux.HandleFunc("GET /api/{ver}/skin", h.skin)
+	mux.HandleFunc("GET /api/{ver}/skin/{id}", h.skinByID)
+	mux.HandleFunc("GET /api/{ver}/bounties/previous", h.previousBounties)
 	mux.HandleFunc("POST /api/{ver}/auth", rl.wrap(h.auth))
 	mux.HandleFunc("GET /api/{ver}/leaderboard/{board}", h.leaderboard)
 	mux.HandleFunc("GET /ws/{ver}", h.wsConnect)

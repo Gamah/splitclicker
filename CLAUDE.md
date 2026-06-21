@@ -179,6 +179,15 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   (epoll lib), infrequent/long heartbeats, one precomputed broadcast on arm, race closes the
   instant click N lands (losing clicks read-and-dropped), leaderboard pushed inside
   `round_result` (never a fan-in `GET` stampede), jittered reconnect backoff.
+- **Bounty rollover is pushed, not polled.** When `runBountyFinalizer` flips the active bounty
+  (the win_time passes → winner recorded → next promoted), it broadcasts a payload-less
+  `bounty_update` frame; the client re-fetches `/config` (new skin/countdown) + `/bounties/previous`
+  (the just-settled winner) on that push, on every `hello` (so a reconnect across a rollover also
+  refreshes), and on load — driven by `ClickController.BountyRefreshSeq`, never a timer. This is
+  the cache-invalidation fix for the stale post-rollover HUD. `GET /api/{ver}/bounties/previous`
+  returns up to the 5 most-recent won bounties (winner tag/steamid/name/wins + inspect link +
+  per-bounty `skin_url`); `GET /api/{ver}/skin/{id}` serves a specific past bounty's image. The
+  client shows the latest as a display-only "PREVIOUS WINNER" panel mirroring the skin panel.
 - **Achievements via s&box Services** (client-side Stats + Achievements), driven by
   server-pushed `you.*` deltas, deduped by `round_id`/`game_id` (stat increments aren't
   idempotent). Initial set: `first_point`, `points_50`, `points_100`, `top_5`, `top_3`,
@@ -203,7 +212,9 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
 - Server→client: `hello` (+`tick_ms`), `round_pending` (+`roster` `[{tag,username}]`, v5 only),
   `armed`, `tick` (binary: `round`, `remaining`, sampled `{tag,x,y,t_arm}` pips — v5 only),
   `round_result` (with `you.points_delta`,
-  `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`), `too_late`/`rejected`,
+  `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`),
+  `bounty_update` (payload-less; "re-fetch `/config` + `/bounties/previous`" on rollover),
+  `too_late`/`rejected`,
   `test {state, id?, prompt?, message, until_ms?, cleared?}` (anticheat rung: `state` =
   `test`/`cooldown`/`ignored`; `cleared` dismisses it), `achievement` (`{ident}` — out-of-band
   manual unlock for an HTTP feat matched by IP: `fart`, `hackerman`).

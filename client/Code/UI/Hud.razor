@@ -296,6 +296,42 @@
 		<div class="skin-caption">@($"{SkinLeaderName()}'s Skin")</div>
 	</div>
 
+	@* ── previous winner: a duplicate of the skin panel showing who won the last
+	     bounty and the skin it was (decoded from its inspect link, same as the live
+	     one). Shown once a bounty has settled; refreshed on a bounty_update push /
+	     reconnect. Display-only (pointer-events:none in CSS) so it never intercepts a
+	     click meant for the roaming button beneath it. ── *@
+	@if ( _prevBounty != null )
+	{
+		<div class="skin-panel previous">
+			<div class="prev-header">PREVIOUS WINNER</div>
+			<div class="prev-winner">@PrevWinnerName()</div>
+			<div class="prev-wins">@($"won {_prevBounty.WinnerWins} games")</div>
+			<div class="skin-img" style="background-image: url( @PrevSkinImgUrl() );"></div>
+			@if ( _prevSkin != null && _prevSkin.DecodeOk )
+			{
+				@if ( _prevSkin.ImageOk )
+				{
+					<div class="skin-name">@_prevSkin.Name</div>
+				}
+				<div class="skin-stats">
+					<div class="stat"><span class="k">Wear</span><span class="v">@_prevSkin.WearName</span></div>
+					<div class="stat"><span class="k">Float</span><span class="v">@PrevFloatStr()</span></div>
+					<div class="stat"><span class="k">Seed</span><span class="v">@_prevSkin.PaintSeed</span></div>
+				</div>
+				<div class="wear-bar">
+					<div class="seg fn"></div>
+					<div class="seg mw"></div>
+					<div class="seg ft"></div>
+					<div class="seg ww"></div>
+					<div class="seg bs"></div>
+					<div class="wear-marker" style="left: @(PrevMarkerPct())%;"></div>
+				</div>
+			}
+			<div class="skin-caption">@(string.IsNullOrEmpty( _prevBounty.Label ) ? "Skin" : _prevBounty.Label)</div>
+		</div>
+	}
+
 	@* ── per-round scores flash: a transient panel listing who scored the round that
 	     just ended (the round's winners, in first-click order, with the points each
 	     grabbed THIS round), shown briefly after every round_result then fading out.
@@ -821,6 +857,42 @@
 		justify-content: center;
 	}
 
+	/* previous-winner panel: a duplicate skin panel pinned just left of the live one
+	   (308 + 200 + 20). Display-only — pointer-events:none so the roaming button
+	   beneath stays fully clickable; a gold edge + slightly shorter image distinguish
+	   it from the live "skin to win". */
+	.skin-panel.previous {
+		right: 528px;
+		pointer-events: none;
+		border-color: rgba(255, 209, 102, 0.35);
+	}
+
+	.skin-panel.previous .skin-img { height: 150px; }
+
+	.prev-header {
+		font-size: 12px;
+		font-weight: bold;
+		color: #ffd166;
+		letter-spacing: 1px;
+		text-align: center;
+		justify-content: center;
+	}
+
+	.prev-winner {
+		font-size: 16px;
+		font-weight: bold;
+		color: #ffffff;
+		text-align: center;
+		justify-content: center;
+	}
+
+	.prev-wins {
+		font-size: 12px;
+		color: rgba(255, 255, 255, 0.6);
+		text-align: center;
+		justify-content: center;
+	}
+
 	.board .empty {
 		justify-content: center;
 		font-size: 12px;
@@ -1333,6 +1405,17 @@
 	// paste into CS2, independent of whether it decoded/resolved locally.
 	string _inspectLink = "";
 
+	// ── previous winner (the just-settled bounty) ── a duplicate of the skin panel
+	// showing who won the last skin and what it was. _prevBounty is the most recent
+	// won bounty (null until fetched / when there's no history); _prevSkin is its
+	// inspect link decoded locally (same as _skin); _prevSkinUrl is the per-bounty
+	// image fallback. _lastBountyRefresh tracks ClickController.BountyRefreshSeq so a
+	// hello/reconnect or a bounty_update push re-fetches both current and previous.
+	PreviousBounty _prevBounty;
+	SkinInspect.Skin _prevSkin;
+	string _prevSkinUrl = "";
+	int _lastBountyRefresh;
+
 	// Image URL for the panel: the resolved Steam CDN weapon image when available,
 	// otherwise the server-served fallback image (also used when no link is set).
 	string SkinImgUrl() => _skin != null && _skin.ImageOk ? _skin.ImageUrl : _skinUrl;
@@ -1353,6 +1436,36 @@
 		const long Scale = 10_000_000_000L; // 10 fractional digits, like the float checker
 		long scaled = (long)(d * Scale + 0.5);
 		return $"{scaled / Scale}.{(scaled % Scale).ToString().PadLeft( 10, '0' )}";
+	}
+
+	// ── previous-winner panel helpers (mirror the current-skin ones, reading the
+	//    previous bounty's decoded skin/image instead) ──
+	string PrevSkinImgUrl() => _prevSkin != null && _prevSkin.ImageOk ? _prevSkin.ImageUrl : _prevSkinUrl;
+
+	int PrevMarkerPct()
+	{
+		int pct = (int)((_prevSkin?.Float ?? 0f) * 100f + 0.5f);
+		return pct < 0 ? 0 : pct > 100 ? 100 : pct;
+	}
+
+	string PrevFloatStr()
+	{
+		double d = _prevSkin?.Float ?? 0.0;
+		if ( d < 0 ) d = 0;
+		const long Scale = 10_000_000_000L;
+		long scaled = (long)(d * Scale + 0.5);
+		return $"{scaled / Scale}.{(scaled % Scale).ToString().PadLeft( 10, '0' )}";
+	}
+
+	// The previous winner's display name, tagged "(you)" when the local player won
+	// it (matched by the public tag, the only id the client knows itself by).
+	string PrevWinnerName()
+	{
+		if ( _prevBounty == null ) return "";
+		var name = string.IsNullOrEmpty( _prevBounty.WinnerName ) ? "—" : _prevBounty.WinnerName;
+		var myTag = ClickController.Instance?.Tag;
+		if ( !string.IsNullOrEmpty( myTag ) && _prevBounty.WinnerTag == myTag ) name += " (you)";
+		return name;
 	}
 
 	// ── anticheat test gate: the answer box (captured by @ref so SubmitTest can read
@@ -1417,14 +1530,17 @@
 	protected override void OnTreeFirstBuilt()
 	{
 		_ = LoadConfig();
+		_ = LoadPreviousBounty();
 		_ = RefreshHourly();
 		_ = RefreshHoursWon();
 		_ = RefreshSessionsWon();
 		_ = RefreshAllTime();
 	}
 
-	// Fetch the winner-lock time + skin image URL once on startup. On failure the
-	// countdown simply doesn't show and the image stays blank — no hard dependency.
+	// Fetch the winner-lock time + skin image URL (the active bounty). Re-run on
+	// (re)connect and on a bounty_update push, so the panel always reflects the
+	// current bounty. On failure the countdown simply doesn't show and the image
+	// stays blank — no hard dependency.
 	async Task LoadConfig()
 	{
 		var cfg = await ApiClient.GetConfig();
@@ -1432,6 +1548,10 @@
 		_skinUrl = ApiClient.AbsoluteUrl( cfg.SkinUrl ) ?? "";
 		_winnerLockMs = cfg.WinnerLockMs;
 		_inspectLink = cfg.InspectLink ?? "";
+		// Clear the previous bounty's decoded skin so a re-fetch (rollover) doesn't
+		// leave the old name/stats showing under the new skin — ResolveSkin refills it
+		// when this bounty also has an inspect link; an image-only bounty keeps it null.
+		_skin = null;
 		StateHasChanged();
 
 		// If the active bounty was set by an inspect link, decode it locally and
@@ -1450,6 +1570,31 @@
 		StateHasChanged();
 	}
 
+	// Fetch the most recent settled bounty (the "previous winner") and, if it was an
+	// inspect-link skin, decode it locally for the live render. Re-run alongside
+	// LoadConfig so a rollover surfaces the just-settled winner immediately. The
+	// resolve is guarded by id so a slow decode can't clobber a newer previous bounty.
+	async Task LoadPreviousBounty()
+	{
+		var list = await ApiClient.GetPreviousBounties();
+		var b = ( list != null && list.Count > 0 ) ? list[0] : null;
+		_prevBounty = b;
+		_prevSkin = null;
+		_prevSkinUrl = b != null ? ( ApiClient.AbsoluteUrl( b.SkinUrl ) ?? "" ) : "";
+		StateHasChanged();
+
+		if ( b != null && !string.IsNullOrWhiteSpace( b.InspectLink ) )
+		{
+			var id = b.Id;
+			var skin = await SkinInspect.Resolve( b.InspectLink );
+			if ( _prevBounty != null && _prevBounty.Id == id ) // still the same previous bounty
+			{
+				_prevSkin = skin;
+				StateHasChanged();
+			}
+		}
+	}
+
 	protected override void OnUpdate()
 	{
 		// Drop finished "+ PENALTY" popups (the CSS animation runs for PopLife). While
@@ -1458,6 +1603,17 @@
 		{
 			_pops.RemoveAll( p => p.Since >= PopLife );
 			StateHasChanged();
+		}
+
+		// The bounty rolled over (or we just (re)connected): re-fetch the active skin
+		// and the previous winner so neither goes stale. Driven by the server push /
+		// hello via ClickController.BountyRefreshSeq — no polling.
+		int seq = C?.BountyRefreshSeq ?? 0;
+		if ( seq != _lastBountyRefresh )
+		{
+			_lastBountyRefresh = seq;
+			_ = LoadConfig();
+			_ = LoadPreviousBounty();
 		}
 
 		var phase = C?.Phase ?? GamePhase.Connecting;
@@ -1845,6 +2001,9 @@
 		// rebuild it when a new round's scores come up.
 		HashCode.Combine( FlashVisible, _flashRound, _flashWinners.Count ),
 		// live-window tick: the descending counter (changes ~tick-rate while armed) and
-		// the on-screen pip count (a pip spawning/expiring changes it) drive re-render.
-		HashCode.Combine( C?.RemainingThisRound ?? 0, PipsToShow().Count ) );
+		// the on-screen pip count (a pip spawning/expiring changes it) drive re-render;
+		// plus the previous-winner panel state (which bounty, and whether its skin has
+		// resolved) so it repaints when a rollover/refresh loads a new one.
+		HashCode.Combine( C?.RemainingThisRound ?? 0, PipsToShow().Count,
+			_prevBounty?.Id ?? 0L, _prevSkin != null, _prevSkinUrl ) );
 }

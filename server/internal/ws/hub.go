@@ -269,6 +269,18 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 	}
 }
 
+// BroadcastBountyUpdate tells every connected client the active bounty changed, so
+// it re-fetches /config + /bounties/previous (the new skin/countdown and the just-
+// settled winner). Called from the bounty finalizer when a rollover happens — a
+// rare event — so the fan-out cost is negligible. Not on the Broadcaster interface:
+// it's driven by the finalizer loop in main, not the engine.
+func (h *Hub) BroadcastBountyUpdate() {
+	msg := mustJSON(bountyUpdateWire{T: "bounty_update"})
+	for _, c := range h.clientList() {
+		c.trySend(msg)
+	}
+}
+
 // DevNote fans out the host-editable broadcast note to every client (empty
 // clears it). Legacy clients receive it too — it's just a status line.
 func (h *Hub) DevNote(note string) {

@@ -59,6 +59,13 @@ public sealed class ClickController : Component
 	/// updates live; the armed frame's authoritative value then overwrites it.</summary>
 	public int PenaltyMs { get; private set; }
 
+	/// <summary>Bumped whenever the client should re-fetch the bounty state (the
+	/// skin/countdown + the previous winner): on every `hello` (so a fresh connect
+	/// AND a reconnect both refresh) and on every `bounty_update` push (a rollover).
+	/// The Hud watches this and reloads /config + /bounties/previous when it changes,
+	/// so the client never sits in a stale post-rollover view.</summary>
+	public int BountyRefreshSeq { get; private set; }
+
 	/// <summary>Host-editable broadcast note (shown orange under the throttle line);
 	/// empty = none. Set from the dev_note frame (once per game) and the hello
 	/// snapshot, and only ever changed by those — it persists across rounds and
@@ -451,6 +458,9 @@ public sealed class ClickController : Component
 					_tickMs = h.Game.TickMs;
 					DevNote = h.Game.DevNote ?? "";
 					Phase = PhaseFrom( h.Game.Phase );
+					// A (re)connect: refresh the bounty state so a client that was offline
+					// across a rollover picks up the new skin + previous winner on rejoin.
+					BountyRefreshSeq++;
 					break;
 
 				case "round_pending":
@@ -565,6 +575,13 @@ public sealed class ClickController : Component
 					// Out-of-band unlock the server pushed for a feat it detected off the
 					// game socket (e.g. fart / hackerman), matched to us by IP.
 					AchievementTracker.OnAchievement( Deser<AchievementMsg>( json ).Ident );
+					break;
+
+				case "bounty_update":
+					// The active bounty rolled over: nudge the Hud to re-fetch /config +
+					// /bounties/previous so the new skin/countdown and the just-settled
+					// winner appear immediately (no payload — the HTTP endpoints are truth).
+					BountyRefreshSeq++;
 					break;
 			}
 		}

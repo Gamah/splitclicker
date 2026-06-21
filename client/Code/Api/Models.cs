@@ -26,6 +26,24 @@ public record ConfigResponse(
 	[property: JsonPropertyName( "inspect_link" )] string InspectLink
 );
 
+// GET /api/v1/bounties/previous response row: a settled bounty + its winner, for
+// the "previous winner" panel. SkinUrl is the per-bounty image fallback (made
+// absolute against BaseUrl); InspectLink, when set, is decoded locally for the
+// live skin render exactly like the current bounty. WinnerTag matches the client's
+// own tag when the local player won (so the panel can say "you"); WinnerSteamId
+// opens the profile; WonAtMs is epoch ms (no date parsing in the sandbox).
+public record PreviousBounty(
+	[property: JsonPropertyName( "id" )] long Id,
+	[property: JsonPropertyName( "label" )] string Label,
+	[property: JsonPropertyName( "skin_url" )] string SkinUrl,
+	[property: JsonPropertyName( "inspect_link" )] string InspectLink,
+	[property: JsonPropertyName( "winner_tag" )] string WinnerTag,
+	[property: JsonPropertyName( "winner_steam_id" )] string WinnerSteamId,
+	[property: JsonPropertyName( "winner_name" )] string WinnerName,
+	[property: JsonPropertyName( "winner_wins" )] int WinnerWins,
+	[property: JsonPropertyName( "won_at_ms" )] long WonAtMs
+);
+
 // One row of a leaderboard (GET /api/v1/leaderboard/*) and of the standings
 // embedded in round_result / game_over. SteamId is the public SteamID64, used to
 // open/copy the player's steamcommunity.com profile.

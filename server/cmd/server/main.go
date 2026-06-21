@@ -105,22 +105,33 @@ func runHourlyFinalizer(ctx context.Context, st *store.Store, log *zap.Logger) {
 // (catching up any deadlines crossed while the process was down, and activating
 // the first pending bounty) and then on a short tick. FinalizeDueBounties is
 // transactional and idempotent on the queue state, so re-runs can't double-count.
-func runBountyFinalizer(ctx context.Context, st *store.Store, cache *store.LeaderboardCache, log *zap.Logger) {
+func runBountyFinalizer(ctx context.Context, st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, log *zap.Logger) {
 	finalize := func() {
 		fctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
+		// Snapshot the active bounty id before/after: it changes on a finalize+promote,
+		// a first-ever/after-drain promotion, and a drain to none — every case the
+		// client must refresh its skin/countdown for. (FinalizeDueBounties only counts
+		// finalizes, so the id diff is the broader, correct trigger.)
+		before, _, _ := st.ActiveBounty(fctx)
 		n, err := st.FinalizeDueBounties(fctx, time.Now())
 		if err != nil {
 			log.Error("finalize bounties", zap.Error(err))
 			return
 		}
+		after, _, _ := st.ActiveBounty(fctx)
 		if n > 0 {
 			log.Info("finalized bounties", zap.Int("count", n))
-			// A bounty flipped: the windowed boards now scope to the new window, so
-			// refresh the cache immediately rather than waiting for the next game end.
+		}
+		if before.ID != after.ID {
+			// The active bounty flipped: the windowed boards now scope to the new
+			// window, so refresh the cache immediately rather than waiting for the next
+			// game end, and nudge every client to re-fetch its bounty state so nobody
+			// sits in the stale post-rollover view.
 			if err := cache.Refresh(fctx); err != nil {
 				log.Error("refresh leaderboard cache after bounty advance", zap.Error(err))
 			}
+			hub.BroadcastBountyUpdate()
 		}
 	}
 
@@ -225,7 +236,7 @@ func main() {
 	defer cancel()
 	go engine.Run(ctx)
 	go runHourlyFinalizer(ctx, st, log)
-	go runBountyFinalizer(ctx, st, cache, log)
+	go runBountyFinalizer(ctx, st, cache, hub, log)
 	go runFastestClickersRefresh(ctx, st, log)
 
 	mux := api.NewRouter(st, cache, hub, engine, log)
