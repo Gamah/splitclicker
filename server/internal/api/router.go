@@ -7,7 +7,6 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,12 +17,10 @@ import (
 
 	"github.com/gamah/splitclicker/internal/game"
 	"github.com/gamah/splitclicker/internal/runtimecfg"
-	"github.com/gamah/splitclicker/internal/session"
 	"github.com/gamah/splitclicker/internal/steam"
 	"github.com/gamah/splitclicker/internal/store"
 	"github.com/gamah/splitclicker/internal/ws"
 	"github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/zap"
 )
 
@@ -157,16 +154,21 @@ func (h *handler) notFound(w http.ResponseWriter, r *http.Request) {
 // arithmetic, so a digit check is sufficient validation.
 var steamIDRe = regexp.MustCompile(`^[0-9]{1,20}$`)
 
-// POST /api/v1/auth  body: {"steam_id":"765…","token":"…","username":"optional"}
+// POST /api/v1/auth  body: {"steam_id":"765…","token":"…","display_name":"…"}
 //
 // Validates the Facepunch token server-side (fail-closed), upserts the player,
-// and returns the public tag/username plus a single-use WS ticket. This is the
-// only identity step — there is no Steam OpenID web sign-in.
+// and returns the public tag + Steam display name plus a single-use WS ticket.
+// This is the only identity step — there is no Steam OpenID web sign-in.
+//
+// Identity is purely the Steam account: there is no client-supplied username. Any
+// inbound `username` field is ignored (the JSON decoder drops the unknown key), so
+// a stuck pre-fix client that persisted a bad handle still authenticates and
+// self-heals — there is no username path left to 422 on. The board name is the
+// Steam display name; the tag is SteamID-derived. (See the CLAUDE.md decision.)
 func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SteamID     string `json:"steam_id"`
 		Token       string `json:"token"`
-		Username    string `json:"username"`
 		DisplayName string `json:"display_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -177,15 +179,8 @@ func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "steam_id must be 1–20 digits")
 		return
 	}
-	if body.Username != "" {
-		if err := session.ValidateUsername(body.Username); err != nil {
-			writeError(w, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
-	}
 	// The Steam display name is cosmetic (not unique, not a claimable handle), so
-	// it isn't validated like a username — just sanitized so junk can't poison the
-	// board.
+	// it is just sanitized so junk can't poison the board.
 	displayName := sanitizeDisplayName(body.DisplayName)
 
 	ok, err := steam.ValidateToken(r.Context(), body.SteamID, body.Token)
@@ -197,31 +192,24 @@ func (h *handler) auth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	player, err := h.store.UpsertPlayer(r.Context(), body.SteamID, body.Username, displayName)
+	player, err := h.store.UpsertPlayer(r.Context(), body.SteamID, displayName)
 	if err != nil {
-		if isUniqueViolation(err) { // username already taken by another account
-			writeError(w, http.StatusConflict, "username is already taken")
-			return
-		}
 		h.log.Error("upsert player failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "could not save player")
 		return
 	}
 
-	// Name() is the claimed username if set, else the Steam display name — the
-	// string the client shows for this player everywhere (never the hex tag).
+	// Name() is the Steam display name — the string the client shows for this
+	// player everywhere (never the hex tag).
 	name := player.Name()
 	ticket := randToken()
 	h.tickets.Put(ticket, identity{SteamID: player.SteamID, Tag: player.Tag, Username: name}, wsTicketTTL)
-	// `username` is the *claimed* handle only (empty when the player never set
-	// one) so the client never re-sends the Steam display name back as a
-	// username on reconnect — display names routinely fail ValidateUsername,
-	// which used to 422 every reconnect. `display_name` is the resolved string
-	// to show. (Older clients read only `username`; the empty value is benign —
-	// they just show the hex tag until a real handle is claimed.)
+	// `display_name` is the resolved string to show. `username` is retained in the
+	// response (always "") only so older clients that read it persist an empty
+	// value and stop re-sending a stale handle.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tag":          player.Tag,
-		"username":     player.Username,
+		"username":     "",
 		"display_name": name,
 		"ticket":       ticket,
 		"ttl_ms":       wsTicketTTL.Milliseconds(),
@@ -389,11 +377,6 @@ func CORSMiddleware(next http.Handler) http.Handler {
 }
 
 // --- helpers ---
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
-}
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")

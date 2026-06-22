@@ -60,6 +60,15 @@ s&box client ──WS /ws?ticket=──► Go backend (sole authority)
   validate `{steamid, token}` against `public.facepunch.com/sbox/auth/token` (fail-closed),
   then trust the reported SteamID. Threat model is narrow: the only realistic abuse is
   clicking on someone else's behalf, which is acceptable.
+  - **No client-supplied username (decided #28).** There is no claimable handle and no
+    claim UI; the rotaliate-inherited `username` machinery was vestigial dead weight and the
+    root cause of the 422 reconnect loop (#25). `POST /auth` ignores any inbound `username`
+    (so a stuck pre-fix client self-heals — there's no username path left to 422 on),
+    `session.ValidateUsername` + the reserved/profanity lists are gone, and the board name is
+    always the sanitized Steam **display name**. The `players.username` column is kept
+    nullable-and-ignored (no migration; door left open for a real claim flow later); it stays
+    NULL, so `session.PlayerTag(steamID, "")` == `sha256(steamID)` and **all existing tags are
+    unchanged**. Claimable usernames are *not* a current feature.
 
 ---
 
@@ -114,7 +123,7 @@ server/                # Go backend (module github.com/gamah/splitclicker)
   cmd/server/          # main entrypoint
   internal/
     steam/             # Facepunch token validation (copied from rotaliate)
-    session/           # public player tag + username validation
+    session/           # public player tag (SteamID-derived; no username — see #28)
     game/              # round/game state machine: arm RNG, race, scoring (first N by arrival)
     store/             # Postgres: players, leaderboard boards, bounties, anticheat (pgx)
     ws/                # WS hub: registry, single precomputed broadcast, click ingestion

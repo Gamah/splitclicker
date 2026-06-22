@@ -195,11 +195,14 @@ Reference implementation to copy: `rotaliate/internal/steam/auth.go` →
   org only; Facepunch validates `{steamid, token}` regardless).
 
 Flow for splitclicker:
-1. Client sends `{steam_id, token}` to `POST /api/v1/auth` (or folds it into the WS-ticket
-   mint). Server validates via `ValidateToken`; on success it upserts the player
-   (`steam_id` unique) and returns a player record + display name.
-2. Persona/display name: optionally reuse `internal/steam/persona.go` (GetPlayerSummaries,
-   needs `STEAM_WEB_API_KEY`) to seed a username; otherwise let the client send one.
+1. Client sends `{steam_id, token, display_name}` to `POST /api/v1/auth` (or folds it into
+   the WS-ticket mint). Server validates via `ValidateToken`; on success it upserts the
+   player (`steam_id` unique) and returns a player record + display name.
+2. Display name: the client reports the Steam display name (sanitized server-side). **There
+   is no client-supplied/claimable username** (removed in #28): identity is purely the Steam
+   account, the board name is the Steam display name, and any inbound `username` is ignored.
+   The `players.username` column is retained nullable-and-ignored (door open for a future
+   claim flow) but stays NULL, so the tag stays `sha256(steam_id)`.
 3. **WS ticket pattern** (reuse rotaliate's `GetWsTicket` idea, `ApiClient.cs`): the GUID/
    SteamID is proven over HTTP once; the WS upgrade carries only a single-use short-TTL
    `?ticket=` so identity never rides the WS URL/logs. The Go side maps ticket→player.
