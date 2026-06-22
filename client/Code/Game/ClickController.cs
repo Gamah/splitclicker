@@ -403,6 +403,19 @@ public sealed class ClickController : Component
 		LiveButtons.Add( new LiveButton { Slot = slot, Nonce = nonce, X = x, Y = y } );
 	}
 
+	// FindButton resolves the live board button currently at this slot, or null if it's
+	// already been claimed/replaced. The Hud's click handler addresses buttons by slot
+	// (not a captured object) so a click always scores the button live at that slot —
+	// never a stale closure capture. Same socket sync context as the tick decode/the Hud
+	// click, so it touches the list without locking.
+	public LiveButton FindButton( ushort slot )
+	{
+		foreach ( var b in LiveButtons )
+			if ( b.Slot == slot )
+				return b;
+		return null;
+	}
+
 	// Refresh (or add) an opponent cursor by tag, resetting its expiry timer.
 	void UpdateCursor( uint tag, float x, float y )
 	{
