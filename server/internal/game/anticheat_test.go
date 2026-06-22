@@ -47,7 +47,7 @@ func hasCheck(checks []CheckResult, sid, typ string) bool {
 
 // crowd is a multi-player round context with a generous fair-share limit, so the
 // fast_clicks / solo_round / dominant tests aren't perturbed by too_many_clicks.
-func crowd() checkCtx { return checkCtx{players: 5, n: 500} }
+func crowd() checkCtx { return checkCtx{n: 500} }
 
 // fast_clicks fires only when two consecutive scoring clicks are STRICTLY under
 // FastClickMs apart (boundary at 130: 129 flags, 130/131 don't).
@@ -86,7 +86,7 @@ func fourScorers() []ScoredClick {
 // player clicked is never flagged, however many slots they take.
 func TestRunChecksTooMany(t *testing.T) {
 	e := checksEngine(130, 2, 2)
-	ctx := checkCtx{players: 5, n: 10} // 5 scorers below → fair = 10/5 = 2, limit = 2*2 = 4
+	ctx := checkCtx{n: 10} // 5 scorers below → fair = 10/5 = 2, limit = 2*2 = 4
 
 	four := append(scoredAt("a", 0, 200, 400, 600), fourScorers()...)
 	if got := e.runChecks(four, ctx); hasCheck(got, "a", "too_many_clicks") {
@@ -108,7 +108,7 @@ func TestRunChecksTooMany(t *testing.T) {
 // so 5 clicks are fine and 6 flag (with 5 distinct scorers, N=10).
 func TestRunChecksTooManyFractional(t *testing.T) {
 	e := checksEngine(130, 2, 2.5)
-	ctx := checkCtx{players: 5, n: 10} // fair = 10/5 = 2, limit = int(2.5*2) = 5
+	ctx := checkCtx{n: 10} // fair = 10/5 = 2, limit = int(2.5*2) = 5
 
 	five := append(scoredAt("a", 0, 200, 400, 600, 800), fourScorers()...)
 	if got := e.runChecks(five, ctx); hasCheck(got, "a", "too_many_clicks") {
@@ -120,19 +120,20 @@ func TestRunChecksTooManyFractional(t *testing.T) {
 	}
 }
 
-// solo_round fires only when the round had a single connected player who is the
-// bounty leader AND whose games-won lead is at least SoloLeadMargin.
+// solo_round fires only when the bounty leader is the LONE entry on the sessions-won
+// board (leaderAlone) AND their games-won lead is at least SoloLeadMargin. Connection
+// and scorer counts are irrelevant — the board, not the crowd, drives this.
 func TestRunChecksSoloRound(t *testing.T) {
 	e := New(Config{SoloLeadMargin: 15}, nil, nil, nil)
 	lone := func(leader string, margin int) checkCtx {
-		return checkCtx{players: 1, n: 50, leaderID: leader, leadMargin: margin}
+		return checkCtx{n: 50, leaderID: leader, leadMargin: margin, leaderAlone: true}
 	}
 
-	// 1 player, the leader, lead ≥ 15 → flag.
+	// Alone on the board, the leader, lead ≥ 15 → flag.
 	if got := e.runChecks(scoredAt("a", 0, 500, 1000), lone("a", 15)); !hasCheck(got, "a", "solo_round") {
 		t.Fatalf("lone leader with a 15 lead should flag solo_round, got %+v", got)
 	}
-	// Lead below the margin → no flag (newcomer alone on the server).
+	// Lead below the margin → no flag (newcomer building the board's first wins).
 	if got := e.runChecks(scoredAt("a", 0, 500), lone("a", 14)); hasCheck(got, "a", "solo_round") {
 		t.Fatalf("lone leader under the margin should NOT flag solo_round, got %+v", got)
 	}
@@ -140,9 +141,10 @@ func TestRunChecksSoloRound(t *testing.T) {
 	if got := e.runChecks(scoredAt("a", 0, 500), lone("b", 99)); hasCheck(got, "a", "solo_round") {
 		t.Fatalf("lone non-leader should NOT flag solo_round, got %+v", got)
 	}
-	// More than one connected player → not a solo round.
-	if got := e.runChecks(scoredAt("a", 0, 500), checkCtx{players: 2, n: 50, leaderID: "a", leadMargin: 99}); hasCheck(got, "a", "solo_round") {
-		t.Fatalf("a 2-player round should NOT flag solo_round, got %+v", got)
+	// More than one entry on the board (leaderAlone=false) → not a solo round,
+	// however large the lead and however few players are connected/scoring.
+	if got := e.runChecks(scoredAt("a", 0, 500), checkCtx{n: 50, leaderID: "a", leadMargin: 99}); hasCheck(got, "a", "solo_round") {
+		t.Fatalf("a contested board should NOT flag solo_round, got %+v", got)
 	}
 }
 
@@ -151,8 +153,7 @@ func TestRunChecksSoloRound(t *testing.T) {
 // triggers it, so a lone clicker isn't punished.
 func TestRunChecksDominantWinner(t *testing.T) {
 	e := New(Config{DominantRunnerUpMin: 3}, nil, nil, nil)
-	const players = 3
-	ctx := checkCtx{players: players, n: 500} // limit high; isolate dominant
+	ctx := checkCtx{n: 500} // limit high; isolate dominant
 
 	// a:7, b:3 → runner-up competed (3≥3) and 7 > 2×3 → flag a.
 	clicks := append(scoredAt("a", 0, 100, 200, 300, 400, 500, 600), scoredAt("b", 50, 150, 250)...)
