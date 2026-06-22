@@ -52,9 +52,11 @@ type Config struct {
 	//                         slots. Fractional (e.g. 2.5) is allowed; the limit is
 	//                         floored to a whole click count. Skipped in solo rounds
 	//                         (one player legitimately takes every slot).
-	//   SoloLeadMargin      — solo_round only fires once a lone leader's games-won
-	//                         lead over second place is at least this many wins, so a
-	//                         newcomer alone on the server isn't punished.
+	//   SoloLeadMargin      — solo_round only fires once the lone entry on the bounty's
+	//                         sessions-won board has at least this many games won (their
+	//                         lead IS their total when alone), so a newcomer building the
+	//                         board's first wins isn't punished. Keys off the board, not
+	//                         how many players happen to be connected.
 	//   DominantRunnerUpMin — dominant_winner only fires when the runner-up actually
 	//                         competed (scored at least this many clicks); guards the
 	//                         "one player clicks, the other is idle" false positive.

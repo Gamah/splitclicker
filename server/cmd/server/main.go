@@ -217,6 +217,9 @@ func main() {
 		if sw := cache.SessionsWon(2); len(sw) > 0 {
 			bi.LeaderID = sw[0].SteamID
 			bi.LeadMargin = sw[0].Points
+			// Alone on the board: no runner-up exists, so the lead IS the leader's
+			// total. solo_round keys off this, not how many players are connected.
+			bi.LeaderAlone = len(sw) == 1
 			if len(sw) > 1 {
 				bi.LeadMargin = sw[0].Points - sw[1].Points
 			}
