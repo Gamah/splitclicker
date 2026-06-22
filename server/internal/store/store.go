@@ -39,8 +39,9 @@ func (s *Store) AddHourlyPoints(ctx context.Context, bucket time.Time, deltas []
 }
 
 // Player is a resolved player record. Tag is the public id; SteamID stays
-// server-side. Username is the claimed handle (may be ""); DisplayName is the
-// Steam name reported by the client (may be "").
+// server-side. Username is the vestigial handle from the players.username column
+// (always "" now — there is no claim flow); DisplayName is the Steam name
+// reported by the client (may be "").
 type Player struct {
 	SteamID     string
 	Username    string
@@ -48,8 +49,8 @@ type Player struct {
 	Tag         string
 }
 
-// Name is the public display string: the claimed username, falling back to the
-// Steam display name. Empty only when the player has neither.
+// Name is the public display string: the Steam display name. (The Username
+// fallback is retained for the now-always-empty legacy column; it never fires.)
 func (p Player) Name() string {
 	if p.Username != "" {
 		return p.Username
@@ -58,26 +59,25 @@ func (p Player) Name() string {
 }
 
 // UpsertPlayer creates or updates the player keyed by steam_id. An empty
-// username or displayName leaves any existing value untouched. Returns the
-// resolved player.
-func (s *Store) UpsertPlayer(ctx context.Context, steamID, username, displayName string) (Player, error) {
-	var u, d *string
-	if username != "" {
-		u = &username
-	}
+// displayName leaves any existing value untouched. Returns the resolved player.
+//
+// There is no client-supplied username anymore (identity is the Steam account);
+// the players.username column is left untouched (always NULL for new rows) and
+// kept only so the tag/board read path stays unchanged. See the CLAUDE.md decision.
+func (s *Store) UpsertPlayer(ctx context.Context, steamID, displayName string) (Player, error) {
+	var d *string
 	if displayName != "" {
 		d = &displayName
 	}
 	var name, disp *string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO players (steam_id, username, display_name)
-		VALUES ($1, $2, $3)
+		INSERT INTO players (steam_id, display_name)
+		VALUES ($1, $2)
 		ON CONFLICT (steam_id)
-		DO UPDATE SET username = COALESCE(EXCLUDED.username, players.username),
-		             display_name = COALESCE(EXCLUDED.display_name, players.display_name),
+		DO UPDATE SET display_name = COALESCE(EXCLUDED.display_name, players.display_name),
 		             updated_at = NOW()
 		RETURNING username, display_name
-	`, steamID, u, d).Scan(&name, &disp)
+	`, steamID, d).Scan(&name, &disp)
 	if err != nil {
 		return Player{}, err
 	}

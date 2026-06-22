@@ -116,7 +116,7 @@
 				@foreach ( var btn in c.LiveButtons )
 				{
 					<div class="board-btn" style="left: @(PipPct( btn.X ))%; top: @(PipPct( btn.Y ))%;"
-					     onclick="@(() => OnPressButton( btn ))"></div>
+					     onclick="@(() => OnPressSlot( btn.Slot ))"></div>
 				}
 			}
 			else if ( !( c?.BoardMode ?? false ) )
@@ -2023,11 +2023,19 @@
 		StateHasChanged();
 	}
 
-	// A click on a v5 board button: score it via its nonce. No teleport — the board is
-	// server-placed. SendButtonClick returns true only if it fell through to a penalised
-	// idle click (e.g. the window just closed), in which case pop "+ PENALTY" at the spot.
-	void OnPressButton( ClickController.LiveButton btn )
+	// A click on a v5 board button, addressed by its slot id (NOT a captured button
+	// object): resolve the button currently live at that slot and score it via its nonce.
+	// Slots are never reused within a round, so a stale render-closure firing an old slot
+	// simply resolves to null and no-ops here — it can never send a consumed nonce at a
+	// button that's already been claimed/replaced. No teleport; the board is server-placed.
+	// SendButtonClick returns true only if it fell through to a penalised idle click (e.g.
+	// the window just closed), in which case pop "+ PENALTY" at the spot.
+	void OnPressSlot( ushort slot )
 	{
+		var btn = ClickController.Instance?.FindButton( slot );
+		if ( btn == null )
+			return; // already claimed/replaced (or a stale closure) — clean miss, nothing sent
+
 		bool bad = ClickController.Instance?.SendButtonClick( btn ) ?? false;
 		if ( bad )
 		{
