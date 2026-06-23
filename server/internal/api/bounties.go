@@ -42,25 +42,9 @@ func (h *handler) previousBounties(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// GET /api/{ver}/skin/{id} — the uploaded skin image for a specific bounty, so the
-// previous-winner panel can show an image-only past skin. Inspect-link bounties
-// resolve their image client-side; this is the fallback. Base-named so it can't
-// traverse out of the media dir.
+// GET /api/{ver}/skin/{id} — the per-bounty skin image for the previous-winner
+// panel. Always the tempgun placeholder now: real per-bounty/Valve skin images
+// are no longer surfaced. Served off disk from the media dir.
 func (h *handler) skinByID(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	name, err := h.store.BountySkinImage(r.Context(), id)
-	if err != nil {
-		h.log.Error("skin by id", zap.Error(err))
-		http.NotFound(w, r)
-		return
-	}
-	if name == "" {
-		http.NotFound(w, r)
-		return
-	}
-	http.ServeFile(w, r, filepath.Join(runtimecfg.MediaDir(), filepath.Base(name)))
+	http.ServeFile(w, r, filepath.Join(runtimecfg.MediaDir(), tempgunImage))
 }

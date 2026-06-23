@@ -1706,32 +1706,18 @@
 		_winnerLockMs = cfg.WinnerLockMs;
 		_inspectLink = cfg.InspectLink ?? "";
 		_hasBounty = cfg.HasBounty;
-		// Clear the previous bounty's decoded skin so a re-fetch (rollover) doesn't
-		// leave the old name/stats showing under the new skin — ResolveSkin refills it
-		// when this bounty also has an inspect link; an image-only bounty keeps it null.
+		// Real CS2/Valve skins are no longer surfaced: the panel always shows the
+		// server's tempgun placeholder (served by _skinUrl). Leaving _skin null keeps
+		// the name/stats/"unable to fetch" rows hidden so only the placeholder shows.
+		// The inspect link is still kept above for the copy-link affordance.
 		_skin = null;
 		StateHasChanged();
-
-		// If the active bounty was set by an inspect link, decode it locally and
-		// resolve its name/image (cached dataset) in the background; the panel shows
-		// the server image until/unless this succeeds.
-		if ( !string.IsNullOrWhiteSpace( cfg.InspectLink ) )
-			_ = ResolveSkin( cfg.InspectLink );
 	}
 
-	// Decode the bounty's inspect link + resolve its name/image, then re-render. On
-	// any failure _skin is left with DecodeOk/ImageOk false so the panel falls back
-	// to the server image plus an "unable to fetch skin from steam" note.
-	async Task ResolveSkin( string link )
-	{
-		_skin = await SkinInspect.Resolve( link );
-		StateHasChanged();
-	}
-
-	// Fetch the most recent settled bounty (the "previous winner") and, if it was an
-	// inspect-link skin, decode it locally for the live render. Re-run alongside
-	// LoadConfig so a rollover surfaces the just-settled winner immediately. The
-	// resolve is guarded by id so a slow decode can't clobber a newer previous bounty.
+	// Fetch the most recent settled bounty (the "previous winner"). Its skin shows
+	// the server's tempgun placeholder (via _prevSkinUrl) — real Valve skins are no
+	// longer resolved — so _prevSkin stays null. Re-run alongside LoadConfig so a
+	// rollover surfaces the just-settled winner immediately.
 	async Task LoadPreviousBounty()
 	{
 		var list = await ApiClient.GetPreviousBounties();
@@ -1740,17 +1726,6 @@
 		_prevSkin = null;
 		_prevSkinUrl = b != null ? ( ApiClient.AbsoluteUrl( b.SkinUrl ) ?? "" ) : "";
 		StateHasChanged();
-
-		if ( b != null && !string.IsNullOrWhiteSpace( b.InspectLink ) )
-		{
-			var id = b.Id;
-			var skin = await SkinInspect.Resolve( b.InspectLink );
-			if ( _prevBounty != null && _prevBounty.Id == id ) // still the same previous bounty
-			{
-				_prevSkin = skin;
-				StateHasChanged();
-			}
-		}
 	}
 
 	protected override void OnUpdate()
