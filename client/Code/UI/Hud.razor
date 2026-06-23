@@ -199,8 +199,8 @@
 	@* ── top-clickers board: points scored during the current bounty window
 	     (resets when the skin is won), pinned right (inner) ── *@
 	<div class="board hourly">
-		<div class="title">TOP CLICKERS · THIS SKIN</div>
-		<div class="reset">resets when the skin is won</div>
+		<div class="title">TOP CLICKERS · THIS BOUNTY</div>
+		<div class="reset">resets when the bounty is won</div>
 		<div class="divider"></div>
 		@if ( !_hasBounty )
 		{
@@ -208,7 +208,7 @@
 		}
 		else if ( _hourly.Count == 0 )
 		{
-			<div class="empty">@(_hourlyLoaded ? "No clicks for this skin yet" : "loading…")</div>
+			<div class="empty">@(_hourlyLoaded ? "No clicks for this bounty yet" : "loading…")</div>
 		}
 		else
 		{
@@ -228,7 +228,7 @@
 	@* ── hours-won board: UTC clock-hours topped during the current bounty window
 	     (resets when the skin is won), pinned right (outer) ── *@
 	<div class="board hourswon">
-		<div class="title">HOURS WON · THIS SKIN</div>
+		<div class="title">HOURS WON · THIS BOUNTY</div>
 		<div class="divider"></div>
 		@if ( !_hasBounty )
 		{
@@ -236,7 +236,7 @@
 		}
 		else if ( _hoursWon.Count == 0 )
 		{
-			<div class="empty">@(_hoursWonLoaded ? "No hours won for this skin yet" : "loading…")</div>
+			<div class="empty">@(_hoursWonLoaded ? "No hours won for this bounty yet" : "loading…")</div>
 		}
 		else
 		{
@@ -257,7 +257,7 @@
 	     the board the bounty winner is read from (resets when the skin is won),
 	     pinned bottom-right ── *@
 	<div class="board sessionswon">
-		<div class="title">GAMES WON · THIS SKIN</div>
+		<div class="title">GAMES WON · THIS BOUNTY</div>
 		<div class="divider"></div>
 		@if ( !_hasBounty )
 		{
@@ -265,7 +265,7 @@
 		}
 		else if ( _sessionsWon.Count == 0 )
 		{
-			<div class="empty">@(_sessionsWonLoaded ? "No games won for this skin yet" : "loading…")</div>
+			<div class="empty">@(_sessionsWonLoaded ? "No games won for this bounty yet" : "loading…")</div>
 		}
 		else
 		{
@@ -293,7 +293,7 @@
 			   nothing of it — just say there's no skin to win right now. *@
 			<div class="no-bounty">
 				<div class="no-bounty-title">No active bounty</div>
-				<div class="no-bounty-sub">Gamah will set a new skin to win soon — check back shortly</div>
+				<div class="no-bounty-sub">Gamah will set a new bounty to win soon — check back shortly</div>
 			</div>
 		}
 		else
@@ -302,7 +302,7 @@
 		{
 			@if ( WinnerLockPassed() )
 			{
-				<div class="skin-locked">Gamah will set a new skin to win when he sees this</div>
+				<div class="skin-locked">Gamah will set a new bounty to win when he sees this</div>
 			}
 			else
 			{
@@ -334,18 +334,18 @@
 			</div>
 			@if ( !_skin.ImageOk )
 			{
-				<div class="skin-note">unable to fetch skin from steam</div>
+				<div class="skin-note">unable to fetch bounty from steam</div>
 			}
 		}
 		else if ( _skin != null )
 		{
-			<div class="skin-note">unable to fetch skin from steam</div>
+			<div class="skin-note">unable to fetch bounty from steam</div>
 		}
 		@if ( !string.IsNullOrWhiteSpace( _inspectLink ) )
 		{
 			<div class="skin-copy clickable" onclick="@CopyInspect">Copy inspect link</div>
 		}
-		<div class="skin-caption">@($"{SkinLeaderName()}'s Prize")</div>
+		<div class="skin-caption">@($"{SkinLeaderName()}'s Bounty")</div>
 		}
 	</div>
 
@@ -468,7 +468,7 @@
 				<div class="state-row"><span class="tag over">TOO MANY</span><span class="desc">In a busy round you took far more than your fair share of the clicks (solo rounds are exempt — there's no one to share with).</span></div>
 				<div class="state-row"><span class="tag over">SOLO FARM</span><span class="desc">Padding a runaway bounty lead by clicking alone, once that lead is already huge.</span></div>
 				<div class="state-row"><span class="tag over">RUNAWAY</span><span class="desc">You out-clicked a runner-up who was genuinely competing by an impossible margin (beating an idle player is fine).</span></div>
-				<div class="line penalty-note">Keep getting flagged in one bounty and it escalates: too many flags puts you on a timed cooldown, and a few more after that sidelines you until the skin is won. Play fair and none of this ever fires — these only catch automation.</div>
+				<div class="line penalty-note">Keep getting flagged in one bounty and it escalates: too many flags puts you on a timed cooldown, and a few more after that sidelines you until the bounty is won. Play fair and none of this ever fires — these only catch automation.</div>
 
 				<div class="divider"></div>
 				@* Single interpolated string (mixed literal + @() text nodes reorder on
@@ -511,7 +511,7 @@
 			<div class="test-card sanction">
 				<div class="test-title">Gamah Anti-Cheat v0.67.69.420</div>
 				<div class="test-reason">@(C.SanctionMessage)</div>
-				<div class="sanction-label">@(C.SanctionState == "ignored" ? "Back in the game when the skin is won" : "Cooldown ends in")</div>
+				<div class="sanction-label">@(C.SanctionState == "ignored" ? "Back in the game when the bounty is won" : "Cooldown ends in")</div>
 				<div class="sanction-time">@SanctionCountdown()</div>
 			</div>
 		</div>
@@ -1724,7 +1724,7 @@
 
 	// Decode the bounty's inspect link + resolve its name/stats, then re-render. On
 	// any failure _skin is left with DecodeOk/ImageOk false so the panel shows the
-	// "unable to fetch skin from steam" note; the image is the tempgun placeholder
+	// "unable to fetch bounty from steam" note; the image is the tempgun placeholder
 	// either way.
 	async Task ResolveSkin( string link )
 	{
@@ -2005,7 +2005,7 @@
 		if ( string.IsNullOrWhiteSpace( _inspectLink ) ) return;
 		try { Clipboard.SetText( _inspectLink ); }
 		catch ( Exception e ) { Log.Warning( $"[Splitclicker] clipboard copy failed: {e.Message}" ); }
-		_toast = "Copied the skin's inspect link";
+		_toast = "Copied the bounty's inspect link";
 		_toastSince = 0f;
 		StateHasChanged();
 	}
