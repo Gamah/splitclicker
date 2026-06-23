@@ -51,6 +51,10 @@
 					<div class="rank">@(i + 1)</div>
 					<div class="dot @StatusClass( s )"></div>
 					<div class="name clickable" onclick="@(() => CopyProfile( s ))">@DisplayName( s )</div>
+					@if ( s.BehindMs > 0 )
+					{
+						<div class="behind" title="lost the game by @(s.BehindMs)ms">+@(s.BehindMs)ms</div>
+					}
 					<div class="pts">@s.Points</div>
 				</div>
 			}
@@ -763,6 +767,10 @@
 	.board .name { flex-grow: 1; overflow: hidden; white-space: nowrap; }
 	.board .pts { color: #06d6a0; font-weight: bold; }
 	.board .row.me { background-color: rgba(6, 214, 160, 0.15); }
+
+	/* the tie-break margin ("+12ms"): how far this player trailed the one above
+	   them on the same score. Dim amber, just left of the points. */
+	.board .behind { color: #ffb37a; font-size: 11px; margin-right: 6px; flex-shrink: 0; }
 
 	/* names are clickable (copy the player's Steam profile link); re-enable
 	   pointer events on just these against the pointer-events:none root. */

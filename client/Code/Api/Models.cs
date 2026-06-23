@@ -63,7 +63,12 @@ public record Standing(
 	[property: JsonPropertyName( "steam_id" )] string SteamId,
 	// Anticheat status for the active bounty: "live" / "cooldown" / "ignored".
 	// Drives the coloured status dot on every board row. Empty ⇒ treated as live.
-	[property: JsonPropertyName( "status" )] string Status
+	[property: JsonPropertyName( "status" )] string Status,
+	// BehindMs is how many ms this player's tie-deciding click landed after the
+	// player ranked just above them with the SAME points — "how much they lost the
+	// game by". Only the final game_over standings carry it (the end-of-game tie is
+	// the one that matters); 0/absent ⇒ top of a tie group or a unique score.
+	[property: JsonPropertyName( "behind_ms" )] int BehindMs
 );
 
 // --- WebSocket server→client frames (the "t" field selects the shape) ---
