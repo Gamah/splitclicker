@@ -111,6 +111,7 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	mux.HandleFunc("POST /admin/bounties", h.adminBountyCreate)
 	mux.HandleFunc("POST /admin/bounties/edit", h.adminBountyEdit)
 	mux.HandleFunc("POST /admin/bounties/delete", h.adminBountyDelete)
+	mux.HandleFunc("POST /admin/bounties/archive", h.adminBountyArchive)
 
 	// Versioned game surface. {ver} is the client's API version (e.g. v2, v3); the
 	// "live" threshold is config-driven (live_version in config.json, re-read per

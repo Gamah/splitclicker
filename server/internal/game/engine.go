@@ -76,6 +76,13 @@ type Standing struct {
 	// Status is the player's live anticheat rung for the active bounty —
 	// "live" / "cooldown" / "ignored" — for the leaderboard status dot.
 	Status string `json:"status"`
+	// BehindMs is how many milliseconds this player's tie-deciding click (the one
+	// that reached their total) arrived AFTER the player ranked immediately above
+	// them with the SAME points — i.e. "how much they lost the game by". Stamped
+	// only on the FINAL game standings (game_over), not the per-round running
+	// standings, since the tie that matters is the end-of-game one. 0 (omitted) for
+	// the top of a tie group and for a unique score. Additive; older clients ignore.
+	BehindMs int `json:"behind_ms,omitempty"`
 }
 
 // --- broadcaster (implemented by the ws hub) ---
@@ -704,6 +711,7 @@ func (e *Engine) playGame(ctx context.Context) {
 	}
 
 	final := standingsOf(scores, info, reached)
+	stampBehindMs(final, reached) // tie-break margins on the FINAL game standings only
 	e.annotateStatus(final)
 	placements := make(map[string]int, len(final))
 	won := make(map[string]bool, len(final))
@@ -1467,6 +1475,27 @@ func standingsOf(scores map[string]int, info map[string]playerInfo, reached map[
 		return out[i].SteamID < out[j].SteamID
 	})
 	return out
+}
+
+// stampBehindMs annotates a SORTED standings slice with each tied player's gap to
+// the player directly above them on the same score: the ms between their
+// tie-deciding clicks ("how much you lost the game by"). It's an end-of-game
+// notion — the per-round running standings have transient ties, so this is stamped
+// only on the final game standings, not on round_result. Top of a tie group / a
+// unique score is left at 0 (omitempty drops it on the wire).
+func stampBehindMs(standings []Standing, reached map[string]time.Time) {
+	for i := 1; i < len(standings); i++ {
+		if standings[i].Points != standings[i-1].Points {
+			continue
+		}
+		prev, cur := reached[standings[i-1].SteamID], reached[standings[i].SteamID]
+		if prev.IsZero() || cur.IsZero() {
+			continue // missing timing (e.g. no recorded scoring click) — no gap shown
+		}
+		if ms := cur.Sub(prev).Milliseconds(); ms > 0 {
+			standings[i].BehindMs = int(ms)
+		}
+	}
 }
 
 func topK(s []Standing, k int) []Standing {

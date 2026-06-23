@@ -25,10 +25,14 @@ public record AuthResponse(
 // InspectLink is the active bounty's CS2 inspect link, or "" when the skin is an
 // uploaded image only. When set, the client decodes it locally and renders the
 // live float / seed / name / wear bar, falling back to SkinUrl's image on failure.
+// HasBounty is false when no bounty is active — the WinnerLockMs/SkinUrl are then the
+// host config.json/env fallback (a stale "old" skin) and the bounty-scoped boards have
+// fallen back to all-time, so the client shows a "no active bounty" state instead.
 public record ConfigResponse(
 	[property: JsonPropertyName( "winner_lock_ms" )] long WinnerLockMs,
 	[property: JsonPropertyName( "skin_url" )] string SkinUrl,
-	[property: JsonPropertyName( "inspect_link" )] string InspectLink
+	[property: JsonPropertyName( "inspect_link" )] string InspectLink,
+	[property: JsonPropertyName( "has_bounty" )] bool HasBounty
 );
 
 // GET /api/v1/bounties/previous response row: a settled bounty + its winner, for
@@ -59,7 +63,12 @@ public record Standing(
 	[property: JsonPropertyName( "steam_id" )] string SteamId,
 	// Anticheat status for the active bounty: "live" / "cooldown" / "ignored".
 	// Drives the coloured status dot on every board row. Empty ⇒ treated as live.
-	[property: JsonPropertyName( "status" )] string Status
+	[property: JsonPropertyName( "status" )] string Status,
+	// BehindMs is how many ms this player's tie-deciding click landed after the
+	// player ranked just above them with the SAME points — "how much they lost the
+	// game by". Only the final game_over standings carry it (the end-of-game tie is
+	// the one that matters); 0/absent ⇒ top of a tie group or a unique score.
+	[property: JsonPropertyName( "behind_ms" )] int BehindMs
 );
 
 // --- WebSocket server→client frames (the "t" field selects the shape) ---

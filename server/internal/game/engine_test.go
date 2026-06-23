@@ -159,6 +159,35 @@ func TestStandingsTieBreakByReached(t *testing.T) {
 	}
 }
 
+func TestStandingsBehindMs(t *testing.T) {
+	scores := map[string]int{"a": 3, "b": 3, "c": 3, "d": 1}
+	info := map[string]playerInfo{"a": {}, "b": {}, "c": {}, "d": {}}
+	now := time.Now()
+	// a,b,c tie at 3; they reached it 0/40/105ms apart in rank order. d is alone at 1.
+	reached := map[string]time.Time{
+		"a": now,
+		"b": now.Add(40 * time.Millisecond),
+		"c": now.Add(105 * time.Millisecond),
+		"d": now.Add(time.Second),
+	}
+	s := standingsOf(scores, info, reached)
+	stampBehindMs(s, reached) // game-end annotation (not applied to per-round standings)
+	// Gaps are to the player directly above in the same point group; the group
+	// leader and the lone player carry none.
+	if s[0].SteamID != "a" || s[0].BehindMs != 0 {
+		t.Fatalf("rank 1: got %s behind=%d, want a behind=0", s[0].SteamID, s[0].BehindMs)
+	}
+	if s[1].SteamID != "b" || s[1].BehindMs != 40 {
+		t.Fatalf("rank 2: got %s behind=%d, want b behind=40", s[1].SteamID, s[1].BehindMs)
+	}
+	if s[2].SteamID != "c" || s[2].BehindMs != 65 {
+		t.Fatalf("rank 3: got %s behind=%d, want c behind=65", s[2].SteamID, s[2].BehindMs)
+	}
+	if s[3].SteamID != "d" || s[3].BehindMs != 0 {
+		t.Fatalf("rank 4: got %s behind=%d, want d behind=0 (unique score)", s[3].SteamID, s[3].BehindMs)
+	}
+}
+
 func TestRandArmDelayWithinBounds(t *testing.T) {
 	e := New(Config{ArmMin: 10 * time.Millisecond, ArmMax: 50 * time.Millisecond}, nil, nil, nil)
 	for i := 0; i < 1000; i++ {

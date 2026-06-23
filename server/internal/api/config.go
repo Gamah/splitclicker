@@ -53,9 +53,11 @@ func winnerLockMs() int64 {
 func (h *handler) config(w http.ResponseWriter, r *http.Request) {
 	lock := winnerLockMs()
 	inspect := ""
+	hasBounty := false
 	if b, ok, err := h.store.ActiveBounty(r.Context()); err != nil {
 		h.log.Error("config: active bounty", zap.Error(err))
 	} else if ok {
+		hasBounty = true
 		lock = b.WinTime.UnixMilli()
 		inspect = b.InspectLink
 	}
@@ -66,6 +68,11 @@ func (h *handler) config(w http.ResponseWriter, r *http.Request) {
 		// image only. The client decodes it locally and renders the live float /
 		// seed / name / wear bar, falling back to skin_url's image on any failure.
 		"inspect_link": inspect,
+		// Whether a bounty is actually active. False ⇒ the winner_lock_ms/skin_url are
+		// the host config.json/env fallback (a stale "old" skin) and the bounty-scoped
+		// boards have fallen back to all-time data — the client shows a "no active
+		// bounty" state instead of presenting that stale skin/countdown as live.
+		"has_bounty": hasBounty,
 	})
 }
 
