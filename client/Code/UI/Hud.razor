@@ -198,7 +198,11 @@
 		<div class="title">TOP CLICKERS · THIS SKIN</div>
 		<div class="reset">resets when the skin is won</div>
 		<div class="divider"></div>
-		@if ( _hourly.Count == 0 )
+		@if ( !_hasBounty )
+		{
+			<div class="empty">No active bounty</div>
+		}
+		else if ( _hourly.Count == 0 )
 		{
 			<div class="empty">@(_hourlyLoaded ? "No clicks for this skin yet" : "loading…")</div>
 		}
@@ -222,7 +226,11 @@
 	<div class="board hourswon">
 		<div class="title">HOURS WON · THIS SKIN</div>
 		<div class="divider"></div>
-		@if ( _hoursWon.Count == 0 )
+		@if ( !_hasBounty )
+		{
+			<div class="empty">No active bounty</div>
+		}
+		else if ( _hoursWon.Count == 0 )
 		{
 			<div class="empty">@(_hoursWonLoaded ? "No hours won for this skin yet" : "loading…")</div>
 		}
@@ -247,7 +255,11 @@
 	<div class="board sessionswon">
 		<div class="title">GAMES WON · THIS SKIN</div>
 		<div class="divider"></div>
-		@if ( _sessionsWon.Count == 0 )
+		@if ( !_hasBounty )
+		{
+			<div class="empty">No active bounty</div>
+		}
+		else if ( _sessionsWon.Count == 0 )
 		{
 			<div class="empty">@(_sessionsWonLoaded ? "No games won for this skin yet" : "loading…")</div>
 		}
@@ -271,6 +283,17 @@
 	     sessions-won leader's name. Above it, a countdown to when the winner is
 	     locked in; once that passes, a prompt for Gamah to set a new skin. ── *@
 	<div class="skin-panel">
+		@if ( !_hasBounty )
+		{
+			@* No bounty is live: the config skin/countdown are a stale fallback, so show
+			   nothing of it — just say there's no skin to win right now. *@
+			<div class="no-bounty">
+				<div class="no-bounty-title">No active bounty</div>
+				<div class="no-bounty-sub">Gamah will set a new skin to win soon — check back shortly</div>
+			</div>
+		}
+		else
+		{
 		@if ( HasWinnerLock )
 		{
 			@if ( WinnerLockPassed() )
@@ -319,6 +342,7 @@
 			<div class="skin-copy clickable" onclick="@CopyInspect">Copy inspect link</div>
 		}
 		<div class="skin-caption">@($"{SkinLeaderName()}'s Skin")</div>
+		}
 	</div>
 
 	@* ── previous winner: a duplicate of the skin panel showing who won the last
@@ -803,6 +827,32 @@
 		font-size: 13px;
 		font-weight: bold;
 		color: #ff9f1c;
+		text-align: center;
+		justify-content: center;
+	}
+
+	/* shown in place of the whole skin/countdown when no bounty is active (the
+	   config skin/countdown would otherwise be a stale fallback). */
+	.no-bounty {
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: 24px 12px;
+		gap: 8px;
+	}
+
+	.no-bounty-title {
+		font-size: 20px;
+		font-weight: bold;
+		color: #ffd166;
+		text-align: center;
+		justify-content: center;
+		letter-spacing: 0.5px;
+	}
+
+	.no-bounty-sub {
+		font-size: 12px;
+		color: rgba(255, 255, 255, 0.6);
 		text-align: center;
 		justify-content: center;
 	}
@@ -1488,6 +1538,12 @@
 	long _winnerLockMs;
 	string _skinUrl = "";
 
+	// True only while a bounty is actually active (config's has_bounty). When false the
+	// skin/countdown above is the host config.json/env fallback (a stale "old" skin) and
+	// the bounty-scoped boards have fallen back to all-time data — so the skin panel and
+	// the "THIS SKIN" boards show a "no active bounty" state instead of that stale data.
+	bool _hasBounty;
+
 	// ── inspect-link skin (decoded locally + name/image resolved off the dataset) ──
 	// Null until an inspect-linked bounty's config arrives and resolution completes;
 	// its DecodeOk/ImageOk flags drive what the skin panel shows vs. the server image.
@@ -1641,6 +1697,7 @@
 		_skinUrl = ApiClient.AbsoluteUrl( cfg.SkinUrl ) ?? "";
 		_winnerLockMs = cfg.WinnerLockMs;
 		_inspectLink = cfg.InspectLink ?? "";
+		_hasBounty = cfg.HasBounty;
 		// Clear the previous bounty's decoded skin so a re-fetch (rollover) doesn't
 		// leave the old name/stats showing under the new skin — ResolveSkin refills it
 		// when this bounty also has an inspect link; an image-only bounty keeps it null.
@@ -2160,7 +2217,7 @@
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
 		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), MusicOpen,
-			_skinUrl, _winnerLockMs, WinnerLockPassed() ),
+			_skinUrl, _winnerLockMs, HashCode.Combine( WinnerLockPassed(), _hasBounty ) ),
 		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count, _allTime.Count, _allTimeLoaded,
 			C?.HasTest ?? false, C?.TestPrompt ),
 		_howtoOpen,

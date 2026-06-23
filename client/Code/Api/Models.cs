@@ -25,10 +25,14 @@ public record AuthResponse(
 // InspectLink is the active bounty's CS2 inspect link, or "" when the skin is an
 // uploaded image only. When set, the client decodes it locally and renders the
 // live float / seed / name / wear bar, falling back to SkinUrl's image on failure.
+// HasBounty is false when no bounty is active — the WinnerLockMs/SkinUrl are then the
+// host config.json/env fallback (a stale "old" skin) and the bounty-scoped boards have
+// fallen back to all-time, so the client shows a "no active bounty" state instead.
 public record ConfigResponse(
 	[property: JsonPropertyName( "winner_lock_ms" )] long WinnerLockMs,
 	[property: JsonPropertyName( "skin_url" )] string SkinUrl,
-	[property: JsonPropertyName( "inspect_link" )] string InspectLink
+	[property: JsonPropertyName( "inspect_link" )] string InspectLink,
+	[property: JsonPropertyName( "has_bounty" )] bool HasBounty
 );
 
 // GET /api/v1/bounties/previous response row: a settled bounty + its winner, for
