@@ -16,19 +16,10 @@ import (
 // config.json (re-read per request, see package runtimecfg), then env, then the
 // built-in default — so a fresh deploy with no bounties still serves a skin.
 
-// skinFile is the image served as the current skin: config.json's skin_image,
-// else env SKIN_IMAGE, else the default. Base-named so it can't traverse out of
-// the media dir.
-func skinFile() string {
-	f := runtimecfg.Load().SkinImage
-	if f == "" {
-		f = os.Getenv("SKIN_IMAGE")
-	}
-	if f == "" {
-		f = "skin2win.png"
-	}
-	return filepath.Base(f)
-}
+// tempgunImage is the single placeholder weapon image served for every skin.
+// Real CS2 skin images (whether uploaded or resolved from Valve's backend) are
+// no longer surfaced; the client shows this in their place. Lives in the media dir.
+const tempgunImage = "tempgun.png"
 
 // winnerLockMs is when the current winner is locked in, as Unix epoch ms (0 =
 // unset/unparseable): config.json's winner_lock_time, else env WINNER_LOCK_TIME.
@@ -76,16 +67,9 @@ func (h *handler) config(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/v1/skin — the current skin image: the active bounty's skin_image,
-// falling back to config.json/SKIN_IMAGE/default. Served off disk from the media
-// dir (base-named so it can't traverse out). ServeFile sets content-type and
-// validation headers; reading per request means a bounty swap applies live.
+// GET /api/v1/skin — the current "skin to win" image. Always the tempgun
+// placeholder: real bounty/Valve skin images are no longer surfaced. Served off
+// disk from the media dir. ServeFile sets content-type and validation headers.
 func (h *handler) skin(w http.ResponseWriter, r *http.Request) {
-	name := skinFile()
-	if b, ok, err := h.store.ActiveBounty(r.Context()); err != nil {
-		h.log.Error("skin: active bounty", zap.Error(err))
-	} else if ok && b.SkinImage != "" {
-		name = filepath.Base(b.SkinImage)
-	}
-	http.ServeFile(w, r, filepath.Join(runtimecfg.MediaDir(), name))
+	http.ServeFile(w, r, filepath.Join(runtimecfg.MediaDir(), tempgunImage))
 }
