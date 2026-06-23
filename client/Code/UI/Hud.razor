@@ -312,7 +312,7 @@
 				</div>
 			}
 		}
-		<div class="skin-img" style="background-image: url( @SkinImgUrl() );"></div>
+		<div class="skin-img" style="background-image: url( '@SkinImgUrl()' );"></div>
 		@if ( _skin != null && _skin.DecodeOk )
 		{
 			@if ( _skin.ImageOk )
@@ -371,7 +371,7 @@
 				<div class="prev-winner">@PrevWinnerName()</div>
 			}
 			<div class="prev-wins">@($"won {_prevBounty.WinnerWins} games")</div>
-			<div class="skin-img" style="background-image: url( @PrevSkinImgUrl() );"></div>
+			<div class="skin-img" style="background-image: url( '@PrevSkinImgUrl()' );"></div>
 			@if ( _prevSkin != null && _prevSkin.DecodeOk )
 			{
 				@if ( _prevSkin.ImageOk )
@@ -1573,9 +1573,11 @@
 	string _prevSkinUrl = "";
 	int _lastBountyRefresh;
 
-	// Image URL for the panel: the resolved Steam CDN weapon image when available,
-	// otherwise the server-served fallback image (also used when no link is set).
-	string SkinImgUrl() => _skin != null && _skin.ImageOk ? _skin.ImageUrl : _skinUrl;
+	// Image for every skin panel: a locally-bundled placeholder. Real CS2/Valve
+	// skins are no longer surfaced and the image is no longer fetched from the
+	// server — it ships with the client (see .sbproj Resources).
+	const string TempgunImg = "media/tempgun.png";
+	string SkinImgUrl() => TempgunImg;
 
 	// Wear-bar marker position as a 0..100 percentage at the float value, clamped.
 	int MarkerPct()
@@ -1597,7 +1599,7 @@
 
 	// ── previous-winner panel helpers (mirror the current-skin ones, reading the
 	//    previous bounty's decoded skin/image instead) ──
-	string PrevSkinImgUrl() => _prevSkin != null && _prevSkin.ImageOk ? _prevSkin.ImageUrl : _prevSkinUrl;
+	string PrevSkinImgUrl() => TempgunImg;
 
 	int PrevMarkerPct()
 	{
