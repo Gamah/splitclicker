@@ -24,13 +24,16 @@ type Bounty struct {
 	WinnerWins  int
 	WonAt       *time.Time
 	CreatedAt   time.Time
+	Archived    bool // hidden from every client-facing read (admin-only visibility)
 }
 
 // ActiveBounty returns the currently active bounty (the skin shown + the
 // countdown). ok is false when no bounty is active (e.g. before any is added or
-// after the queue has drained) — callers fall back to config.json/env.
+// after the queue has drained) — callers fall back to config.json/env. An
+// archived bounty is treated as absent here, so archiving the active one makes
+// the client show the "no active bounty" state without disturbing the queue.
 func (s *Store) ActiveBounty(ctx context.Context) (b Bounty, ok bool, err error) {
-	err = s.scanBounty(s.pool.QueryRow(ctx, bountySelect+` WHERE status = 'active' LIMIT 1`), &b)
+	err = s.scanBounty(s.pool.QueryRow(ctx, bountySelect+` WHERE status = 'active' AND NOT archived LIMIT 1`), &b)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Bounty{}, false, nil
 	}
@@ -290,7 +293,7 @@ func (s *Store) RecentWonBounties(ctx context.Context, limit int) ([]WonBounty, 
 		       b.winner_id, b.winner_name, p.username, b.winner_wins, b.won_at
 		  FROM bounties b
 		  LEFT JOIN players p ON p.steam_id = b.winner_id
-		 WHERE b.status = 'won'
+		 WHERE b.status = 'won' AND NOT b.archived
 		 ORDER BY b.won_at DESC NULLS LAST, b.id DESC
 		 LIMIT $1
 	`, limit)
@@ -332,17 +335,26 @@ func (s *Store) BountySkinImage(ctx context.Context, id int64) (string, error) {
 	return img, err
 }
 
+// SetBountyArchived flips a bounty's archived flag. Archiving hides it from every
+// client-facing read (active skin + previous-winner history) without touching its
+// lifecycle status; un-archiving restores it. Works on a bounty in any status so
+// the host can hide the live one to test the empty state, then bring it back.
+func (s *Store) SetBountyArchived(ctx context.Context, id int64, archived bool) error {
+	_, err := s.pool.Exec(ctx, `UPDATE bounties SET archived = $2 WHERE id = $1`, id, archived)
+	return err
+}
+
 // bountySelect is the shared column list / order for scanBounty.
 const bountySelect = `
 	SELECT id, skin_image, inspect_link, label, win_time, status, activated_at,
-	       winner_id, winner_name, winner_wins, won_at, created_at
+	       winner_id, winner_name, winner_wins, won_at, created_at, archived
 	  FROM bounties`
 
 // scanBounty reads one bounty row (from QueryRow or an iterating Query).
 func (s *Store) scanBounty(row pgx.Row, b *Bounty) error {
 	var winnerID *string
 	if err := row.Scan(&b.ID, &b.SkinImage, &b.InspectLink, &b.Label, &b.WinTime, &b.Status,
-		&b.ActivatedAt, &winnerID, &b.WinnerName, &b.WinnerWins, &b.WonAt, &b.CreatedAt); err != nil {
+		&b.ActivatedAt, &winnerID, &b.WinnerName, &b.WinnerWins, &b.WonAt, &b.CreatedAt, &b.Archived); err != nil {
 		return err
 	}
 	b.WinnerID = deref(winnerID)

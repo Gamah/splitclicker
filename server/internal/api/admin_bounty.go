@@ -124,6 +124,27 @@ func (h *handler) adminBountyDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
+// POST /admin/bounties/archive — toggle a bounty's archived flag (archived=1 to
+// hide, anything else to restore). Archiving hides the bounty from every
+// client-facing read (the active skin + the previous-winner history) without
+// altering its lifecycle, so the host can blank the HUD to test the empty state.
+func (h *handler) adminBountyArchive(w http.ResponseWriter, r *http.Request) {
+	if !h.adminAuth(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	archived := r.FormValue("archived") == "1"
+	if err := h.store.SetBountyArchived(r.Context(), id, archived); err != nil {
+		h.adminError(w, "archive bounty", err)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
 // GET /admin/media?f=<name> — serve a media-dir image for the admin queue
 // thumbnails. Admin-gated and base-named so it can't traverse out of the dir.
 func (h *handler) adminMedia(w http.ResponseWriter, r *http.Request) {

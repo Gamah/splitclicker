@@ -457,6 +457,14 @@ func resolveWindow(param string, selectable []store.BountyWindow) (store.Window,
 	return store.AllWindow(), "All history", ""
 }
 
+// bwName is a bounty's display name for the filter (its label, or "#id").
+func bwName(b store.BountyWindow) string {
+	if b.Label != "" {
+		return b.Label
+	}
+	return "bounty #" + strconv.FormatInt(b.ID, 10)
+}
+
 // bountyFilterLabel is the human label for a bounty in the filter / heading.
 func bountyFilterLabel(b store.BountyWindow) string {
 	name := b.Label
@@ -575,17 +583,30 @@ type playerData struct {
 	TestsPage Page
 }
 
+// localTime renders an instant as a <time> element carrying the UTC instant in
+// its datetime attribute, with a UTC fallback as text. The shared admin JS
+// rewrites the text to the browser's local zone on load; with JS off the UTC
+// value still shows. Storage and the wire stay UTC — this is display only.
+func localTime(t time.Time) template.HTML {
+	return template.HTML(`<time class="lt" datetime="` + t.UTC().Format(time.RFC3339) +
+		`">` + t.UTC().Format("2006-01-02 15:04:05") + ` UTC</time>`)
+}
+
 // adminFuncs are the template helpers shared by the admin views.
 var adminFuncs = template.FuncMap{
-	"ts": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") },
-	// tsp renders a nullable timestamp ("—" when unset, e.g. a pending bounty's
-	// activation time).
-	"tsp": func(t *time.Time) string {
+	// lt / ltp render a timestamp for local-time display (see localTime); ltp shows
+	// "—" for an unset nullable time (e.g. a pending bounty's activation).
+	"lt": func(t time.Time) template.HTML { return localTime(t) },
+	"ltp": func(t *time.Time) template.HTML {
 		if t == nil {
-			return "—"
+			return template.HTML("—")
 		}
-		return t.UTC().Format("2006-01-02 15:04:05")
+		return localTime(*t)
 	},
+	// rfc is the UTC RFC3339 instant the admin JS parses to relabel a filter option
+	// in local time (an <option> can't hold a <time> element, so it's data-driven).
+	"rfc":    func(t time.Time) string { return t.UTC().Format(time.RFC3339) },
+	"bwname": bwName,
 	// dtlocal formats a time as an <input type=datetime-local> value (UTC, no
 	// zone) so editing a bounty round-trips through parseAdminTime's UTC reading.
 	"dtlocal": func(t time.Time) string { return t.UTC().Format("2006-01-02T15:04") },
@@ -617,18 +638,15 @@ var adminFuncs = template.FuncMap{
 	// idsel reports whether bounty option id matches the active filter value, for
 	// the <option selected> marker.
 	"idsel": func(id int64, cur string) bool { return strconv.FormatInt(id, 10) == cur },
-	// bwlabel is the option text for a bounty in the filter dropdown: its label
-	// (or "#id") plus its window.
+	// bwlabel is the no-JS fallback option text for a bounty in the filter dropdown:
+	// its name plus its window in UTC. The admin JS relabels it in local time from
+	// the option's data-* attributes (rfc/bwname feed those).
 	"bwlabel": func(b store.BountyWindow) string {
-		name := b.Label
-		if name == "" {
-			name = "bounty #" + strconv.FormatInt(b.ID, 10)
-		}
 		when := b.Start.UTC().Format("2006-01-02 15:04")
 		if b.Status == "active" {
-			return name + "  (current · since " + when + " UTC)"
+			return bwName(b) + "  (current · since " + when + " UTC)"
 		}
-		return name + "  (" + when + " → " + b.End.UTC().Format("2006-01-02 15:04") + " UTC)"
+		return bwName(b) + "  (" + when + " → " + b.End.UTC().Format("2006-01-02 15:04") + " UTC)"
 	},
 	// steamurl is the public Steam community profile URL for a SteamID64.
 	"steamurl": func(steamID string) string {
@@ -694,6 +712,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .pill.active{color:var(--accent2);border-color:#2c5a44;background:rgba(126,224,168,.08)}
 .pill.pending{color:#ffd479}
 .pill.won{color:var(--muted)}
+.pill.archived{color:#ffb37a;border-color:#5a4632;background:rgba(255,179,122,.08)}
 .filterbar{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin:.25rem 0 1rem;
   background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:.6rem .9rem}
 .filterbar label{color:var(--muted);font-size:.85rem}
@@ -734,6 +753,57 @@ td button{cursor:pointer}
 .backlink{display:inline-block;margin-bottom:.5rem;color:var(--muted)}
 `
 
+// adminJS is shared by every admin view that shows timestamps. It rewrites the
+// UTC <time> elements (and the filter dropdown's window labels) into the browser's
+// local zone, and round-trips datetime-local inputs through local⇄UTC so the host
+// edits in local time while the wire + backend stay UTC. No backticks (this is a
+// Go raw string); single-quoted JS only.
+const adminJS = `
+<script>
+(function(){
+  function pad(n){return (n<10?'0':'')+n;}
+  function fmtLocal(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());}
+  function fmtUTC(d){return d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1)+'-'+pad(d.getUTCDate())+'T'+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes());}
+  // Display timestamps: <time class="lt" datetime="<RFC3339 UTC>">UTC fallback</time>
+  // → the browser's local zone.
+  document.querySelectorAll('time.lt').forEach(function(el){
+    var d=new Date(el.getAttribute('datetime'));
+    if(!isNaN(d.getTime())) el.textContent=d.toLocaleString();
+  });
+  // Filter <option>s can't hold a <time>, so they carry data-* and we relabel the
+  // window in local time here.
+  document.querySelectorAll('option[data-start]').forEach(function(el){
+    var s=new Date(el.getAttribute('data-start'));
+    if(isNaN(s.getTime())) return;
+    var name=el.getAttribute('data-name')||'';
+    if(el.getAttribute('data-status')==='active'){
+      el.textContent=name+'  (current · since '+s.toLocaleString()+')';
+    }else{
+      var e=new Date(el.getAttribute('data-end'));
+      el.textContent=name+'  ('+s.toLocaleString()+' → '+(isNaN(e.getTime())?'?':e.toLocaleString())+')';
+    }
+  });
+  // datetime-local inputs: server value is the UTC wall-clock (also in data-utc).
+  // Show it in local time; convert back to UTC right before submit so parseAdminTime
+  // (which reads the field as UTC) still gets UTC.
+  document.querySelectorAll('input[type=datetime-local][data-utc]').forEach(function(el){
+    var d=new Date(el.getAttribute('data-utc')+'Z');
+    if(!isNaN(d.getTime())) el.value=fmtLocal(d);
+  });
+  document.querySelectorAll('form').forEach(function(f){
+    f.addEventListener('submit',function(){
+      Array.prototype.forEach.call(f.elements,function(el){
+        if(el.type==='datetime-local' && el.value){
+          var d=new Date(el.value); // no zone ⇒ parsed as local wall-clock
+          if(!isNaN(d.getTime())) el.value=fmtUTC(d);
+        }
+      });
+    });
+  });
+})();
+</script>
+`
+
 // loginTmpl is the password gate.
 var loginTmpl = template.Must(template.New("login").Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -766,7 +836,7 @@ const filterTmpl = `
   <label for="bounty">Filter by bounty</label>
   <select id="bounty" name="bounty" onchange="this.form.submit()">
     <option value="" {{if eq .Bounty ""}}selected{{end}}>All history</option>
-    {{range .Selectable}}<option value="{{.ID}}" {{if idsel .ID $.Bounty}}selected{{end}}>{{bwlabel .}}</option>{{end}}
+    {{range .Selectable}}<option value="{{.ID}}" {{if idsel .ID $.Bounty}}selected{{end}} data-start="{{rfc .Start}}" data-end="{{rfc .End}}" data-name="{{bwname .}}" data-status="{{.Status}}">{{bwlabel .}}</option>{{end}}
   </select>
   <noscript><button type="submit">Apply</button></noscript>
   <span class="scope">showing: {{.FilterLabel}}</span>
@@ -794,9 +864,9 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
   <div class="card"><div class="n">{{.Stats.Players}}</div><div class="lbl">accounts (all-time)</div></div>
 </div>
 
-<h2>Bounties <span class="muted">· the skin-to-win queue (times UTC). When a bounty's win time passes, the player who won the most games during its window is recorded as the winner and the next bounty activates automatically.</span></h2>
+<h2>Bounties <span class="muted">· the skin-to-win queue (times shown in your local zone; stored as UTC). When a bounty's win time passes, the player who won the most games during its window is recorded as the winner and the next bounty activates automatically. "hide" removes a bounty from the client (no active skin / not shown as a previous winner) without changing the queue — use it to test, then "unhide".</span></h2>
 <table>
-  <tr><th>skin</th><th>label</th><th>status</th><th>window (UTC)</th><th>winner</th><th></th></tr>
+  <tr><th>skin</th><th>label</th><th>status</th><th>window (local)</th><th>winner</th><th></th></tr>
   {{range .Bounties}}
   <tr>
     <td>
@@ -805,16 +875,21 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
       <span class="inspect-edit"><input form="b{{.ID}}" type="text" name="inspect_link" value="{{.InspectLink}}" placeholder="inspect link (optional)" class="inspect" readonly><button type="button" class="editbtn" onclick="editInspect(this)">edit</button></span>{{else if .InspectLink}}<span class="muted">inspect link</span>{{end}}
     </td>
     <td>{{if eq .Status "won"}}{{.Label}}{{else}}<input form="b{{.ID}}" type="text" name="label" value="{{.Label}}" placeholder="label">{{end}}</td>
-    <td><span class="pill {{.Status}}">{{.Status}}</span></td>
-    <td>{{tsp .ActivatedAt}} &rarr; {{if eq .Status "won"}}{{ts .WinTime}}{{else}}<input form="b{{.ID}}" type="datetime-local" name="win_time" value="{{dtlocal .WinTime}}" required>{{end}}</td>
+    <td><span class="pill {{.Status}}">{{.Status}}</span>{{if .Archived}} <span class="pill archived">hidden</span>{{end}}</td>
+    <td>{{ltp .ActivatedAt}} &rarr; {{if eq .Status "won"}}{{lt .WinTime}}{{else}}<input form="b{{.ID}}" type="datetime-local" name="win_time" value="{{dtlocal .WinTime}}" data-utc="{{dtlocal .WinTime}}" required>{{end}}</td>
     <td>{{if eq .Status "won"}}{{if .WinnerID}}{{plink .WinnerID .WinnerName}} <span class="muted">({{.WinnerWins}})</span>{{else}}<span class="muted">no winner (empty window)</span>{{end}}{{else}}<span class="muted">—</span>{{end}}</td>
     <td>
-      {{if ne .Status "won"}}
       <div class="actions">
+        {{if ne .Status "won"}}
         <form id="b{{.ID}}" method="post" action="/admin/bounties/edit" enctype="multipart/form-data"><input type="hidden" name="id" value="{{.ID}}"><button type="submit">save</button></form>
         {{if eq .Status "pending"}}<form method="post" action="/admin/bounties/delete" onsubmit="return confirm('Delete this bounty?')"><input type="hidden" name="id" value="{{.ID}}"><button type="submit">delete</button></form>{{end}}
+        {{end}}
+        {{if .Archived}}
+        <form method="post" action="/admin/bounties/archive"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="archived" value="0"><button type="submit">unhide</button></form>
+        {{else}}
+        <form method="post" action="/admin/bounties/archive"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="archived" value="1"><button type="submit">hide</button></form>
+        {{end}}
       </div>
-      {{end}}
     </td>
   </tr>
   {{else}}
@@ -832,11 +907,11 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
 
 <h2>Recent games</h2>
 <table>
-  <tr><th>game</th><th>ended (UTC)</th><th>length</th><th class="num">rounds</th><th class="num">scorers</th><th class="num">clicks</th><th>winner</th></tr>
+  <tr><th>game</th><th>ended (local)</th><th>length</th><th class="num">rounds</th><th class="num">scorers</th><th class="num">clicks</th><th>winner</th></tr>
   {{range .Games}}
   <tr>
     <td><a class="mono" href="/admin/game?id={{.ID}}">{{short .ID}}</a></td>
-    <td>{{ts .EndedAt}}</td>
+    <td>{{lt .EndedAt}}</td>
     <td>{{dur .StartedAt .EndedAt}}</td>
     <td class="num">{{.Rounds}}</td>
     <td class="num">{{.Scorers}}</td>
@@ -914,6 +989,7 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
 function editInspect(btn){var i=btn.parentElement.querySelector('input.inspect');
   i.readOnly=false;i.focus();btn.remove();}
 </script>
+` + adminJS + `
 </body></html>`))
 
 var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<!doctype html>
@@ -927,7 +1003,7 @@ var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<
 <p class="muted">
   <a href="{{steamurl .Profile.SteamID}}" target="_blank" rel="noopener">Steam profile ↗</a>
   · <span class="mono">{{.Profile.SteamID}}</span>
-  · first seen {{ts .Profile.CreatedAt}}
+  · first seen {{lt .Profile.CreatedAt}}
 </p>
 
 ` + pagerTmpl + filterTmpl + `
@@ -954,8 +1030,8 @@ var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<
   </div><div class="lbl">status</div></div>
   <div class="card"><div class="n">{{.Sanction.Checks}}</div><div class="lbl">flags this bounty</div></div>
 </div>
-{{if eq .Sanction.Status "cooldown"}}<p class="muted">cooldown ends {{tsp .Sanction.CooldownUntil}} UTC</p>{{end}}
-{{if eq .Sanction.Status "ignored"}}<p class="muted">ignored until the bounty resolves {{ts .Sanction.ResolveAt}} UTC</p>{{end}}
+{{if eq .Sanction.Status "cooldown"}}<p class="muted">cooldown ends {{ltp .Sanction.CooldownUntil}}</p>{{end}}
+{{if eq .Sanction.Status "ignored"}}<p class="muted">ignored until the bounty resolves {{lt .Sanction.ResolveAt}}</p>{{end}}
 <form class="addbounty" method="post" action="/admin/player/checks">
   <input type="hidden" name="id" value="{{.Profile.SteamID}}">
   <label>flag count <input type="number" name="checks" min="0" value="{{.Sanction.Checks}}" required></label>
@@ -968,10 +1044,10 @@ var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<
 
 <h2>Anticheat checks</h2>
 <table>
-  <tr><th>when (UTC)</th><th>check</th><th>detail</th><th>game · round</th></tr>
+  <tr><th>when (local)</th><th>check</th><th>detail</th><th>game · round</th></tr>
   {{range .Checks}}
   <tr>
-    <td>{{ts .CreatedAt}}</td>
+    <td>{{lt .CreatedAt}}</td>
     <td class="mono">{{.Type}}</td>
     <td>{{.Detail}}</td>
     <td><a class="mono" href="/admin/game?id={{.GameID}}">{{short .GameID}}</a> · {{.RoundNo}}</td>
@@ -984,10 +1060,10 @@ var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<
 
 <h2>Anticheat tests</h2>
 <table>
-  <tr><th>sent (UTC)</th><th>kind</th><th>prompt</th><th>answer</th><th>result</th></tr>
+  <tr><th>sent (local)</th><th>kind</th><th>prompt</th><th>answer</th><th>result</th></tr>
   {{range .Tests}}
   <tr>
-    <td>{{ts .SentAt}}</td>
+    <td>{{lt .SentAt}}</td>
     <td class="mono">{{.Kind}}</td>
     <td class="mono">{{.Prompt}}</td>
     <td class="mono">{{if .Answered}}{{.Answer}}{{else}}<span class="muted">—</span>{{end}}</td>
@@ -998,16 +1074,16 @@ var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<
   {{end}}
 </table>
 {{template "pager" .TestsPage}}
-</div></body></html>`))
+</div>` + adminJS + `</body></html>`))
 
 var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>game {{short .ID}}</title><style>` + adminCSS + `</style></head><body><div class="wrap">
 <a class="backlink" href="/admin">&larr; back</a>
 <h1>game <span class="mono">{{.ID}}</span></h1>
-<p class="muted">started {{ts .StartedAt}} · ended {{ts .EndedAt}} · {{.Rounds}} rounds · {{dur .StartedAt .EndedAt}}</p>
+<p class="muted">started {{lt .StartedAt}} · ended {{lt .EndedAt}} · {{.Rounds}} rounds · {{dur .StartedAt .EndedAt}}</p>
 {{range .RoundList}}
-<h2>round {{.RoundNo}} <span class="muted">· N={{.N}} · {{.Players}} players · armed {{ts .ArmedAt}}</span>
+<h2>round {{.RoundNo}} <span class="muted">· N={{.N}} · {{.Players}} players · armed {{lt .ArmedAt}}</span>
   {{if .Checks}}<span class="flag">· {{len .Checks}} check(s) flagged</span>{{end}}</h2>
 <table>
   <tr><th class="num">click N</th><th>player</th><th>steam id</th><th class="num">offset (ms)</th></tr>
@@ -1027,4 +1103,4 @@ var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doc
 </table>
 {{end}}
 {{end}}
-</div></body></html>`))
+</div>` + adminJS + `</body></html>`))
