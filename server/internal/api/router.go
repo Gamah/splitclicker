@@ -119,7 +119,7 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	// looks alive; the leaderboard + ws handlers compare the client's version to live
 	// and either respect it (live-or-newer) or troll it (below live: the "UPDATE
 	// UPDATE / 67" boards + a benched, click-ignored socket). A NEWER-than-live
-	// version is respected, so a v5 build can be tested before v4 is disabled.
+	// version is respected, so a v6 build can be tested before the floor moves up to it.
 	mux.HandleFunc("GET /api/{ver}/config", h.config)
 	mux.HandleFunc("GET /api/{ver}/skin", h.skin)
 	mux.HandleFunc("GET /api/{ver}/skin/{id}", h.skinByID)
@@ -278,16 +278,17 @@ func boardLimit(r *http.Request) int {
 
 // liveVersionDefault is the live API version assumed when config.json doesn't set
 // live_version. v5 is the floor (the multi-button board + opponent cursors, on top of
-// the live-window tick); v4 is the one supported build below it (N-1: the single
-// persistent legacy button + no tick), respected as the older live version.
+// the live-window tick); v6 (the park / Pause protocol) is the current build, tested at
+// the v5 floor before it's promoted. A client below the floor is treated as outdated
+// (troll boards + the out-of-date note).
 //
-// VERSION CLEANUP: keep only the live version and the one below it (N and N-1). With
-// the floor now at v5 == ws.minTickVersion, every non-legacy connection is tick-capable,
-// so tickCapable() is equivalent to !Legacy (kept explicit for clarity). When v6 goes
-// live, prune the v4 special-casing the same way — drop the legacy single-button
-// (armed nonce) path in the engine/hub and collapse tickCapable to !Legacy. Audit on
-// every bump: this default, ws.minTickVersion, the parseVer/troll fallbacks here, and
-// the legacy bare-/ws handling.
+// VERSION CLEANUP: keep only version-specific code for the live version and the one
+// below it (N and N-1); when a PR bumps the client version, prune everything two or more
+// behind in the SAME PR. The v6 bump did this: the v4 (single legacy-nonce button) path
+// was dropped from the engine/hub, tickCapable collapsed to !Legacy, and the armed-frame
+// `nonce` field removed. The only remaining version gate is ws.minParkVersion (v6); it
+// collapses the same way once v7 lands. Audit on every bump: this default,
+// ws.minParkVersion, the parseVer/troll fallbacks here, and the bare-/ws legacy handling.
 const liveVersionDefault = 5
 
 // liveVersion is the configured "live" client API version (config.json's

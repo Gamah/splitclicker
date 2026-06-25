@@ -126,15 +126,13 @@ public record ButtonMsg(
 	[property: JsonPropertyName( "y" )] int Y
 );
 
-// nonce is a hex string (an unguessable 64-bit token); echo it back verbatim in the
-// click frame — never parse/reformat it. v5 servers send `buttons` (the initial
-// multi-button board) and leave nonce empty; below-v5 servers send the single
-// persistent `nonce` and no buttons. penalty_ms is this connection's own arm-delay
-// penalty (0 for honest clients), surfaced so a masher sees the throttle.
+// buttons is the initial multi-button board; each button carries a hex nonce (an
+// unguessable 64-bit token) echoed back verbatim in the click frame — never
+// parse/reformat it. penalty_ms is this connection's own arm-delay penalty (0 for
+// honest clients), surfaced so a masher sees the throttle.
 public record ArmedMsg(
 	[property: JsonPropertyName( "round" )] int Round,
 	[property: JsonPropertyName( "seq" )] int Seq,
-	[property: JsonPropertyName( "nonce" )] string Nonce,
 	[property: JsonPropertyName( "buttons" )] List<ButtonMsg> Buttons,
 	[property: JsonPropertyName( "players" )] int Players,
 	[property: JsonPropertyName( "clicks" )] int Clicks,

@@ -59,8 +59,8 @@ type ClickEvent struct {
 
 	// X, Y are the clicker's on-screen click position, normalized to int16 range
 	// (−32767..32767 per axis, 0 = centre), used to place the opponent pip on other
-	// players' screens. HasPos is false when the client sent no position (an older,
-	// below-v5 build): such clicks still score but are omitted from the pip sample.
+	// players' screens. HasPos is false when the client sent no position: such clicks
+	// still score but are omitted from the pip sample.
 	X, Y   int16
 	HasPos bool
 }
@@ -100,15 +100,12 @@ type PendingFrame struct {
 // ArmedFrame goes live: the race is open. Penalties is keyed by SteamID — the
 // hub holds back that connection's copy of the armed frame by the given delay
 // (the spam deterrent) and echoes that same delay back so the player can see
-// they're being throttled. Nonce must be echoed by a scoring click.
+// they're being throttled. A scoring click must echo one of Buttons' nonces.
 type ArmedFrame struct {
 	Round int
 	Seq   int
-	// Nonce is the persistent legacy button echoed by below-v5 ("v4") scoring clicks
-	// (a single button valid the whole window). Buttons is the initial board of live
-	// buttons for v5+ clients (each {SlotID, Nonce, X, Y}); the hub sends Buttons to
-	// tick-capable clients and Nonce to the rest. See board.legacyNonce.
-	Nonce     uint64
+	// Buttons is the initial board of live buttons (each {SlotID, Nonce, X, Y}) sent to
+	// every non-legacy client; a scoring click echoes a button's Nonce. See board.
 	Buttons   []Button
 	Players   int
 	Clicks    int
@@ -187,7 +184,7 @@ type Broadcaster interface {
 	// (a new-enough build). Only test-capable players are benched/tested; older
 	// clients still have their checks run and logged. False if not connected.
 	TestCapable(steamID string) bool
-	// SanctionCapable reports whether the client understands the v4 sanction states
+	// SanctionCapable reports whether the client understands the sanction states
 	// (cooldown / ignored countdowns). Such a client is sidelined silently when on a
 	// non-test rung — it still can't score, it just doesn't get a frame it can't
 	// render. False if not connected.
@@ -896,17 +893,15 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 // deltas/roundID), so the last round shows the final standings once instead of a
 // redundant ROUND OVER → GAME OVER pair.
 func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, reached map[string]time.Time, final bool) (map[string]int, string, []ScoredClick, time.Time) {
-	legacyNonce := newNonce()
 	penalties := e.penaltiesFrom(e.badClicks)
 	blocked := e.blockedMap()
 	e.setPhase(PhaseArmed, round)
 	armedAt := time.Now()
 
 	// Build the live board: mint up to ButtonsOnScreen buttons, each a fresh nonce at a
-	// non-overlapping server-RNG'd position. The initial set rides the armed frame to v5
-	// clients; legacyNonce is the single persistent button below-v5 clients click. mint
+	// non-overlapping server-RNG'd position. The initial set rides the armed frame; mint
 	// also refills the board after each claim (see board.offer).
-	b := newBoard(n, legacyNonce, armedAt)
+	b := newBoard(n, armedAt)
 	b.mint = func() Button {
 		x, y := e.randPos(b.positions())
 		return b.register(newNonce(), x, y)
@@ -916,7 +911,7 @@ func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map
 		buttons = append(buttons, b.mint())
 	}
 
-	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Nonce: legacyNonce, Buttons: buttons, Players: players, Clicks: n, Penalties: penalties, Blocked: blocked})
+	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Buttons: buttons, Players: players, Clicks: n, Penalties: penalties, Blocked: blocked})
 	// Each arm forgives the bad clicks accrued since the previous arm: the penalty
 	// above already reflects them, and the tally now restarts for the next arm.
 	e.badClicks = map[string]int{}
@@ -1616,8 +1611,8 @@ func (e *Engine) blockedMap() map[string]bool {
 
 // notifySanctions reconciles what each sanctioned player's client is showing with
 // their current rung: (re)send the math test to test-rung players, the cooldown /
-// ignored countdown to those on those rungs (only to v4 clients that can render
-// them), and a clear to anyone previously notified who is now back in play. Called
+// ignored countdown to those on those rungs (only to clients that can render them),
+// and a clear to anyone previously notified who is now back in play. Called
 // each pending phase, so countdowns refresh and reconnecting clients catch up.
 func (e *Engine) notifySanctions() {
 	if e.bc == nil {

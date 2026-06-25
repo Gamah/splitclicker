@@ -110,21 +110,17 @@
 	     own board. This HUD only reads MusicOpen (the panel's IsOpen) to stop painting the
 	     game while the board is up. ── *@
 
-	@* ── the one global button (roams the box; centred only on first load) with the
-	   status HUD over it ── *@
-	@* StateClass also lands on .center (harmless; only the button reads it for colour).
-	   While the music board is open (MusicOpen) the button + status + "clicks sent" stop
+	@* ── the live board + status HUD over it ── *@
+	@* While the music board is open (MusicOpen) the board + status + "clicks sent" stop
 	   drawing — the panel overlays from its own ScreenPanel, and the connection stays open
 	   (we just don't paint the game underneath it). *@
-	<div class="center @StateClass()" @ref="_box">
+	<div class="center" @ref="_box">
 		@if ( !MusicOpen )
 		{
-			@* The scoring surface. v5 (BoardMode): one clickable button per live board slot,
-			   at its server-placed position (board-% space, same as the pips) — no client
-			   roam, and NOTHING during the arming wait or for stray bad clicks (the board is
-			   the only surface and exists only while armed).
-			   Below-v5: the single legacy button that roams the box on every click — the
-			   scoring AND idle-click surface, so it's always drawn. *@
+			@* The scoring surface: one clickable button per live board slot, at its
+			   server-placed position (board-% space, same as the pips). The board is the
+			   only surface and exists only while armed — NOTHING during the arming wait or
+			   for stray bad clicks. *@
 			@if ( c != null && c.HasBoard )
 			{
 				@foreach ( var btn in c.LiveButtons )
@@ -133,13 +129,8 @@
 					     onclick="@(() => OnPressSlot( btn.Slot ))"></div>
 				}
 			}
-			else if ( !( c?.BoardMode ?? false ) )
-			{
-				<div class="game-btn @StateClass()" @ref="_btn"
-				     style="left: @(_btnLeftPct)%; top: @(_btnTopPct)%;" onclick="@OnPress"></div>
-			}
 
-			@* Opponent cursors: a labelled amber dot per sampled opponent pointer (v5). *@
+			@* Opponent cursors: a labelled amber dot per sampled opponent pointer. *@
 			@foreach ( var cur in CursorsToShow() )
 			{
 				<div class="opp-cursor" style="left: @(PipPct( cur.X ))%; top: @(PipPct( cur.Y ))%;">
@@ -1169,62 +1160,6 @@
 		z-index: 100;
 	}
 
-	/* The global button: a small circle positioned absolutely via inline left/top %
-	   (set from ClickController state) so it can TELEPORT to a random spot in the box
-	   on every click. left/top are deliberately left OUT of any transition so the
-	   move is an instant teleport, not a slide; the random teleport-on-every-click is
-	   the anti-autoclicker measure (a fixed-position bot lands one click per spot).
-
-	   Colour follows the game phase:
-	     • green — the whole playable window: WAIT/arming + CLICK!/live (.go)
-	     • fade  — ROUND OVER / GAME OVER fade from red to black (.fade)
-	     • red   — STAND BY (mid-round join), connecting, disconnected (base) */
-	.game-btn {
-		position: absolute;
-		width: 140px;
-		height: 140px;
-		border-radius: 50%;
-		background-color: #e63946; /* red base: stand-by, connecting, disconnected */
-		/* The white outline is always drawn so the button's location is unmistakable in
-		   every phase — crucially it survives the fade-to-black (which animates only the
-		   background-color, never the border), so the circle stays visible even at full
-		   black. Only the music panel opening removes it (the button stops rendering). */
-		border: 4px solid rgba(255, 255, 255, 0.9);
-		/* only the press scale transitions; colour is per-state (instant green / keyframed fade). */
-		transition: transform 0.08s ease-out;
-		/* No animation by default. Only .fade adds one (more specific, so it wins). This
-		   matters: the fade holds black via fill-mode:forwards, so when the phase later
-		   leaves .fade we must cancel the animation here or the held black would stick and
-		   the button would never repaint green/red again. */
-		animation-name: none;
-		pointer-events: all;
-		/* the button is always pressable — idle clicks are a real (penalised) input. */
-		cursor: pointer;
-	}
-
-	/* press feedback in any state, so every click visibly does something. */
-	.game-btn:active { transform: scale(0.98); }
-
-	/* GO (arming + live): solid green. No colour transition, so leaving the fade it
-	   snaps back to green in a single frame at the next arm. */
-	.game-btn.go { background-color: #06d6a0; }
-
-	/* ROUND/GAME OVER: fade from red to black. A keyframe animation always starts at
-	   red (0%) regardless of the previous colour, so it reads as red→black, then
-	   holds black (forwards) through the result/intermission display. (@@keyframes —
-	   the @@ escapes Razor; longhand props mirror rotaliate's working CRT flicker.) */
-	.game-btn.fade {
-		animation-name: fade-to-black;
-		animation-duration: 1.2s;
-		animation-timing-function: ease-out;
-		animation-fill-mode: forwards;
-	}
-
-	@@keyframes fade-to-black {
-		0%   { background-color: #e63946; }
-		100% { background-color: #000000; }
-	}
-
 	/* "+ PENALTY" popup: red text with a white outline, positioned absolutely in the
 	   box (left/top % set inline, same space as the button) and animated up + faded
 	   over 1s, then held gone (forwards) until OnUpdate prunes it. pointer-events:none
@@ -1666,17 +1601,10 @@
 
 	GamePhase _lastPhase = GamePhase.Connecting;
 
-	// ── roaming button: the bounding box (.center) and the button itself, captured
-	//    by @ref so we can measure them, plus the button's current position as a
-	//    left/top percentage of the box. The button JUMPS to a random in-box spot
-	//    each time the round arms (the "make green" frame), and returns to the box
-	//    centre while dormant. Percentages are whole ints (locale-safe interpolation;
-	//    the sandbox doesn't whitelist System.Globalization for float formatting). ──
+	// ── the bounding box (.center), captured by @ref so the board buttons, opponent
+	//    pips and cursor can be measured/normalized against it. The board buttons are
+	//    server-placed (board-% space); the client draws no button of its own. ──
 	Panel _box;
-	Panel _btn;
-	bool _positioned;
-	int _btnLeftPct = 44; // sensible centre-ish default until first measured
-	int _btnTopPct = 43;
 
 	// ── server-driven skin + winner-lock countdown (GET /api/v1/config) ──
 	// _winnerLockMs is the winner-lock instant as Unix epoch ms (0 = unset, hides
@@ -1955,22 +1883,8 @@
 			}
 		}
 
-		// Rest the button at the box centre once both panels have been laid out
-		// (their measured rects become valid only after the first frame).
-		if ( !_positioned && (_box?.Box.Rect.Width ?? 0f) > 0f && (_btn?.Box.Rect.Width ?? 0f) > 0f )
-		{
-			( _btnLeftPct, _btnTopPct ) = CenterPos();
-			_positioned = true;
-			StateHasChanged();
-		}
-
 		if ( phase != _lastPhase )
 		{
-			// The button no longer jumps on phase changes — it teleports on every
-			// CLICK instead (see OnPress), and otherwise stays exactly where it last
-			// landed, including between rounds/games. It's only ever centred once, on
-			// first load (the _positioned block above).
-
 			// A round just closed: flash its scores. Snapshot the winners (the next
 			// round overwrites C.Winners) and restart the flash timer. Only on Result —
 			// the final round folds into GAME OVER, whose standings are its own display.
@@ -2017,35 +1931,6 @@
 			_ = RefreshSessionsWon();
 			_ = RefreshAllTime();
 		}
-	}
-
-	// The usable left/top range (as a percentage of the box) that keeps the button
-	// fully inside it: 1 − button/box along each axis. Derived from the live measured
-	// rects (their ratio is resolution- and scale-independent); falls back to a
-	// roughly-correct range if a rect isn't available yet, so the button still roams.
-	(float x, float y) BoxRange()
-	{
-		float bw = _box?.Box.Rect.Width ?? 0f, bh = _box?.Box.Rect.Height ?? 0f;
-		float w = _btn?.Box.Rect.Width ?? 0f, h = _btn?.Box.Rect.Height ?? 0f;
-		if ( bw <= 0f || bh <= 0f || w <= 0f || h <= 0f ) return ( 88f, 86f );
-		return ( Math.Clamp( 1f - w / bw, 0f, 1f ) * 100f,
-		         Math.Clamp( 1f - h / bh, 0f, 1f ) * 100f );
-	}
-
-	// Centre of the valid range (top-left positioning, so this — not 50/50 — is the
-	// position that visually centres the button in the box).
-	(int, int) CenterPos()
-	{
-		var ( x, y ) = BoxRange();
-		return ( (int)(x / 2f), (int)(y / 2f) );
-	}
-
-	// A uniformly-random in-box position within the valid range.
-	(int, int) RandomPos()
-	{
-		var ( x, y ) = BoxRange();
-		var r = System.Random.Shared;
-		return ( (int)(r.NextSingle() * x), (int)(r.NextSingle() * y) );
 	}
 
 	async Task RefreshHourly()
@@ -2226,31 +2111,7 @@
 		return $"{s / 3600:D2}:{(s % 3600) / 60:D2}:{s % 60:D2}";
 	}
 
-	// Every click sends the click AND teleports the button to a fresh random spot in
-	// the box — armed or not. A fixed-position autoclicker therefore lands at most one
-	// click per position; a human re-aims. The button stays where it lands until the
-	// next click (it is not recentred between rounds/games).
-	void OnPress()
-	{
-		// The button is about to teleport — capture where it was clicked so the
-		// "+ PENALTY" pops from that spot. SendClick returns true when the click was a
-		// penalised bad click (idle / wrong phase); spawn a popup for each one, so
-		// rapid mashing stacks several on screen at once.
-		int px = _btnLeftPct, py = _btnTopPct;
-		// Capture the button's centre normalized to the box (−1..1 per axis) at click
-		// time, so a scoring click renders as a positioned pip on other players' screens.
-		var ( nx, ny, hasPos ) = ButtonNorm();
-		bool bad = ClickController.Instance?.SendClick( nx, ny, hasPos ) ?? false;
-		if ( bad )
-		{
-			_pops.Add( new PenaltyPop { Left = px, Top = py, Since = 0f } );
-			_popSeq++;
-		}
-		( _btnLeftPct, _btnTopPct ) = RandomPos();
-		StateHasChanged();
-	}
-
-	// A click on a v5 board button, addressed by its slot id (NOT a captured button
+	// A click on a board button, addressed by its slot id (NOT a captured button
 	// object): resolve the button currently live at that slot and score it via its nonce.
 	// Slots are never reused within a round, so a stale render-closure firing an old slot
 	// simply resolves to null and no-ops here — it can never send a consumed nonce at a
@@ -2270,21 +2131,6 @@
 			_popSeq++;
 		}
 		StateHasChanged();
-	}
-
-	// The button's centre as a normalized box position (−1..1 per axis, 0 = box
-	// centre), derived from the live measured rects (same space as the opponent pips
-	// render in, so positions round-trip). Returns hasPos=false until the rects are
-	// valid, so an unmeasured click simply sends no position.
-	(float nx, float ny, bool hasPos) ButtonNorm()
-	{
-		float bw = _box?.Box.Rect.Width ?? 0f, bh = _box?.Box.Rect.Height ?? 0f;
-		if ( _btn == null || bw <= 0f || bh <= 0f ) return ( 0f, 0f, false );
-		var bc = _box.Box.Rect.Center;
-		var tc = _btn.Box.Rect.Center;
-		float nx = Math.Clamp( ( tc.x - bc.x ) / ( bw / 2f ), -1f, 1f );
-		float ny = Math.Clamp( ( tc.y - bc.y ) / ( bh / 2f ), -1f, 1f );
-		return ( nx, ny, true );
 	}
 
 	// ── opponent pips (read from ClickController, rendered + faded by CSS) ──
@@ -2346,20 +2192,6 @@
 	// open/close (which flips IsOpen) re-renders the HUD and shows/hides the game beneath it.
 	bool MusicOpen => Board?.IsOpen ?? false;
 
-	// Button/center colour class — three states:
-	//   go   → green, applied with no colour transition so it snaps on in one frame
-	//          (Pending/arming AND Armed/live — the whole playable window is green)
-	//   fade → fades red→black over the round/game-over display (Result + GameOver)
-	//   ""   → solid red (Waiting, Connecting, Disconnected)
-	// Only `.game-btn.go`/`.game-btn.fade` are styled, so the same class landing on
-	// the (transparent) bounding box is a no-op.
-	string StateClass() => C?.Phase switch
-	{
-		GamePhase.Pending or GamePhase.Armed => "go",
-		GamePhase.Result or GamePhase.GameOver => "fade",
-		_ => "",
-	};
-
 	string PhaseText() => C?.Phase switch
 	{
 		GamePhase.Armed => "CLICK!",
@@ -2388,7 +2220,7 @@
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
 		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), MusicOpen,
 			_skinUrl, _winnerLockMs, HashCode.Combine( WinnerLockPassed(), _hasBounty ) ),
-		HashCode.Combine( _btnLeftPct, _btnTopPct, _popSeq, _pops.Count, _allTime.Count, _allTimeLoaded,
+		HashCode.Combine( _popSeq, _pops.Count, _allTime.Count, _allTimeLoaded,
 			C?.HasTest ?? false, C?.TestPrompt ),
 		_howtoOpen,
 		// sanction overlay state (the per-second countdown tick is already covered by

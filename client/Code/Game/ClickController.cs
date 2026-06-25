@@ -87,24 +87,18 @@ public sealed class ClickController : Component
 	/// the Hud, which renders + fades them. Own clicks are never added (self-dedupe).</summary>
 	public List<PipButton> ActivePips { get; } = new();
 
-	/// <summary>The live multi-button board (v5): the buttons currently clickable this
-	/// armed window, each at a server-placed normalized position. Seeded from the armed
-	/// frame's buttons and kept in sync by the tick claim events (claimed buttons removed,
-	/// their replacements added). Empty when below-v5 (single-button via <c>_nonce</c>) or
-	/// not armed. The Hud renders one clickable button per entry.</summary>
+	/// <summary>The live multi-button board: the buttons currently clickable this armed
+	/// window, each at a server-placed normalized position. Seeded from the armed frame's
+	/// buttons and kept in sync by the tick claim events (claimed buttons removed, their
+	/// replacements added). Empty when not armed. The Hud renders one clickable button per
+	/// entry.</summary>
 	public List<LiveButton> LiveButtons { get; } = new();
 
-	/// <summary>True while the v5 multi-button board is the scoring surface (vs the
-	/// below-v5 single persistent button driven by <c>_nonce</c>).</summary>
+	/// <summary>True while the multi-button board is the scoring surface. The board is the
+	/// ONLY scoring surface and exists only while armed, so the client never draws its own
+	/// button — during the arming wait, or for stray bad clicks, there is simply no
+	/// button.</summary>
 	public bool HasBoard => LiveButtons.Count > 0;
-
-	/// <summary>True when this build talks v5+ (the multi-button board). In board mode
-	/// the only scoring surface is the server-placed board, which exists only while
-	/// armed — so the client NEVER draws its own big roaming button: during the arming
-	/// wait, or for stray bad clicks, there is simply no button. Below v5 (v4/legacy/raw)
-	/// the single roaming button is still the scoring + idle-click surface, so it's drawn.
-	/// Derived once from the configured <see cref="ApiVersion"/> at startup.</summary>
-	public bool BoardMode { get; private set; }
 
 	/// <summary>Opponent cursors to draw this frame: each a labelled dot at a normalized
 	/// position, refreshed from the tick's cursor sample and expired shortly after (so a
@@ -145,9 +139,9 @@ public sealed class ClickController : Component
 	public bool Parked { get; private set; }
 
 	/// <summary>True only while a valid click can score — drives the button's enabled
-	/// state and scoring eligibility from one source. Armed with either a live board
-	/// (v5) or a persistent legacy nonce (below-v5), and never while parked (away).</summary>
-	public bool CanClick => !Parked && Phase == GamePhase.Armed && ( HasBoard || !string.IsNullOrEmpty( _nonce ) );
+	/// state and scoring eligibility from one source. Armed with a live board, and never
+	/// while parked (away).</summary>
+	public bool CanClick => !Parked && Phase == GamePhase.Armed && HasBoard;
 
 	static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
@@ -155,7 +149,6 @@ public sealed class ClickController : Component
 	int _idleClicks;
 
 	WsClient _ws;
-	string _nonce;
 	bool _connecting;
 	int _reconnectAttempt;
 	float _reconnectAt;
@@ -237,9 +230,6 @@ public sealed class ClickController : Component
 		// paths (/api/… and /ws) for talking to a legacy backend like the live old
 		// master (its socket is bare /ws). Skipping blank would keep the v2 default.
 		ApiClient.ApiVersion = (ApiVersion ?? "").Trim().Trim( '/' );
-		// Board mode = v5 or newer (the multi-button board). A blank/raw or vN<5 version
-		// is the legacy single-button path that still draws the roaming button.
-		BoardMode = ParseVersionMajor( ApiClient.ApiVersion ) >= 5;
 		_ws = GameObject.Components.GetOrCreate<WsClient>();
 		_ws.OnMessage = OnMessage;
 		_ws.OnData = OnData;
@@ -441,15 +431,6 @@ public sealed class ClickController : Component
 		Cursors.Add( new CursorDot { Tag = tag, X = x, Y = y, Name = name ?? "", Seen = 0f } );
 	}
 
-	// The integer major from a version segment like "v5" → 5; 0 for blank/raw or any
-	// unparseable form (so blank and below-v5 both fall to the legacy single-button path).
-	static int ParseVersionMajor( string ver )
-	{
-		if ( string.IsNullOrWhiteSpace( ver ) ) return 0;
-		ver = ver.Trim().TrimStart( 'v', 'V' );
-		return int.TryParse( ver, out var n ) ? n : 0;
-	}
-
 	static ulong ReadU64( byte[] b, int off )
 	{
 		ulong v = 0;
@@ -481,50 +462,23 @@ public sealed class ClickController : Component
 		return new string( c );
 	}
 
-	// SendClick is the hot path. While armed, fire the nonce frame (it scores) and
-	// count it. In EVERY other connected phase — dormant, mid-round stand-by, result,
-	// game over — send an idle click with no nonce: it scores nothing but is a "bad"
-	// click the server penalises (the escalating arm-delay), so the player sees the
-	// throttle they're inflicting on themselves no matter when they mash. Returns true
-	// when a bad click was actually sent (so the HUD can pop a "+ PENALTY"); false for
-	// a scoring click or when there's no socket to penalise it.
-	public bool SendClick( float nx = 0f, float ny = 0f, bool hasPos = false )
+	// SendClick sends an idle (bad) click — a press that did NOT land on a live board
+	// button (empty space, or a button that vanished as the window closed). It scores
+	// nothing but the server penalises it (the escalating arm-delay), so the player sees
+	// the throttle they're inflicting on themselves whenever they mash. Returns true when
+	// a bad click was actually sent (so the HUD can pop a "+ PENALTY"); false while parked
+	// or with no socket. Scoring goes through SendButtonClick — the board is the only live
+	// scoring surface.
+	public bool SendClick()
 	{
-		// Parked (stepped away): swallow the input entirely — no score, no idle penalty,
-		// no sound. The player rejoins via Pause, not by clicking through the overlay.
+		// Parked (stepped away): swallow the input entirely — no penalty, no sound. The
+		// player rejoins via Pause, not by clicking through the overlay.
 		if ( Parked ) return false;
-		// Scoring here is the below-v5 single-button path only: armed, no v5 board, and a
-		// live legacy nonce. In v5 the board buttons score via SendButtonClick, so a bare
-		// SendClick (empty space) is a miss — a penalised idle click.
-		bool legacyScore = Phase == GamePhase.Armed && !HasBoard && !string.IsNullOrEmpty( _nonce );
 
-		// Local audio feedback, independent of socket state: the "click" blip for a real
-		// scoring click, the "throttle" nope otherwise. Plays even while disconnected.
-		if ( legacyScore ) SoundPlayer.PlayClick();
-		else SoundPlayer.PlayThrottle();
+		// Local "throttle" nope, independent of socket state (plays even while disconnected).
+		SoundPlayer.PlayThrottle();
 
 		if ( _ws == null || !_ws.Connected ) return false;
-		if ( legacyScore )
-		{
-			// A scoring click carries the button's normalized centre (−1..1 per axis,
-			// int16-scaled) so other players see it as a positioned pip. Older servers
-			// ignore the extra x/y fields. Integer interpolation is locale-safe.
-			if ( hasPos )
-			{
-				int xi = (int)Math.Clamp( nx * 32767f, -32767f, 32767f );
-				int yi = (int)Math.Clamp( ny * 32767f, -32767f, 32767f );
-				_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{_nonce}\",\"x\":{xi},\"y\":{yi}}}" );
-			}
-			else
-			{
-				_ = _ws.Send( $"{{\"t\":\"click\",\"nonce\":\"{_nonce}\"}}" );
-			}
-			ClicksSent++;
-			return false;
-		}
-
-		// A miss or any non-armed phase: an idle (bad) click. Send it so the server sees
-		// and penalises it, even mid-round / between games.
 		_ = _ws.Send( "{\"t\":\"click\",\"nonce\":\"\"}" );
 		// Mirror the server's escalating bad-click penalty locally so the throttle
 		// climbs the instant the player mashes; the next armed frame's authoritative
@@ -534,7 +488,7 @@ public sealed class ClickController : Component
 		return true;
 	}
 
-	// SendButtonClick is the v5 hot path: a click that landed on board button `btn`. It
+	// SendButtonClick is the hot path: a click that landed on board button `btn`. It
 	// echoes that button's nonce (scores) plus the button's position (for the opponent
 	// pip), plays the click blip, and counts it. It deliberately does NOT remove the
 	// button locally — the authoritative tick claim does that, so a lost race just
@@ -544,7 +498,7 @@ public sealed class ClickController : Component
 	{
 		if ( Parked ) return false; // away: ignore board clicks (see SendClick)
 		if ( btn == null || Phase != GamePhase.Armed )
-			return SendClick( btn?.X ?? 0f, btn?.Y ?? 0f, btn != null );
+			return SendClick();
 
 		SoundPlayer.PlayClick();
 		if ( _ws == null || !_ws.Connected ) return false;
@@ -675,7 +629,6 @@ public sealed class ClickController : Component
 	void OnDisconnected()
 	{
 		Phase = GamePhase.Disconnected;
-		_nonce = null;
 		LiveButtons.Clear();
 		Cursors.Clear();
 		ScheduleReconnect();
@@ -760,7 +713,6 @@ public sealed class ClickController : Component
 					// (result/game-over/intermission included) and are forgiven only at the
 					// next arm, mirroring the server. The armed frame resets _idleClicks.
 					Phase = GamePhase.Pending;
-					_nonce = null;
 					SoundPlayer.PlayArming();
 					break;
 
@@ -775,8 +727,7 @@ public sealed class ClickController : Component
 					RemainingThisRound = a.Clicks; // start the live counter at full N; ticks count it down
 					_localArmReceive = RealTime.Now; // origin for every pip's t_arm replay offset
 					_lastCursorSent = 0f;          // allow the first cursor send immediately
-					// v5: seed the live board from the armed buttons; tick claims then keep it
-					// in sync. Below-v5 servers send no buttons and a single persistent nonce.
+					// Seed the live board from the armed buttons; tick claims then keep it in sync.
 					LiveButtons.Clear();
 					Cursors.Clear();
 					if ( a.Buttons != null )
@@ -785,7 +736,6 @@ public sealed class ClickController : Component
 							if ( !string.IsNullOrEmpty( bt.Nonce ) )
 								AddButton( (ushort)bt.Id, bt.Nonce, bt.X / 32767f, bt.Y / 32767f );
 					}
-					_nonce = a.Nonce;
 					Phase = GamePhase.Armed;
 					// Receiving an arm means we're no longer benched — clear any stale test.
 					ClearTest();
@@ -802,7 +752,6 @@ public sealed class ClickController : Component
 					Winners = r.Winners ?? new();
 					Standings = r.Standings ?? new();
 					Phase = GamePhase.Result;
-					_nonce = null;
 					// Round closed: the remaining (now meaningless) buttons + cursors disappear.
 					LiveButtons.Clear();
 					Cursors.Clear();
@@ -814,7 +763,6 @@ public sealed class ClickController : Component
 					var g = Deser<GameOverMsg>( json );
 					Standings = g.Standings ?? new();
 					Phase = GamePhase.GameOver;
-					_nonce = null;
 					LiveButtons.Clear();
 					Cursors.Clear();
 					SoundPlayer.PlayDisarm();

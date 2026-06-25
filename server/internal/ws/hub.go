@@ -34,18 +34,6 @@ const (
 	// client sends ~15/s). Bounds cursor traffic without a shared rate bucket.
 	cursorMinGap = 40 * time.Millisecond
 
-	// minTickVersion is the oldest client API version that understands the
-	// live-window `tick` frame, the round_pending roster, and click x/y positions
-	// (all the v5 wire). Below it, a client is still a normal respected connection
-	// (≥ the live floor) — it just isn't sent ticks/roster and its clicks carry no
-	// position. Mirrors the old minTest/minSanction capability gates.
-	//
-	// Floor note: the live floor is v4, so every non-legacy connection is already
-	// sanction-capable (≥ v4). The former minTestVersion(3)/minSanctionVersion(4)
-	// split is therefore dead — TestCapable/SanctionCapable now collapse to
-	// !Legacy. When the floor next moves to v5, this gate collapses the same way.
-	minTickVersion = 5
-
 	// minParkVersion is the oldest client API version that understands the park
 	// protocol — the server→client `park` frame (auto-park off an afk_idle verdict)
 	// and the client→server `park {on}` toggle (the Pause control). Below it, a client
@@ -122,8 +110,9 @@ type Client struct {
 	Legacy bool
 
 	// Version is the client's API version (from the /ws/{ver} path; bare /ws ⇒ 1).
-	// Drives TickCapable — only minTickVersion+ clients receive the live-window
-	// tick/roster wire and have their click positions honoured.
+	// Drives parkCapable (≥ minParkVersion gets the park protocol); the tick wire is
+	// now gated only by !Legacy (see tickCapable), since the live floor is the version
+	// that introduced it.
 	Version int
 
 	smu        sync.Mutex // guards sendClosed + the send channel
@@ -427,13 +416,12 @@ func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
 // frame; penalised connections get theirs after a delay (the spam deterrent)
 // with their own penalty_ms echoed in, so they can see they're being throttled.
 func (h *Hub) Armed(a game.ArmedFrame) {
-	// Two payload shapes: v5+ clients get the initial board of buttons; below-v5 clients
-	// get the single persistent legacy nonce. Each shares one precomputed clean copy; a
-	// penalised connection gets its own copy (its delay echoed in) after the hold.
-	v5base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Buttons: buttonsToWire(a.Buttons), Players: a.Players, Clicks: a.Clicks}
-	v4base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Nonce: strconv.FormatUint(a.Nonce, 16), Players: a.Players, Clicks: a.Clicks}
-	cleanV5 := mustJSON(v5base)
-	cleanV4 := mustJSON(v4base)
+	// One payload shape: the initial board of buttons. The unpenalised majority share one
+	// precomputed clean copy; a penalised connection gets its own copy (its delay echoed
+	// in) after the hold. A legacy client receives it too — its clicks are ignored anyway,
+	// and an old build simply doesn't render the board.
+	base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Buttons: buttonsToWire(a.Buttons), Players: a.Players, Clicks: a.Clicks}
+	clean := mustJSON(base)
 	// New armed window: stamp every currently-connected client as present for it, so the
 	// afk check can skip players who weren't here for the whole window (mid-window joins,
 	// or a fresh connection that hasn't had a window yet) instead of flagging an empty
@@ -445,11 +433,7 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 	}
 	for _, c := range clients {
 		if a.Blocked[c.SteamID] {
-			continue // benched by anticheat: withhold the nonce/buttons until they pass their test
-		}
-		base, clean := v4base, cleanV4
-		if tickCapable(c) {
-			base, clean = v5base, cleanV5
+			continue // benched by anticheat: withhold the buttons until they pass their test
 		}
 		if d := a.Penalties[c.SteamID]; d > 0 {
 			w := base
@@ -464,7 +448,7 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 }
 
 // buttonsToWire converts the engine's initial board into the armed-frame button list
-// (nonces hex-encoded like the legacy nonce). nil/empty stays nil so omitempty drops it.
+// (nonces hex-encoded). nil/empty stays nil so omitempty drops it.
 func buttonsToWire(bs []game.Button) []buttonWire {
 	if len(bs) == 0 {
 		return nil
@@ -518,8 +502,8 @@ func (h *Hub) SendTest(steamID string, f game.TestFrame) {
 }
 
 // TestCapable reports whether steamID's connected client understands anticheat
-// tests. With the live floor at v4 every non-legacy connection qualifies, so this
-// is just "connected and not legacy". Implements game.Broadcaster.
+// tests. Every non-legacy connection (≥ the live floor) qualifies, so this is just
+// "connected and not legacy". Implements game.Broadcaster.
 func (h *Hub) TestCapable(steamID string) bool {
 	h.mu.RLock()
 	c := h.bySteam[steamID]
@@ -528,8 +512,8 @@ func (h *Hub) TestCapable(steamID string) bool {
 }
 
 // SanctionCapable reports whether steamID's connected client can render the
-// cooldown/ignored countdown frames. As with TestCapable, the v4 floor means
-// every non-legacy connection qualifies. Implements game.Broadcaster.
+// cooldown/ignored countdown frames. As with TestCapable, every non-legacy
+// connection qualifies. Implements game.Broadcaster.
 func (h *Hub) SanctionCapable(steamID string) bool {
 	h.mu.RLock()
 	c := h.bySteam[steamID]
@@ -537,10 +521,13 @@ func (h *Hub) SanctionCapable(steamID string) bool {
 	return c != nil && !c.Legacy
 }
 
-// tickCapable reports whether c receives the v5 live-window wire (tick frames,
-// the round_pending roster, honoured click positions).
+// tickCapable reports whether c receives the live-window wire (tick frames, the
+// round_pending roster, honoured click positions). With the live floor at v5 — the
+// version that introduced that wire — every non-legacy connection is on it, so this is
+// just "connected and not legacy". (The former v5 version gate collapsed when v5 became
+// the floor, mirroring how TestCapable/SanctionCapable reduced to !Legacy.)
 func tickCapable(c *Client) bool {
-	return c != nil && !c.Legacy && c.Version >= minTickVersion
+	return c != nil && !c.Legacy
 }
 
 // parkCapable reports whether c understands the park protocol (v6+): the server→client
@@ -713,8 +700,8 @@ type inbound struct {
 	ID     string `json:"id"`     // test_answer: the test token being answered
 	Answer string `json:"answer"` // test_answer: the player's answer text
 	// X, Y are the click's normalized on-screen position (int16 range, 0 = centre),
-	// for the opponent pip. Pointers so "absent" (an older, below-v5 client) is
-	// distinct from a real 0,0 — absent ⇒ the click scores but carries no position.
+	// for the opponent pip. Pointers so "absent" is distinct from a real 0,0 — absent
+	// ⇒ the click scores but carries no position.
 	X *int `json:"x"`
 	Y *int `json:"y"`
 	// On is the park toggle (v6 `park` frame): true = the player hit Pause / stepped
@@ -751,9 +738,8 @@ func (c *Client) readPump() {
 				continue // outdated client: its clicks never reach the game
 			}
 			nonce, _ := strconv.ParseUint(in.Nonce, 16, 64) // bad/empty → 0, scores nothing
-			// Honour the click position only from tick-capable (v5+) clients; older
-			// builds send none, so their scoring clicks are simply omitted from the
-			// pip sample (they still score).
+			// Honour the click position when present (every non-legacy client sends it);
+			// a click without one still scores, just with no pip sample.
 			var px, py int16
 			hasPos := false
 			if tickCapable(c) && in.X != nil && in.Y != nil {
@@ -772,10 +758,10 @@ func (c *Client) readPump() {
 				})
 			}
 		case "cursor":
-			// Opponent-cursor position (v5+). Throttled per-connection so a flood of
-			// cursor frames can't crowd out clicks (no shared WS rate bucket exists yet;
-			// any future one must budget cursors separately — see PLAN). Stored, then
-			// sampled into the next tick; ignored from below-v5 clients.
+			// Opponent-cursor position. Throttled per-connection so a flood of cursor
+			// frames can't crowd out clicks (no shared WS rate bucket exists yet; any
+			// future one must budget cursors separately — see PLAN). Stored, then sampled
+			// into the next tick; ignored from legacy clients.
 			if !tickCapable(c) || in.X == nil || in.Y == nil {
 				continue
 			}

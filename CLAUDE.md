@@ -9,10 +9,11 @@ Facepunch auth, the bounty + leaderboard boards, the anticheat checks + per-boun
 sanction ladder, Docker/Caddy, and unit tests. `client/` is a playable s&box game:
 `ClickController` (WS lifecycle/phase), the single-root `Hud.razor` (boards, the
 multi-button board + opponent cursors, GAME INFO popup, anticheat overlays), the
-Skafinity music library, and s&box-Services achievements. **The live API version is
-`v5`** (the multi-button board + opponent cursors, on top of the live-window tick);
-the config-driven `live_version` floor is now `v5`, with `v4` (single persistent
-button, no tick) as the supported N-1.
+Skafinity music library, and s&box-Services achievements. **The current build is
+`v6`** (the step-away **park / Pause** protocol, on top of the v5 multi-button board +
+opponent cursors); the config-driven `live_version` floor is `v5` (the multi-button
+board + live-window tick), with **v5 as the supported N-1**. The old v4 single-button
+path was pruned when v6 landed (the API-bump cleanup rule below).
 
 ---
 
@@ -173,7 +174,10 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   (AFK + scored) is the **"gotcha"** (the serious flag, surfaced as **BUSTED** in the client: a
   wire-bot echoing a nonce without aiming is the signature, since a human cannot claim a button
   without moving onto it), and **afk_idle** (AFK + scored nothing) is the soft idle nudge (the
-  **AFK** client row). **Movement clears you:** a player who moves but
+  **AFK** client row). On **afk_idle** the engine also **auto-parks** the player (v6+ via
+  `Broadcaster.Park`; see the step-away Pause feature): they drop off the board / out of N and the
+  hub withholds frames until they hit **Pause→RESUME** to rejoin — the ladder rung still escalates
+  underneath. **afk_score never parks** (it stays purely punitive). **Movement clears you:** a player who moves but
   misses every button (no score) is never flagged. **Legacy clients are skipped** (they send no
   cursors, so the hub omits them; they are never flagged). **Only players present for the whole
   armed window are idle-nudged** (`CursorActivity.Eligible`, stamped from `Hub`'s per-arm `armGen`):
@@ -218,14 +222,28 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   standings also carry a `status` field (`live`/`cooldown`/`ignored`) for a coloured dot —
   stamped at serve time from `Engine.SanctionStatuses()` (HTTP boards) / `annotateStatus`
   (WS standings); additive, so older clients ignore it.
+- **Step-away Pause / park (v6).** A player can step away without being flagged AFK or holding a
+  scoring slot, **over the existing socket — no reconnect/re-auth**. Either they hit **PAUSE**, or the
+  server **auto-parks** them off an `afk_idle` verdict. A parked connection (`Client.parked`, atomic)
+  is withheld **every** frame except the forced `park` notification (the `enqueue` choke point), and
+  counts toward neither `PlayerCount`, `ActivePlayerCount` (the round's N), nor the AFK pass
+  (`AllCursorActivity` omits it) — so it's cleanly "not here" until it unparks (`park {on:false}` →
+  `Hub.Park`/the readPump toggle → `Engine.Wake`). Gated by `minParkVersion` (v6): older builds are
+  never parked. Client: `Parked` suppresses clicks/cursors; the **PAUSE** bar (above GAME INFO, green→red)
+  parks, and the parked overlay's **RESUME** button rejoins (the bar sits *under* the full-screen overlay,
+  which s&box hit-tests on top regardless of z-index — so the rejoin control must live inside the overlay).
+  On unpark the client shows `STAND BY` until the next `armed`.
 - **API versioning.** REST/WS are versioned (`/api/{ver}`, `/ws/{ver}`); the live floor is
   config-driven (`live_version`). Below-live clients get the troll boards + "out of date" note;
   live-or-newer are respected (so a new build is testable before the floor moves up). The sole
-  capability gate now is `ws/hub.go`'s `minTickVersion` (v5: tick/roster/click-x-y) — with the
-  floor at v4 every non-legacy conn is sanction-capable, so `TestCapable`/`SanctionCapable`
-  collapsed to `!Legacy`. **Cleanup rule:** support only N and N-1 — once a new build goes live,
-  prune handling two+ versions back (when v6 is live, drop all v4-and-older special-casing,
-  collapsing `minTickVersion` the same way). See the note at `api/router.go`'s `liveVersionDefault`.
+  remaining capability gate is `ws/hub.go`'s `minParkVersion` (v6: the park/Pause protocol) —
+  the floor at v5 means every non-legacy conn is tick-/sanction-capable, so `tickCapable`,
+  `TestCapable`, and `SanctionCapable` all collapse to `!Legacy`. **Cleanup rule:** support only
+  N and N-1 — **any PR that bumps the client version prunes everything two or more behind (N-2 and
+  older) in that same PR.** The v6 bump did this: the v4 single-button (legacy-nonce) path was
+  removed from the engine/hub/client, the armed-frame `nonce` field dropped, and `tickCapable`
+  collapsed; the next gate (`minParkVersion`) collapses the same way when v7 lands. See the note at
+  `api/router.go`'s `liveVersionDefault`.
 - **Multi-button live window + opponent cursors (v5).** An armed window shows up to
   `ButtonsOnScreen` (X, default 10) live buttons at once (`game/board.go`). **1 button = 1 point**:
   the first valid click echoing a button's nonce claims it (+1), the button is consumed, and — while
@@ -249,11 +267,10 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
     at the arming stage (`Hub.Pending`) and on round/game end. New inbound type; no shared WS click
     bucket exists today, but any future one must budget cursors separately (else a moving mouse starves
     clicks).
-  - **v4 (below-v5) clients**: the engine also mints a single **persistent legacy nonce** button (scores
-    into the same N budget, never consumed/replaced, no board mutation), sent as the lone `armed.nonce`
-    so an old client keeps today's single-button play with no new frames. During the v4↔v5 coexistence
-    window a v4 player's stationary button is easier than v5's moving board — **benign and short-lived**
-    (gone at cutover), not designed around.
+  - **Below-floor (outdated) clients**: a client below the live floor (v5) is `Legacy` — troll
+    boards, clicks ignored. It still receives the board `armed` frame (it just can't render it), so
+    there is no special single-button path. *(The old v4 persistent-legacy-nonce button was removed
+    when v6 landed — see the API-bump cleanup rule.)*
   - **`fast_clicks` tension**: sweeping X buttons fast is now intended play; current `FastClickMs`
     default/prod config is kept, flagged here to retune later if it false-positives.
 - **Traffic minimization.** Persistent WS, never polling. Idle is silent. Cheap idle conns
@@ -289,11 +306,13 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
 
 - Hot-path frames: the live-window `tick` (out) is **binary**; `click` (in) stays JSON
   (sent immediately, never coalesced) with additive int16 `x`/`y`. The rest JSON.
-- Client→server: `click {nonce, x?, y?}`, `cursor {x, y}` (v5; ~15/s, armed-only), `test_answer {id, answer}`, `ping`.
-- Server→client: `hello` (+`tick_ms`), `round_pending` (+`roster` `[{tag,username}]`, v5 only),
-  `armed` (+`buttons` `[{id,nonce,x,y}]` — the initial board — to v5; the single legacy `nonce` to v4),
+- Client→server: `click {nonce, x?, y?}`, `cursor {x, y}` (~15/s, armed-only), `park {on}` (v6; the
+  Pause toggle / unpark), `test_answer {id, answer}`, `ping`.
+- Server→client: `hello` (+`tick_ms`), `round_pending` (+`roster` `[{tag,username}]`, non-legacy only),
+  `armed` (+`buttons` `[{id,nonce,x,y}]` — the initial board; a scoring click echoes a button's nonce),
   `tick` (binary: `round`, `remaining`, the complete board mutations since the last tick
-  `{slot, claimer_tag, t_arm, spawn?{id,nonce,x,y}}` + sampled opponent cursors `{tag,x,y}` — v5 only),
+  `{slot, claimer_tag, t_arm, spawn?{id,nonce,x,y}}` + sampled opponent cursors `{tag,x,y}` — non-legacy only),
+  `park {on:true}` (v6; auto-park off an afk_idle verdict — the hub then withholds all frames until unpark),
   `round_result` (with `you.points_delta`,
   `round_id`), `game_over` (with `you.placement`, `you.won`, `game_id`),
   `bounty_update` (payload-less; "re-fetch `/config` + `/bounties/previous`" on rollover),

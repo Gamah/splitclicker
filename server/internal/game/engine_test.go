@@ -14,8 +14,8 @@ func click(steamID string, nonce uint64) ClickEvent {
 
 // board is the whole multi-button scoring rule; test it directly (no timing). The
 // helper mints buttons with sequential nonces so a test can claim a known one.
-func newTestBoard(n int, legacy uint64) *board {
-	b := newBoard(n, legacy, time.Now())
+func newTestBoard(n int) *board {
+	b := newBoard(n, time.Now())
 	seq := uint64(1000)
 	b.mint = func() Button {
 		seq++
@@ -38,7 +38,7 @@ func oneLive(t *testing.T, b *board) Button {
 
 func TestBoard(t *testing.T) {
 	t.Run("claiming a live button scores, consumes it, and refills the board", func(t *testing.T) {
-		b := newTestBoard(3, 0)
+		b := newTestBoard(3)
 		a := b.mint()
 		if !b.offer(click("a", a.Nonce)) {
 			t.Fatal("claiming the live button should score")
@@ -55,7 +55,7 @@ func TestBoard(t *testing.T) {
 	})
 
 	t.Run("zero nonce never scores (anti-pre-fire); unknown nonce drops", func(t *testing.T) {
-		b := newTestBoard(2, 0)
+		b := newTestBoard(2)
 		btn := b.mint()
 		if b.offer(click("a", 0)) {
 			t.Fatal("zero nonce must not score")
@@ -71,26 +71,8 @@ func TestBoard(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy nonce scores into the budget without mutating the board", func(t *testing.T) {
-		const legacy = uint64(0xBEEF)
-		b := newTestBoard(2, legacy)
-		b.mint()
-		if !b.offer(click("v4", legacy)) {
-			t.Fatal("legacy nonce should score")
-		}
-		if len(b.pending) != 0 {
-			t.Fatalf("legacy claim must not produce a board mutation, got %+v", b.pending)
-		}
-		if len(b.scored) != 1 {
-			t.Fatalf("want 1 scored, got %d", len(b.scored))
-		}
-		if len(b.live) != 1 {
-			t.Fatalf("legacy claim must not consume a button, want 1 live, got %d", len(b.live))
-		}
-	})
-
 	t.Run("round ends at N; the final claim spawns no replacement", func(t *testing.T) {
-		b := newTestBoard(1, 0)
+		b := newTestBoard(1)
 		btn := b.mint()
 		if !b.offer(click("a", btn.Nonce)) {
 			t.Fatal("first claim should score")
@@ -104,7 +86,7 @@ func TestBoard(t *testing.T) {
 	})
 
 	t.Run("a single player can take multiple slots across refills", func(t *testing.T) {
-		b := newTestBoard(3, 0)
+		b := newTestBoard(3)
 		b.mint() // initial board (one button); each claim refills it back to one
 		for i := 0; i < 3; i++ {
 			btn := oneLive(t, b)
@@ -236,7 +218,7 @@ func TestEngineLoopScores(t *testing.T) {
 		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
 		MinClicks: 1, RoundsPerGame: 1,
 		RaceMax: 2 * time.Second, ResultDisplay: 5 * time.Millisecond,
-		Intermission: 5 * time.Millisecond, BoardSize: 20,
+		Intermission: 5 * time.Millisecond, BoardSize: 20, ButtonsOnScreen: 10,
 	}
 	bc := newCaptureBC()
 	e := New(cfg, bc, nil, nil)
@@ -251,7 +233,7 @@ func TestEngineLoopScores(t *testing.T) {
 		t.Fatal("no armed frame")
 	}
 
-	e.Submit(click("winner", armed.Nonce))
+	e.Submit(click("winner", armed.Buttons[0].Nonce))
 
 	// The only round is the final round, so it must NOT emit a round_result.
 	select {
@@ -289,7 +271,7 @@ func TestEnginePausesWithoutPlayers(t *testing.T) {
 		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
 		MinClicks: 1, RoundsPerGame: 1,
 		RaceMax: 2 * time.Second, ResultDisplay: 5 * time.Millisecond,
-		Intermission: 5 * time.Millisecond, BoardSize: 20,
+		Intermission: 5 * time.Millisecond, BoardSize: 20, ButtonsOnScreen: 10,
 	}
 	bc := &pausableBC{captureBC: newCaptureBC()} // players starts at 0
 	st := &fakeStore{}
@@ -351,7 +333,7 @@ func TestEngineRecordsGameHistory(t *testing.T) {
 		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
 		MinClicks: 2, RoundsPerGame: 2,
 		RaceMax: 2 * time.Second, ResultDisplay: 5 * time.Millisecond,
-		Intermission: 5 * time.Millisecond, BoardSize: 20,
+		Intermission: 5 * time.Millisecond, BoardSize: 20, ButtonsOnScreen: 10,
 	}
 	bc := newCaptureBC()
 	st := &fakeStore{}
@@ -360,15 +342,16 @@ func TestEngineRecordsGameHistory(t *testing.T) {
 	defer cancel()
 	go e.Run(ctx)
 
-	// Fill both rounds' N=2 slots: "a" then "b" each round.
+	// Fill both rounds' N=2 slots: "a" then "b" each round, each claiming a distinct
+	// board button (one-shot, so the two scorers take two different buttons).
 	a1 := <-bc.armed
-	e.Submit(click("a", a1.Nonce))
-	e.Submit(click("b", a1.Nonce))
+	e.Submit(click("a", a1.Buttons[0].Nonce))
+	e.Submit(click("b", a1.Buttons[1].Nonce))
 	<-bc.result // round 1 done
 
 	a2 := <-bc.armed
-	e.Submit(click("a", a2.Nonce))
-	e.Submit(click("b", a2.Nonce))
+	e.Submit(click("a", a2.Buttons[0].Nonce))
+	e.Submit(click("b", a2.Buttons[1].Nonce))
 	<-bc.gameOver // final round folds into game_over; afterGame runs next
 
 	// afterGame is a detached goroutine — wait briefly for the RecordGame write.
@@ -426,7 +409,7 @@ func TestEngineFinalRoundFoldsIntoGameOver(t *testing.T) {
 		ArmMin: 10 * time.Millisecond, ArmMax: 10 * time.Millisecond,
 		MinClicks: 1, RoundsPerGame: 2,
 		RaceMax: 2 * time.Second, ResultDisplay: 5 * time.Millisecond,
-		Intermission: 5 * time.Millisecond, BoardSize: 20,
+		Intermission: 5 * time.Millisecond, BoardSize: 20, ButtonsOnScreen: 10,
 	}
 	bc := newCaptureBC()
 	e := New(cfg, bc, nil, nil)
@@ -436,7 +419,7 @@ func TestEngineFinalRoundFoldsIntoGameOver(t *testing.T) {
 
 	// Round 1 (non-final): scores, emits a round_result.
 	a1 := <-bc.armed
-	e.Submit(click("winner", a1.Nonce))
+	e.Submit(click("winner", a1.Buttons[0].Nonce))
 	select {
 	case r := <-bc.result:
 		if r.Round != 1 {
@@ -448,7 +431,7 @@ func TestEngineFinalRoundFoldsIntoGameOver(t *testing.T) {
 
 	// Round 2 (final): scores, folds into game_over with no second round_result.
 	a2 := <-bc.armed
-	e.Submit(click("winner", a2.Nonce))
+	e.Submit(click("winner", a2.Buttons[0].Nonce))
 	select {
 	case g := <-bc.gameOver:
 		if g.Deltas["winner"] != 1 {
