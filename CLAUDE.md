@@ -189,7 +189,13 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   Flags escalate
   **per-bounty** (counts reset each bounty, persisted in `anticheat_sanctions`): test (math) →
   cooldown (`check_cooldown_threshold` flags → `check_cooldown_mins`) → ignored
-  (`check_ignore_after` more → until the bounty resolves). The server pushes the rung as a `test`
+  (`check_ignore_after` more → until the bounty resolves). **A player who is currently
+  blocked (an unanswered math test, an active cooldown, or ignored, i.e. `blockedMap`) is skipped
+  from ALL checks that round**, both the per-round `runChecks`/`checkAfk` and the session-level
+  `solo_round`: someone working through their outstanding test must not pile up fresh flags (and
+  so escalate) before they have answered it. The skip is keyed off the in-memory rung, so it
+  holds across games within a session; a player who disconnects mid-test leaves a harmless
+  orphaned rung (we don't try to suppress checks for a session that no longer exists). The server pushes the rung as a `test`
   frame with `state`/`message`/`until_ms`; the client shows the test, then a countdown. The
   bounty snapshot the checks need (id, leader+margin, resolve time) is supplied via
   `Engine.SetBountyInfoFn` from the leaderboard cache. Every leaderboard row + the WS

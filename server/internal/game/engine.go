@@ -739,9 +739,18 @@ func (e *Engine) playGame(ctx context.Context) {
 			scoredThisRound[c.SteamID] = true
 			sessionScorers[c.SteamID] = true
 		}
+		// blocked = players already benched on a math test / cooled down / ignored this
+		// bounty. They are skipped from ALL checks: a player working through their
+		// outstanding test must not pile up fresh flags (and so escalate) before they
+		// have answered it. checkAfk uses this to log-but-not-flag; runChecks doesn't
+		// know about it, so its results are filtered in the apply loop below.
+		blocked := e.blockedMap()
 		checks := e.runChecks(clicks, checkCtx{n: n})
-		checks = append(checks, e.checkAfk(round, scoredThisRound, e.blockedMap())...)
+		checks = append(checks, e.checkAfk(round, scoredThisRound, blocked)...)
 		for _, ch := range checks {
+			if blocked[ch.SteamID] {
+				continue
+			}
 			if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
 				e.applySanction(ch, bi)
 			}
@@ -762,8 +771,10 @@ func (e *Engine) playGame(ctx context.Context) {
 	// leader if it was uncontested (they were the only scorer in any round) and their
 	// board lead clears SoloLeadMargin. Attached to the final round's log so it FKs
 	// cleanly to a persisted game_rounds row, and sanctioned like a per-round flag.
+	// Skipped, like the per-round checks, while the leader already has an outstanding
+	// test / cooldown so it never piles onto an unanswered rung.
 	if ch := e.checkSoloSession(sessionScorers, bi.LeaderID, bi.LeadMargin); ch != nil {
-		if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
+		if e.bc != nil && !e.blockedMap()[ch.SteamID] && e.bc.TestCapable(ch.SteamID) {
 			e.applySanction(*ch, bi)
 		}
 		if len(roundLogs) > 0 {
