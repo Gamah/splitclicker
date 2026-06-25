@@ -70,8 +70,11 @@ directory is bind-mounted into the container at `/data` (see
   this round) of the scoring clicks flags them (default 2.5; fractional allowed, the
   limit floors to a whole click count); needs ≥2 scorers, so a round only one player
   clicked is never flagged.
-- `solo_lead_margin` — anticheat: solo_round only flags a lone leader once their
-  games-won lead over second place is at least this (default 15).
+- `solo_lead_margin` — anticheat: solo_round (a session-level check) only flags the
+  bounty leader for an uncontested session once the lead it produces — their games-won
+  gap over second place (or their own total when alone on the board), *after* winning
+  that session — strictly exceeds this. With the default 15 it first fires at a lead of
+  16 (e.g. the 16th win alone, or beating a 50-win runner-up to reach 66).
 - `dominant_runner_up_min` — anticheat: dominant_winner only fires when the
   runner-up scored at least this many clicks, so out-clicking an idle player is
   never flagged (default 5).

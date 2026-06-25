@@ -46,7 +46,7 @@ func hasCheck(checks []CheckResult, sid, typ string) bool {
 }
 
 // crowd is a multi-player round context with a generous fair-share limit, so the
-// fast_clicks / solo_round / dominant tests aren't perturbed by too_many_clicks.
+// fast_clicks / dominant tests aren't perturbed by too_many_clicks.
 func crowd() checkCtx { return checkCtx{n: 500} }
 
 // fast_clicks fires only when two consecutive scoring clicks are STRICTLY under
@@ -120,31 +120,43 @@ func TestRunChecksTooManyFractional(t *testing.T) {
 	}
 }
 
-// solo_round fires only when the bounty leader is the LONE entry on the sessions-won
-// board (leaderAlone) AND their games-won lead is at least SoloLeadMargin. Connection
-// and scorer counts are irrelevant — the board, not the crowd, drives this.
-func TestRunChecksSoloRound(t *testing.T) {
+// solo_round is a session-level verdict: it fires only when the WHOLE session was
+// uncontested — the bounty leader was the only player to score in any round — AND
+// the leader's lead AFTER winning it (the start-of-session snapshot +1, since the
+// sole scorer wins) strictly exceeds SoloLeadMargin. A single scoring click from
+// anyone else makes the session contested and the lead stands.
+func TestCheckSoloSession(t *testing.T) {
 	e := New(Config{SoloLeadMargin: 15}, nil, nil, nil)
-	lone := func(leader string, margin int) checkCtx {
-		return checkCtx{n: 50, leaderID: leader, leadMargin: margin, leaderAlone: true}
+	scorers := func(ids ...string) map[string]bool {
+		m := map[string]bool{}
+		for _, id := range ids {
+			m[id] = true
+		}
+		return m
 	}
+	fired := func(ch *CheckResult) bool { return ch != nil && ch.Type == "solo_round" }
 
-	// Alone on the board, the leader, lead ≥ 15 → flag.
-	if got := e.runChecks(scoredAt("a", 0, 500, 1000), lone("a", 15)); !hasCheck(got, "a", "solo_round") {
-		t.Fatalf("lone leader with a 15 lead should flag solo_round, got %+v", got)
+	// Entering at 15, the leader wins this uncontested session (→16) → first fire.
+	// This is the "66th win vs a 50-win runner-up" boundary (entering lead 15).
+	if ch := e.checkSoloSession(scorers("a"), "a", 15); !fired(ch) {
+		t.Fatalf("sole scorer reaching a 16 lead should flag solo_round, got %+v", ch)
 	}
-	// Lead below the margin → no flag (newcomer building the board's first wins).
-	if got := e.runChecks(scoredAt("a", 0, 500), lone("a", 14)); hasCheck(got, "a", "solo_round") {
-		t.Fatalf("lone leader under the margin should NOT flag solo_round, got %+v", got)
+	// Entering at 14 → wins to 15, == margin, not strictly greater → no fire.
+	if ch := e.checkSoloSession(scorers("a"), "a", 14); fired(ch) {
+		t.Fatalf("a resulting lead == margin should NOT fire (strictly greater), got %+v", ch)
 	}
-	// Someone else leads → no flag.
-	if got := e.runChecks(scoredAt("a", 0, 500), lone("b", 99)); hasCheck(got, "a", "solo_round") {
-		t.Fatalf("lone non-leader should NOT flag solo_round, got %+v", got)
+	// Contested: anyone else scored even once → not solo, however large the lead.
+	if ch := e.checkSoloSession(scorers("a", "e"), "a", 99); fired(ch) {
+		t.Fatalf("a contested session should NOT flag solo_round, got %+v", ch)
 	}
-	// More than one entry on the board (leaderAlone=false) → not a solo round,
-	// however large the lead and however few players are connected/scoring.
-	if got := e.runChecks(scoredAt("a", 0, 500), checkCtx{n: 50, leaderID: "a", leadMargin: 99}); hasCheck(got, "a", "solo_round") {
-		t.Fatalf("a contested board should NOT flag solo_round, got %+v", got)
+	// The leader sat the session out (someone else played solo) → not flagged on the
+	// leader (they aren't a scorer); the actual scorer isn't the leader.
+	if ch := e.checkSoloSession(scorers("b"), "a", 99); fired(ch) {
+		t.Fatalf("leader who didn't score should NOT flag solo_round, got %+v", ch)
+	}
+	// Nobody scored at all → no padding, no flag.
+	if ch := e.checkSoloSession(scorers(), "a", 99); fired(ch) {
+		t.Fatalf("an empty session should NOT flag solo_round, got %+v", ch)
 	}
 }
 

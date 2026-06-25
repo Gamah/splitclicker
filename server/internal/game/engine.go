@@ -224,7 +224,7 @@ type CheckResult struct {
 }
 
 // BountyInfo is the snapshot of the active bounty the anticheat code needs each
-// round: who leads it (and by how many games-won), when it resolves, and its id
+// game: who leads it (and by how many games-won), when it resolves, and its id
 // (which scopes the sanction ladder — counts reset when the id changes). Supplied
 // by SetBountyInfoFn; Active is false when no bounty is running.
 type BountyInfo struct {
@@ -232,7 +232,6 @@ type BountyInfo struct {
 	LeaderID    string
 	LeadMargin  int   // leader's games-won minus the runner-up's; when alone on the board, the leader's own total
 	ResolveAtMs int64 // epoch ms the bounty's winner locks in (0 if unknown)
-	LeaderAlone bool  // the leader is the ONLY entry on the sessions-won board (solo_round)
 	Active      bool
 }
 
@@ -393,11 +392,11 @@ type Engine struct {
 	devNoteFn func() string
 
 	// bountyInfoFn, if set, returns the active bounty snapshot (id, leader + margin,
-	// resolve time). Used by solo_round (lone-leader margin gating) and by the
-	// sanction ladder (the bounty id scopes counts; the resolve time bounds the
-	// "ignored" rung). Optional — nil disables solo_round and the ladder runs with a
-	// zero bounty id (counts never reset, no resolve-time countdown). Read from the
-	// in-memory leaderboard cache, so it's cheap to call per round.
+	// resolve time). Used by the session-level solo_round check (leader + margin
+	// gating) and by the sanction ladder (the bounty id scopes counts; the resolve
+	// time bounds the "ignored" rung). Optional — nil disables solo_round and the
+	// ladder runs with a zero bounty id (counts never reset, no resolve-time
+	// countdown). Read from the in-memory leaderboard cache, so it's cheap to call.
 	bountyInfoFn func() BountyInfo
 
 	// Anticheat sanction ladder, scoped to the current bounty. curBountyID is the
@@ -670,6 +669,10 @@ func (e *Engine) playGame(ctx context.Context) {
 	// has no separate round_result — see race/final).
 	var finalDeltas map[string]int
 	var finalRoundID string
+	// Every player who scored a point in ANY round this session. The session-level
+	// solo_round check (after the loop) keys off this: uncontested == the leader is
+	// the only entry here.
+	sessionScorers := map[string]bool{}
 	for round := 1; round <= x && ctx.Err() == nil; round++ {
 		// players is the full connected crowd (shown to clients + recorded); N is sized
 		// to the players who can actually race — benched/cooled-down/ignored players are
@@ -689,14 +692,14 @@ func (e *Engine) playGame(ctx context.Context) {
 		// Run the end-of-round anticheat checks against this round's scoring clicks.
 		// Every flagged check is logged; applySanction then escalates the ladder for
 		// test-capable players (test → cooldown → ignored) and pushes them a frame.
-		checks := e.runChecks(clicks, checkCtx{
-			n:        n,
-			leaderID: bi.LeaderID, leadMargin: bi.LeadMargin, leaderAlone: bi.LeaderAlone,
-		})
+		checks := e.runChecks(clicks, checkCtx{n: n})
 		for _, ch := range checks {
 			if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
 				e.applySanction(ch, bi)
 			}
+		}
+		for _, c := range clicks {
+			sessionScorers[c.SteamID] = true
 		}
 		roundLogs = append(roundLogs, RoundLog{
 			RoundID: roundID, RoundNo: round, N: n, Players: players,
@@ -708,6 +711,20 @@ func (e *Engine) playGame(ctx context.Context) {
 	}
 	if ctx.Err() != nil {
 		return
+	}
+
+	// Session-level solo_round: with the whole session played out, flag the bounty
+	// leader if it was uncontested (they were the only scorer in any round) and their
+	// board lead clears SoloLeadMargin. Attached to the final round's log so it FKs
+	// cleanly to a persisted game_rounds row, and sanctioned like a per-round flag.
+	if ch := e.checkSoloSession(sessionScorers, bi.LeaderID, bi.LeadMargin); ch != nil {
+		if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
+			e.applySanction(*ch, bi)
+		}
+		if len(roundLogs) > 0 {
+			last := &roundLogs[len(roundLogs)-1]
+			last.Checks = append(last.Checks, *ch)
+		}
 	}
 
 	final := standingsOf(scores, info, reached)
@@ -1022,17 +1039,13 @@ func (e *Engine) recordBad(ev ClickEvent) {
 
 // --- anticheat: checks + tests ---
 
-// checkCtx is the round context the checks need beyond the scoring clicks: n (the
-// round's scoring-slot count) and the active bounty's leader, games-won margin, and
-// whether the leader stands alone on the sessions-won board (all for solo_round).
-// The too_many_clicks divisor is derived from the scoring clicks themselves (how
-// many players actually scored this round), not from a connection count — and
-// solo_round keys off the board (leaderAlone), not how many players are connected.
+// checkCtx is the round context the per-round checks need beyond the scoring
+// clicks: n, the round's scoring-slot count. The too_many_clicks divisor is
+// derived from the scoring clicks themselves (how many players actually scored
+// this round), not from a connection count. (solo_round is NOT a per-round check —
+// it's evaluated once across the whole session by checkSoloSession.)
 type checkCtx struct {
-	n           int
-	leaderID    string
-	leadMargin  int
-	leaderAlone bool
+	n int
 }
 
 // runChecks inspects a round's scoring clicks and returns one CheckResult per
@@ -1041,10 +1054,11 @@ type checkCtx struct {
 //   - fast_clicks:     two consecutive scoring clicks < FastClickMs apart.
 //   - too_many_clicks: more than MaxClickFactor × the round's fair share
 //                      (N / players who scored this round); needs ≥2 scorers.
-//   - solo_round:      the lone entry on the bounty's sessions-won board padding a
-//                      lead of ≥ SoloLeadMargin.
 //   - dominant_winner: top scorer took > 2× a runner-up who actually competed
 //                      (scored ≥ DominantRunnerUpMin).
+//
+// solo_round is deliberately absent here — it's a session-level verdict (was the
+// WHOLE session uncontested?), evaluated once at session end by checkSoloSession.
 func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 	if len(clicks) == 0 {
 		return nil
@@ -1098,18 +1112,6 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 		}
 	}
 
-	// solo_round: the bounty leader is the ONLY entry on the sessions-won board and is
-	// padding a lead nobody can contest — flagged once that lead (when alone, the
-	// leader's own games-won total) is at least SoloLeadMargin, so a newcomer building
-	// the board's first wins is left to play. Connection/scorer counts are irrelevant:
-	// the leader is sanctioned for scoring any round while running away alone.
-	if c.leaderAlone && c.leaderID != "" && order[0] == c.leaderID &&
-		e.cfg.SoloLeadMargin > 0 && c.leadMargin >= e.cfg.SoloLeadMargin {
-		out = append(out, CheckResult{SteamID: order[0], Type: "solo_round",
-			Detail:  fmt.Sprintf("lead=%d clicks=%d", c.leadMargin, len(offsets[order[0]])),
-			Message: "You're padding a runaway lead alone — let others catch up."})
-	}
-
 	// dominant_winner: the top scorer took MORE than 2× the runner-up's clicks, but
 	// only when the runner-up actually competed (scored ≥ DominantRunnerUpMin) — so a
 	// lone clicker beating an idle player is never flagged.
@@ -1129,6 +1131,45 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 		}
 	}
 	return out
+}
+
+// checkSoloSession is the session-level solo_round verdict, evaluated once at the
+// end of a game against the set of players who scored in ANY round of it. It flags
+// the bounty leader for padding a runaway lead when BOTH:
+//
+//   - the session was uncontested — the leader is the ONLY player who scored a
+//     point in any round (a single scoring click from anyone else makes it
+//     contested and the lead stands, however large), and
+//   - the leader's lead AFTER this session's win is strictly greater than
+//     SoloLeadMargin. leadMargin is the snapshot taken at session start (the gap
+//     over the runner-up, or, when the leader is alone on the sessions-won board,
+//     their own games-won total). Because an uncontested session means the leader
+//     was its sole scorer, they win it and gain exactly one — so the lead this
+//     session produces is leadMargin+1. The first margin that fires is therefore 16
+//     (entering at 15, winning the 16th), leaving a newcomer building the board's
+//     first wins room to play; this is the "fires on the 66th win vs a 50-win
+//     runner-up" case.
+//
+// Gating on the leader being the sole scorer also means it never fires on a session
+// the leader sat out: if someone else played solo they're the scorer (not leaderID)
+// and their own lead won't clear the margin. Returns nil when not flagged.
+func (e *Engine) checkSoloSession(scorers map[string]bool, leaderID string, leadMargin int) *CheckResult {
+	if e.cfg.SoloLeadMargin <= 0 || leaderID == "" {
+		return nil
+	}
+	// Uncontested: the leader scored and nobody else did.
+	if len(scorers) != 1 || !scorers[leaderID] {
+		return nil
+	}
+	// +1: this uncontested session is itself a win for the sole-scoring leader, so
+	// the resulting lead is one past the start-of-session snapshot.
+	postLead := leadMargin + 1
+	if postLead <= e.cfg.SoloLeadMargin { // strictly greater: a resulting lead of 16 fires, 15 doesn't
+		return nil
+	}
+	return &CheckResult{SteamID: leaderID, Type: "solo_round",
+		Detail:  fmt.Sprintf("lead=%d", postLead),
+		Message: "You ran away with an uncontested session — let others catch up."}
 }
 
 // Player-facing lines for the two non-test sanction rungs (the test rung uses the

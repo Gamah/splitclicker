@@ -151,13 +151,19 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   Fixed formula (not env-configurable); mirrored client-side (`ClickController.IdlePenaltyMs`) for
   a live estimate that the authoritative `armed` value overwrites. Mashing becomes self-defeating.
   Idle clicks still rate-limited so this doesn't reintroduce idle traffic.
-- **Anticheat checks + sanction ladder** (`game.runChecks` / `game.applySanction`; tunables in
-  `data/config.json`). End of every round, the scoring clicks are inspected: **fast_clicks**
-  (sub-human inter-click gap), **too_many_clicks** (over `max_click_factor ×` the round's fair
-  share N÷(players who scored this round); needs ≥2 scorers, so a lone clicker is never flagged),
-  **solo_round** (lone leader padding a ≥`solo_lead_margin`
-  games-won lead), **dominant_winner** (>2× a runner-up who scored ≥`dominant_runner_up_min`, so
-  beating an idle player is safe). Each carries a player-facing message. Flags escalate
+- **Anticheat checks + sanction ladder** (`game.runChecks` / `game.checkSoloSession` /
+  `game.applySanction`; tunables in `data/config.json`). End of every round, the scoring clicks
+  are inspected by `runChecks`: **fast_clicks** (sub-human inter-click gap), **too_many_clicks**
+  (over `max_click_factor ×` the round's fair share N÷(players who scored this round); needs ≥2
+  scorers, so a lone clicker is never flagged), **dominant_winner** (>2× a runner-up who scored
+  ≥`dominant_runner_up_min`, so beating an idle player is safe). **solo_round** is the one
+  *session-level* check (`game.checkSoloSession`, evaluated once at game end, NOT per round):
+  it flags the bounty leader for padding a runaway lead only when the session was **uncontested**
+  — the leader was the *only* player to score in *any* round (a single scoring click from anyone
+  else makes it contested and the lead stands) — and the leader's lead **after** winning it
+  (start-of-session margin +1, since the sole scorer wins) strictly exceeds `solo_lead_margin`
+  (so it first fires at a lead of 16 with the default 15). Each carries a player-facing message.
+  Flags escalate
   **per-bounty** (counts reset each bounty, persisted in `anticheat_sanctions`): test (math) →
   cooldown (`check_cooldown_threshold` flags → `check_cooldown_mins`) → ignored
   (`check_ignore_after` more → until the bounty resolves). The server pushes the rung as a `test`
