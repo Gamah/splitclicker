@@ -156,17 +156,18 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   are inspected by `runChecks`: **fast_clicks** (sub-human inter-click gap), **too_many_clicks**
   (over `max_click_factor ×` the round's fair share N÷(players who scored this round); needs ≥2
   scorers, so a lone clicker is never flagged), **dominant_winner** (>2× a runner-up who scored
-  ≥`dominant_runner_up_min`, so beating an idle player is safe). Two **cursor checks** (v5 only)
-  use the per-window cursor activity supplied by `ws/hub.go`'s `Hub.CursorActivity` via
-  `Engine.SetCursorActivityFn`, both gated by `afk_cursor_min`>0, both per-player (catch a lone
-  automated clicker), and both **skip legacy/disconnected players, never flagging them** (a v4
-  client sends no cursors): **afk** (scored while *no* `cursor` frames arrived — window backgrounded;
-  the soft, vague flag, message "This is not an AFK game.") and **moveless_score** (a scoring click
-  while AFK by the cursor — frames *did* arrive but the pointer's bounding box spanned <
-  `afk_cursor_min` normalized units, a frozen cursor claiming buttons that spawn at server-RNG'd
-  positions: the deliberate-automation signature, so it's a **distinct check type** flagged separately
-  in the audit/sanction trail. Its player message is deliberately vague ("Nice try.") — it must NOT
-  reveal that cursor movement is what's measured). **solo_round** is the one
+  ≥`dominant_runner_up_min`, so beating an idle player is safe). **afk_score** (the "gotcha", v5
+  only) flags a player who took a *scoring* slot while **AFK by the cursor** — the `game.afkByCursor`
+  predicate: *no* `cursor` messages arrived this round, OR the pointer never moved meaningfully from
+  its round-start spot (per-window bounding-box span < `afk_cursor_min` normalized units). Buttons
+  spawn at server-RNG'd positions, so a real player's cursor travels to reach them; scoring without
+  that is the bot signature. **Only scoring players are judged** — moving around and *missing*
+  buttons (no score) is fine — and **legacy/disconnected players are skipped, never flagged** (a v4
+  client sends no cursors). Cursor activity is the per-window `ws/hub.go` `Hub.CursorActivity`
+  (`Tracked`/`SawCursor`/`Extent`) supplied via `Engine.SetCursorActivityFn`; gated by
+  `afk_cursor_min`>0; `Detail` records which half fired (`no_cursor` / `extent=…`). The player
+  message is deliberately vague ("This is not an AFK game.") — it must NOT reveal that cursor
+  movement is what's measured. **solo_round** is the one
   *session-level* check (`game.checkSoloSession`, evaluated once at game end, NOT per round):
   it flags the bounty leader for padding a runaway lead only when the session was **uncontested**
   — the leader was the *only* player to score in *any* round (a single scoring click from anyone

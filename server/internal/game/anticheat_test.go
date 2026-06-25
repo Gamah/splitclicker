@@ -184,17 +184,17 @@ func TestRunChecksDominantWinner(t *testing.T) {
 	}
 }
 
-// The two cursor checks split by signal: no cursor frames at all → afk (window
-// backgrounded); cursor frames but a frozen pointer (span < AfkCursorMin) →
-// moveless_score (the distinct, stronger flag). Both apply only to players
-// cursorActivityFn can judge (Tracked); a legacy/disconnected player is skipped.
+// afk_score (the "gotcha") fires when a SCORING player is AFK by the cursor — either
+// no cursor messages arrived, or the pointer's bounding-box span stayed < AfkCursorMin
+// (didn't move since the round began). Non-scorers are never evaluated, and a
+// legacy/disconnected (untracked) player is skipped.
 func TestRunChecksAfk(t *testing.T) {
 	e := New(Config{AfkCursorMin: 1000}, nil, nil, nil)
 	e.SetCursorActivityFn(func(sid string) CursorActivity {
 		switch sid {
-		case "frozen": // sent cursors, but under the movement threshold
+		case "frozen": // sent cursors, but never moved past the threshold
 			return CursorActivity{Tracked: true, SawCursor: true, Extent: 300}
-		case "tabbed": // no cursor frames at all
+		case "tabbed": // no cursor messages at all
 			return CursorActivity{Tracked: true, SawCursor: false}
 		case "active": // moved plenty
 			return CursorActivity{Tracked: true, SawCursor: true, Extent: 5000}
@@ -203,40 +203,56 @@ func TestRunChecksAfk(t *testing.T) {
 		}
 	})
 
-	// Frozen cursor → moveless_score, NOT afk (afk is the no-frames case only).
-	if got := e.runChecks(scoredAt("frozen", 0), crowd()); !hasCheck(got, "frozen", "moveless_score") {
-		t.Fatalf("a sub-threshold cursor span should flag moveless_score, got %+v", got)
+	// Both halves of the AFK check, when the player scored, flag afk_score.
+	if got := e.runChecks(scoredAt("frozen", 0), crowd()); !hasCheck(got, "frozen", "afk_score") {
+		t.Fatalf("scoring with a frozen cursor should flag afk_score, got %+v", got)
 	}
-	if got := e.runChecks(scoredAt("frozen", 0), crowd()); hasCheck(got, "frozen", "afk") {
-		t.Fatalf("a frozen cursor should flag moveless_score, not afk, got %+v", got)
+	if got := e.runChecks(scoredAt("tabbed", 0), crowd()); !hasCheck(got, "tabbed", "afk_score") {
+		t.Fatalf("scoring with no cursor messages should flag afk_score, got %+v", got)
 	}
-	// No frames → afk, NOT moveless_score.
-	if got := e.runChecks(scoredAt("tabbed", 0), crowd()); !hasCheck(got, "tabbed", "afk") {
-		t.Fatalf("no cursor frames (tabbed out) should flag afk, got %+v", got)
+	// Moved enough → not AFK → no flag.
+	if got := e.runChecks(scoredAt("active", 0), crowd()); hasCheck(got, "active", "afk_score") {
+		t.Fatalf("a player who moved past the threshold should not flag, got %+v", got)
 	}
-	if got := e.runChecks(scoredAt("tabbed", 0), crowd()); hasCheck(got, "tabbed", "moveless_score") {
-		t.Fatalf("no cursor frames should flag afk, not moveless_score, got %+v", got)
-	}
-	if got := e.runChecks(scoredAt("active", 0), crowd()); hasCheck(got, "active", "moveless_score") || hasCheck(got, "active", "afk") {
-		t.Fatalf("a player who moved past the threshold should flag neither, got %+v", got)
-	}
-	if got := e.runChecks(scoredAt("legacy", 0), crowd()); hasCheck(got, "legacy", "afk") || hasCheck(got, "legacy", "moveless_score") {
-		t.Fatalf("an untracked (legacy/gone) player should flag neither, got %+v", got)
+	// Untracked (legacy/gone) → skipped.
+	if got := e.runChecks(scoredAt("legacy", 0), crowd()); hasCheck(got, "legacy", "afk_score") {
+		t.Fatalf("an untracked player should not flag, got %+v", got)
 	}
 	// Boundary: Extent == AfkCursorMin is NOT under the threshold (strictly less flags).
 	e.SetCursorActivityFn(func(string) CursorActivity {
 		return CursorActivity{Tracked: true, SawCursor: true, Extent: 1000}
 	})
-	if got := e.runChecks(scoredAt("edge", 0), crowd()); hasCheck(got, "edge", "moveless_score") {
-		t.Fatalf("Extent == AfkCursorMin should NOT flag moveless_score (strictly less), got %+v", got)
+	if got := e.runChecks(scoredAt("edge", 0), crowd()); hasCheck(got, "edge", "afk_score") {
+		t.Fatalf("Extent == AfkCursorMin should NOT flag (strictly less), got %+v", got)
 	}
 	// Disabled when AfkCursorMin == 0, even with a provider set.
 	off := New(Config{AfkCursorMin: 0}, nil, nil, nil)
 	off.SetCursorActivityFn(func(string) CursorActivity {
 		return CursorActivity{Tracked: true, SawCursor: false}
 	})
-	if got := off.runChecks(scoredAt("tabbed", 0), crowd()); hasCheck(got, "tabbed", "afk") {
-		t.Fatalf("AfkCursorMin=0 should disable the cursor checks, got %+v", got)
+	if got := off.runChecks(scoredAt("tabbed", 0), crowd()); hasCheck(got, "tabbed", "afk_score") {
+		t.Fatalf("AfkCursorMin=0 should disable the cursor check, got %+v", got)
+	}
+}
+
+// afkByCursor unit-checks the AFK predicate directly: no cursor messages OR a span
+// below the threshold is AFK; moving past it is not.
+func TestAfkByCursor(t *testing.T) {
+	cases := []struct {
+		name string
+		act  CursorActivity
+		min  int
+		want bool
+	}{
+		{"no messages", CursorActivity{Tracked: true, SawCursor: false}, 1000, true},
+		{"frozen", CursorActivity{Tracked: true, SawCursor: true, Extent: 300}, 1000, true},
+		{"at threshold", CursorActivity{Tracked: true, SawCursor: true, Extent: 1000}, 1000, false},
+		{"moved", CursorActivity{Tracked: true, SawCursor: true, Extent: 5000}, 1000, false},
+	}
+	for _, c := range cases {
+		if got := afkByCursor(c.act, c.min); got != c.want {
+			t.Fatalf("%s: afkByCursor = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
