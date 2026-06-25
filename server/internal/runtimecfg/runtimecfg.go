@@ -59,6 +59,7 @@ type File struct {
 	// Anticheat check gating + the per-bounty sanction ladder. See game.Config.
 	SoloLeadMargin         *int `json:"solo_lead_margin"`
 	DominantRunnerUpMin    *int `json:"dominant_runner_up_min"`
+	AfkCursorMin           *int `json:"afk_cursor_min"`
 	CheckCooldownThreshold *int `json:"check_cooldown_threshold"`
 	CheckCooldownMins      *int `json:"check_cooldown_mins"`
 	CheckIgnoreAfter       *int `json:"check_ignore_after"`

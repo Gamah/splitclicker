@@ -121,12 +121,39 @@ type Client struct {
 	curY    int16
 	hasCur  bool
 	lastCur time.Time
+
+	// Per-window cursor-movement extent, for the engine's afk check: the bounding box
+	// of every cursor position reported since the last clearCursor (i.e. since this
+	// armed window's arming stage). movSeen is false until the first cursor of the
+	// window arrives — distinguishing "didn't move" (box of zero span) from "tabbed
+	// out" (no frames at all). Same curMu as the position above.
+	movSeen          bool
+	movMinX, movMaxX int16
+	movMinY, movMaxY int16
 }
 
-// setCursor records this connection's latest pointer position (from readPump).
+// setCursor records this connection's latest pointer position (from readPump) and
+// folds it into the per-window movement bounding box used by the afk check.
 func (c *Client) setCursor(x, y int16) {
 	c.curMu.Lock()
 	c.curX, c.curY, c.hasCur = x, y, true
+	if !c.movSeen {
+		c.movSeen = true
+		c.movMinX, c.movMaxX, c.movMinY, c.movMaxY = x, y, x, y
+	} else {
+		if x < c.movMinX {
+			c.movMinX = x
+		}
+		if x > c.movMaxX {
+			c.movMaxX = x
+		}
+		if y < c.movMinY {
+			c.movMinY = y
+		}
+		if y > c.movMaxY {
+			c.movMaxY = y
+		}
+	}
 	c.curMu.Unlock()
 }
 
@@ -137,11 +164,27 @@ func (c *Client) cursor() (int16, int16, bool) {
 	return c.curX, c.curY, c.hasCur
 }
 
-// clearCursor drops the stored cursor so a stale position from a finished round
-// isn't sampled into the next window (called from Hub.Pending at the arming stage).
+// movement reports whether any cursor arrived this window and the Manhattan span
+// of its bounding box (0 = a single stationary position). Read at round end by the
+// hub's CursorActivity for the afk check.
+func (c *Client) movement() (seen bool, extent int) {
+	c.curMu.Lock()
+	defer c.curMu.Unlock()
+	if !c.movSeen {
+		return false, 0
+	}
+	// Widen to int before subtracting: a full-width span exceeds int16's range.
+	return true, (int(c.movMaxX) - int(c.movMinX)) + (int(c.movMaxY) - int(c.movMinY))
+}
+
+// clearCursor drops the stored cursor AND resets the per-window movement box so a
+// stale position from a finished round isn't sampled into the next window, and the
+// afk extent only reflects movement after the next arm (called from Hub.Pending at
+// the arming stage).
 func (c *Client) clearCursor() {
 	c.curMu.Lock()
 	c.hasCur = false
+	c.movSeen = false
 	c.curMu.Unlock()
 }
 
@@ -313,6 +356,22 @@ func (h *Hub) sampleCursors() []cursorSample {
 		}
 	}
 	return out
+}
+
+// CursorActivity reports a player's cursor movement during the window just played,
+// for the engine's afk check. A below-v5 (legacy) client never sends cursors, and a
+// player who has since disconnected has no connection to judge — both are reported
+// Tracked:false so afk skips them rather than flagging them. Called from the engine
+// Run goroutine at round end (before the next arming stage clears the box).
+func (h *Hub) CursorActivity(steamID string) game.CursorActivity {
+	h.mu.RLock()
+	c := h.bySteam[steamID]
+	h.mu.RUnlock()
+	if c == nil || c.Legacy {
+		return game.CursorActivity{}
+	}
+	seen, extent := c.movement()
+	return game.CursorActivity{Tracked: true, SawCursor: seen, Extent: extent}
 }
 
 // Armed fans out the armed frame. The unpenalised majority share one precomputed

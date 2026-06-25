@@ -211,11 +211,25 @@ type ScoredClick struct {
 	OffsetMs int
 }
 
+// CursorActivity is a scoring player's mouse activity during the round just
+// played, supplied by the ws hub (which tracks a per-window cursor bounding box).
+// Tracked is false for a connection that can't be judged — a below-v5 (legacy)
+// client never sends cursors, or the player isn't currently connected — so afk
+// skips them rather than flagging them. SawCursor is whether any cursor frame
+// arrived this window (false ⇒ tabbed out / idle pointer). Extent is the Manhattan
+// span of the cursor's bounding box in normalized int16 units (0 = never moved).
+type CursorActivity struct {
+	Tracked   bool
+	SawCursor bool
+	Extent    int
+}
+
 // CheckResult is one anticheat check a round flagged against a player. Type is
 // the rule that fired ('fast_clicks' | 'too_many_clicks' | 'solo_round' |
-// 'dominant_winner'); Detail is a short note ('delta=84ms' / 'clicks=37' /
-// 'clicks=12 vs 5') for the audit record; Message is the player-facing line
-// shown in the anticheat popup explaining which rule benched them.
+// 'dominant_winner' | 'afk' | 'moveless_score'); Detail is a short note ('delta=84ms' /
+// 'clicks=37' / 'clicks=12 vs 5' / 'no_cursor' / 'extent=120 min=1000') for the audit
+// record; Message is the player-facing line shown in the anticheat popup explaining
+// which rule benched them.
 type CheckResult struct {
 	SteamID string
 	Type    string
@@ -399,6 +413,13 @@ type Engine struct {
 	// countdown). Read from the in-memory leaderboard cache, so it's cheap to call.
 	bountyInfoFn func() BountyInfo
 
+	// cursorActivityFn, if set, returns a scoring player's cursor activity during the
+	// round just played (whether they sent any cursor frames, and how far the cursor
+	// roamed). Used by the afk check to flag a player who scored without moving their
+	// mouse — or while tabbed out (no cursor frames at all). Supplied by the ws hub,
+	// which tracks the per-window cursor bounding box. Optional — nil disables afk.
+	cursorActivityFn func(steamID string) CursorActivity
+
 	// Anticheat sanction ladder, scoped to the current bounty. curBountyID is the
 	// bounty the in-memory sanctions belong to; when bountyInfoFn reports a different
 	// id the ladder resets (reloaded from the store for the new bounty). sanctions
@@ -429,6 +450,10 @@ func (e *Engine) SetDevNoteFn(fn func() string) { e.devNoteFn = fn }
 // SetBountyInfoFn registers the source of the active bounty snapshot (used by the
 // solo_round check and the sanction ladder). Call before Run; nil disables both.
 func (e *Engine) SetBountyInfoFn(fn func() BountyInfo) { e.bountyInfoFn = fn }
+
+// SetCursorActivityFn registers the source of per-player cursor activity (used by
+// the afk check). Call before Run; nil disables afk. See CursorActivity.
+func (e *Engine) SetCursorActivityFn(fn func(steamID string) CursorActivity) { e.cursorActivityFn = fn }
 
 // New builds an Engine. store may be nil (scoring still works, just not
 // persisted). log may be nil (falls back to a no-op logger).
@@ -1056,6 +1081,13 @@ type checkCtx struct {
 //                      (N / players who scored this round); needs ≥2 scorers.
 //   - dominant_winner: top scorer took > 2× a runner-up who actually competed
 //                      (scored ≥ DominantRunnerUpMin).
+//   - afk:             scored while NO cursor frames arrived (window backgrounded).
+//   - moveless_score:  a scoring click while AFK by the cursor — frames arrived but the
+//                      pointer's bounding box spanned < AfkCursorMin (frozen cursor —
+//                      the stronger, distinctly-flagged automation signature).
+// Both are per-player (no ≥2-scorer gate), so they catch a lone automated clicker;
+// both need cursorActivityFn + AfkCursorMin>0 and skip players they can't judge
+// (legacy clients send no cursors; a disconnected player has no activity).
 //
 // solo_round is deliberately absent here — it's a session-level verdict (was the
 // WHOLE session uncontested?), evaluated once at session end by checkSoloSession.
@@ -1109,6 +1141,31 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 			out = append(out, CheckResult{SteamID: sid, Type: "too_many_clicks",
 				Detail:  fmt.Sprintf("clicks=%d limit=%d", len(offs), limit),
 				Message: "You took far more of the round's clicks than your share."})
+		}
+		// Both flags hinge on the same AFK detection (no / too-little cursor movement),
+		// split by how damning the combination is. Both need a judgeable (tracked)
+		// player and AfkCursorMin>0; both skip legacy/disconnected.
+		//   - afk:            no cursor frames arrived at all — the window was in the
+		//                     background while points came in. The softer, vaguer flag.
+		//   - moveless_score: a scoring click landed while AFK by the cursor — frames DID
+		//                     arrive but the pointer never left a tiny box (span <
+		//                     AfkCursorMin). Buttons jump to server-RNG'd spots, so this
+		//                     is the deliberate-automation signature; flagged distinctly.
+		//                     The player message is deliberately vague — it must NOT reveal
+		//                     that cursor movement is what's measured.
+		if e.cfg.AfkCursorMin > 0 && e.cursorActivityFn != nil {
+			if act := e.cursorActivityFn(sid); act.Tracked {
+				switch {
+				case !act.SawCursor:
+					out = append(out, CheckResult{SteamID: sid, Type: "afk",
+						Detail:  "no_cursor",
+						Message: "This is not an AFK game."})
+				case act.Extent < e.cfg.AfkCursorMin:
+					out = append(out, CheckResult{SteamID: sid, Type: "moveless_score",
+						Detail:  fmt.Sprintf("extent=%d min=%d", act.Extent, e.cfg.AfkCursorMin),
+						Message: "Nice try."})
+				}
+			}
 		}
 	}
 
@@ -1169,7 +1226,7 @@ func (e *Engine) checkSoloSession(scorers map[string]bool, leaderID string, lead
 	}
 	return &CheckResult{SteamID: leaderID, Type: "solo_round",
 		Detail:  fmt.Sprintf("lead=%d", postLead),
-		Message: "You ran away with an uncontested session — let others catch up."}
+		Message: "You're way out front with nobody around to race. Check back when it's busier, or bring some friends for a real game."}
 }
 
 // Player-facing lines for the two non-test sanction rungs (the test rung uses the

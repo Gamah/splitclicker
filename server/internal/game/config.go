@@ -61,10 +61,19 @@ type Config struct {
 	//   DominantRunnerUpMin — dominant_winner only fires when the runner-up actually
 	//                         competed (scored at least this many clicks); guards the
 	//                         "one player clicks, the other is idle" false positive.
+	//   AfkCursorMin        — afk flags a scoring player whose cursor's bounding box
+	//                         spanned fewer than this many normalized int16 units during
+	//                         the armed window (or who sent no cursor frames at all —
+	//                         tabbed out). v5-only signal (legacy clients send no cursors
+	//                         and are exempt). 0 disables the check. Conservative by
+	//                         design: a low-N round with a button under the resting
+	//                         cursor can move little, so the first ladder rung is only a
+	//                         math test. Tune up if it false-positives. See runChecks.
 	FastClickMs         int
 	MaxClickFactor      float64
 	SoloLeadMargin      int
 	DominantRunnerUpMin int
+	AfkCursorMin        int
 
 	// Anticheat sanction ladder (per bounty, per player; see Engine.applySanction).
 	// The first CheckCooldownThreshold-1 checks each bench the player behind a math
@@ -97,6 +106,7 @@ func DefaultConfig() Config {
 		MaxClickFactor:      2.5,
 		SoloLeadMargin:      4,
 		DominantRunnerUpMin: 5,
+		AfkCursorMin:        1000,
 
 		CheckCooldownThreshold: 20,
 		CheckCooldownMins:      60,
@@ -126,6 +136,7 @@ func ConfigFromEnv() Config {
 	c.MaxClickFactor = envFloat("MAX_CLICK_FACTOR", c.MaxClickFactor)
 	c.SoloLeadMargin = envInt("SOLO_LEAD_MARGIN", c.SoloLeadMargin)
 	c.DominantRunnerUpMin = envInt("DOMINANT_RUNNER_UP_MIN", c.DominantRunnerUpMin)
+	c.AfkCursorMin = envInt("AFK_CURSOR_MIN", c.AfkCursorMin)
 	c.CheckCooldownThreshold = envInt("CHECK_COOLDOWN_THRESHOLD", c.CheckCooldownThreshold)
 	c.CheckCooldownMins = envInt("CHECK_COOLDOWN_MINS", c.CheckCooldownMins)
 	c.CheckIgnoreAfter = envInt("CHECK_IGNORE_AFTER", c.CheckIgnoreAfter)

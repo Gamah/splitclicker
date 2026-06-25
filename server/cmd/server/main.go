@@ -63,6 +63,7 @@ func gameConfig() game.Config {
 	setFloat(f.MaxClickFactor, &c.MaxClickFactor)
 	setInt(f.SoloLeadMargin, &c.SoloLeadMargin)
 	setInt(f.DominantRunnerUpMin, &c.DominantRunnerUpMin)
+	setInt(f.AfkCursorMin, &c.AfkCursorMin)
 	setInt(f.CheckCooldownThreshold, &c.CheckCooldownThreshold)
 	setInt(f.CheckCooldownMins, &c.CheckCooldownMins)
 	setInt(f.CheckIgnoreAfter, &c.CheckIgnoreAfter)
@@ -226,6 +227,9 @@ func main() {
 		}
 		return bi
 	})
+	// The afk check reads each scoring player's cursor activity for the round just
+	// played from the hub's per-window cursor tracking.
+	engine.SetCursorActivityFn(hub.CursorActivity)
 	engine.SetGameEndHook(func(ctx context.Context) {
 		if err := cache.Refresh(ctx); err != nil {
 			log.Error("refresh leaderboard cache", zap.Error(err))
