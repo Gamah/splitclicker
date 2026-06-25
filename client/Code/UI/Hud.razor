@@ -491,7 +491,11 @@
 	     captures input so nothing underneath registers; the server withholds every game
 	     frame until they rejoin, so there's nothing to play here. The PAUSE bar (which
 	     stays visible above GAME INFO) is the single place to rejoin. ── *@
-	@if ( C?.Parked == true )
+	@* Suppressed while a panel is open: an open how-to/music panel is itself the "away"
+	   surface, and the park-overlay (z:190) would otherwise stack its RESUME card on top of
+	   the popup (z:160). Closing the panel auto-rejoins a panel-park, so the overlay only
+	   ever shows for a real PAUSE / server afk-park with no panel up. ── *@
+	@if ( C?.Parked == true && !_howtoOpen && !MusicOpen )
 	{
 		<div class="park-overlay">
 			<div class="park-card">
@@ -1716,6 +1720,14 @@
 	//    sessions. First-time players default to open (PlayerData default). ──
 	bool _howtoOpen = PlayerData.Load().HowToPlayOpen;
 
+	// True once WE auto-parked the player because a panel (the how-to popup or the music
+	// board) is open — reading the rules or browsing music means they're not playing, so we
+	// step them out of the round + the AFK pass instead of letting a still cursor flag them.
+	// Latched only when our own park took, so a server afk-park or a manual PAUSE that
+	// happens to coincide with a panel is never auto-resumed when the panel closes. Driven
+	// from OnUpdate (PanelParkSync).
+	bool _panelParked;
+
 	// Toggle the popup and persist the new state to local storage so it sticks.
 	void ToggleHowTo()
 	{
@@ -1724,6 +1736,33 @@
 		data.HowToPlayOpen = _howtoOpen;
 		data.Save();
 		StateHasChanged();
+	}
+
+	// Keep the parked state in sync with the open panels (how-to popup / music board). Open
+	// panel ⇒ park; once they're all closed ⇒ rejoin — but only if WE were the ones who
+	// parked for a panel (_panelParked). A server afk-park or a manual PAUSE that overlaps a
+	// panel is left alone (we never latched it), so closing the panel doesn't resume them.
+	// Park is a no-op without a live socket (e.g. the first-launch popup before connect), so
+	// we only latch once the park actually took, and retry every frame until it does.
+	void PanelParkSync()
+	{
+		if ( C == null ) return;
+		bool panelOpen = _howtoOpen || MusicOpen;
+		if ( panelOpen )
+		{
+			if ( !C.Parked )
+			{
+				C.TogglePark();
+				if ( C.Parked ) _panelParked = true; // our park, and the socket accepted it
+				StateHasChanged();
+			}
+		}
+		else if ( _panelParked )
+		{
+			if ( C.Parked ) C.TogglePark(); // rejoin: back in on the next arm
+			_panelParked = false;
+			StateHasChanged();
+		}
 	}
 
 	// Toggle the away/parked state from the PAUSE bar. Delegates to the controller (which
@@ -1855,6 +1894,12 @@
 			_ = LoadConfig();
 			_ = LoadPreviousBounty();
 		}
+
+		// While a panel is open (the how-to popup — which pops up on first launch — or the
+		// music board), the player is reading/browsing, not playing: their cursor sits still
+		// and the server would flag them AFK. Auto-park them (drops them out of the round's N
+		// + the AFK pass) and rejoin them when the panels close. See _panelParked.
+		PanelParkSync();
 
 		var phase = C?.Phase ?? GamePhase.Connecting;
 
