@@ -9,12 +9,15 @@ directory is bind-mounted into the container at `/data` (see
 
 `make up` reviews this file interactively before building (a pure-shell step, no Go
 needed on the host): it seeds `config.json` from the example if missing, backfills any
-individual tunable absent from the file with the example default, then walks every
-numeric game tunable showing the current setting in `[brackets]` (press Enter to keep
-exactly that value, or type a new number). The live meta values (`skin_image`, `winner_lock_time`,
-`dev_note`, `live_version`) are re-read per request, so edit those directly here; no
-rebuild needed. `make up SKIP=1` skips the review and keeps the current/default
-values. To edit by hand instead:
+individual tunable absent from the file with the example default, then walks
+`live_version` followed by every numeric game tunable, showing the current setting in
+`[brackets]` (press Enter to keep exactly that value, or type a new number).
+`live_version` is reviewed too because it's numeric, but it applies **live** on save
+(re-read per request — no rebuild); the numeric game tunables need a rebuild/restart.
+The remaining meta values (`skin_image`, `winner_lock_time`, `dev_note`) are strings, so
+edit those directly here; they're also re-read per request, no rebuild needed.
+`make up SKIP=1` skips the review and keeps the current/default values. To edit by hand
+instead:
 
 1. Copy the example once: `cp config.json.example config.json`
 2. Edit `config.json`:

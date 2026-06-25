@@ -201,3 +201,9 @@ public record TestMsg(
 public record AchievementMsg(
 	[property: JsonPropertyName( "ident" )] string Ident
 );
+
+// on=true parks us (auto-park off an afk_idle verdict); the server only ever sends
+// on:true (unpark is the client's call). Drives the parked/away state.
+public record ParkMsg(
+	[property: JsonPropertyName( "on" )] bool On
+);

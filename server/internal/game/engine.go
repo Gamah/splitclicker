@@ -192,6 +192,11 @@ type Broadcaster interface {
 	// non-test rung — it still can't score, it just doesn't get a frame it can't
 	// render. False if not connected.
 	SanctionCapable(steamID string) bool
+	// Park marks a player as away off an afk_idle verdict: the hub withholds further
+	// frames from them and drops them from the crowd count / round N until they unpark
+	// (the Pause control). A no-op for clients too old to understand parking, who keep
+	// the plain afk ladder. Safe to call for any SteamID (no-op if not connected).
+	Park(steamID string)
 }
 
 // --- store (the persistent hourly board) ---
@@ -755,6 +760,14 @@ func (e *Engine) playGame(ctx context.Context) {
 			}
 			if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
 				e.applySanction(ch, bi)
+				// afk_idle is the legitimately-away verdict: in addition to bumping the
+				// ladder rung (above), park the player so they drop cleanly off the board
+				// and out of the round's N until they hit Pause to rejoin. Park is a no-op
+				// on builds too old to understand it (they keep just the ladder), and the
+				// gotcha (afk_score) is never parked — it stays purely punitive.
+				if ch.Type == "afk_idle" {
+					e.bc.Park(ch.SteamID)
+				}
 			}
 		}
 		roundLogs = append(roundLogs, RoundLog{
