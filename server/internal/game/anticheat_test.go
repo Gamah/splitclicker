@@ -202,7 +202,7 @@ func TestCheckAfk(t *testing.T) {
 	none := map[string]bool{}
 
 	// AFK + scored = the gotcha (afk_score), via either half of the predicate.
-	scored := e.checkAfk(map[string]bool{"frozen": true, "tabbed": true, "active": true}, none)
+	scored := e.checkAfk(1, map[string]bool{"frozen": true, "tabbed": true, "active": true}, none)
 	if !hasCheck(scored, "frozen", "afk_score") {
 		t.Fatalf("frozen cursor + scored should flag afk_score, got %+v", scored)
 	}
@@ -215,7 +215,7 @@ func TestCheckAfk(t *testing.T) {
 	}
 
 	// AFK + did NOT score = the idle nudge (afk_idle), evaluated even with no scorers.
-	idle := e.checkAfk(none, none)
+	idle := e.checkAfk(1, none, none)
 	if !hasCheck(idle, "frozen", "afk_idle") {
 		t.Fatalf("frozen cursor + no score should flag afk_idle, got %+v", idle)
 	}
@@ -233,7 +233,7 @@ func TestCheckAfk(t *testing.T) {
 
 	// Already-blocked (benched/cooled/ignored) players are logged but never flagged,
 	// so an idle benched player doesn't pile up fresh idle flags.
-	blocked := e.checkAfk(none, map[string]bool{"frozen": true, "tabbed": true})
+	blocked := e.checkAfk(1, none, map[string]bool{"frozen": true, "tabbed": true})
 	if hasCheck(blocked, "frozen", "afk_idle") || hasCheck(blocked, "tabbed", "afk_idle") {
 		t.Fatalf("blocked players must not be flagged, got %+v", blocked)
 	}
@@ -242,7 +242,7 @@ func TestCheckAfk(t *testing.T) {
 	e.SetAllCursorActivityFn(func() map[string]CursorActivity {
 		return map[string]CursorActivity{"edge": {Tracked: true, SawCursor: true, Extent: 1000}}
 	})
-	if got := e.checkAfk(map[string]bool{"edge": true}, none); hasCheck(got, "edge", "afk_score") {
+	if got := e.checkAfk(1, map[string]bool{"edge": true}, none); hasCheck(got, "edge", "afk_score") {
 		t.Fatalf("Extent == AfkCursorMin should NOT flag (strictly less), got %+v", got)
 	}
 
@@ -251,7 +251,7 @@ func TestCheckAfk(t *testing.T) {
 	off.SetAllCursorActivityFn(func() map[string]CursorActivity {
 		return map[string]CursorActivity{"tabbed": {Tracked: true, SawCursor: false}}
 	})
-	if got := off.checkAfk(map[string]bool{"tabbed": true}, none); len(got) != 0 {
+	if got := off.checkAfk(1, map[string]bool{"tabbed": true}, none); len(got) != 0 {
 		t.Fatalf("AfkCursorMin=0 should disable the afk pass, got %+v", got)
 	}
 }

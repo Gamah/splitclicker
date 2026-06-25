@@ -164,9 +164,10 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   from its round-start spot (per-window bounding-box span < `afk_cursor_min` normalized units).
   Buttons spawn at server-RNG'd positions and move, so a real player's cursor travels to reach
   them. An AFK verdict splits by whether the player took a scoring slot this round: **afk_score**
-  (AFK + scored) is the **"gotcha"** (the serious flag: a wire-bot echoing a nonce without aiming
-  is the signature, since a human cannot claim a moving button while still), and **afk_idle**
-  (AFK + scored nothing) is the soft idle nudge. **Movement clears you:** a player who moves but
+  (AFK + scored) is the **"gotcha"** (the serious flag, surfaced as **BUSTED** in the client: a
+  wire-bot echoing a nonce without aiming is the signature, since a human cannot claim a moving
+  button while still), and **afk_idle** (AFK + scored nothing) is the soft idle nudge (the **AFK**
+  client row). **Movement clears you:** a player who moves but
   misses every button (no score) is never flagged. **Legacy clients are skipped** (they send no
   cursors, so the hub omits them; they are never flagged). Both outcomes ride the **same per-bounty
   sanction ladder** (`applySanction` keys per player, not per rule). Players **already
@@ -176,9 +177,9 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   stillness is visible even on no-score rounds. Cursor activity is the per-window `ws/hub.go`
   `Hub.AllCursorActivity` (`map[steamID]{Tracked,SawCursor,Extent}` over connected non-legacy
   conns) supplied via `Engine.SetAllCursorActivityFn`; gated by `afk_cursor_min`>0; `Detail`
-  records the signal (`scored no_cursor` / `idle extent=… min=…`). The player message is
-  deliberately vague ("This is not an AFK game.") for both outcomes: it must NOT reveal that
-  cursor movement is what's measured. **solo_round** is the one
+  records the signal (`scored no_cursor` / `idle extent=… min=…`). The two player messages
+  (afk_score "You know what you did, knock it off."; afk_idle "This is not an AFK game.") are
+  deliberately vague: neither reveals that cursor movement is what's measured. **solo_round** is the one
   *session-level* check (`game.checkSoloSession`, evaluated once at game end, NOT per round):
   it flags the bounty leader for padding a runaway lead only when the session was **uncontested**
   (the leader was the *only* player to score in *any* round; a single scoring click from anyone

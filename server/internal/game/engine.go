@@ -732,7 +732,7 @@ func (e *Engine) playGame(ctx context.Context) {
 			sessionScorers[c.SteamID] = true
 		}
 		checks := e.runChecks(clicks, checkCtx{n: n})
-		checks = append(checks, e.checkAfk(scoredThisRound, e.blockedMap())...)
+		checks = append(checks, e.checkAfk(round, scoredThisRound, e.blockedMap())...)
 		for _, ch := range checks {
 			if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
 				e.applySanction(ch, bi)
@@ -1206,7 +1206,11 @@ func afkByCursor(act CursorActivity, min int) bool {
 // LOGGED (the visibility requirement covers everyone) but never flagged: they can't
 // score (so there is no gotcha to catch) and an idle benched player must not pile up
 // fresh idle flags while stuck on a test.
-func (e *Engine) checkAfk(scored, blocked map[string]bool) []CheckResult {
+//
+// round is logged for correlation. A per-player "afk_eval" line and a single
+// "afk_round" summary print every round, even when nobody is AFK, so stillness and the
+// blocked-skip are visible in the logs rather than inferred from a missing line.
+func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckResult {
 	if e.cfg.AfkCursorMin <= 0 || e.allCursorActivityFn == nil {
 		return nil
 	}
@@ -1218,6 +1222,7 @@ func (e *Engine) checkAfk(scored, blocked map[string]bool) []CheckResult {
 	sort.Strings(ids)
 
 	var out []CheckResult
+	var afkN, gotcha, idle, blockedAfk int
 	for _, sid := range ids {
 		act := acts[sid]
 		didScore := scored[sid]
@@ -1226,6 +1231,7 @@ func (e *Engine) checkAfk(scored, blocked map[string]bool) []CheckResult {
 		// ones, so stillness is visible in the logs and not only inferred from a missing
 		// line.
 		e.log.Info("afk_eval",
+			zap.Int("round", round),
 			zap.String("sid", sid),
 			zap.Bool("tracked", act.Tracked),
 			zap.Bool("saw_cursor", act.SawCursor),
@@ -1234,7 +1240,13 @@ func (e *Engine) checkAfk(scored, blocked map[string]bool) []CheckResult {
 			zap.Bool("scored", didScore),
 			zap.Bool("blocked", blocked[sid]),
 			zap.Bool("afk", afk))
-		if !afk || blocked[sid] {
+		if !afk {
+			continue
+		}
+		afkN++
+		if blocked[sid] {
+			// Already benched/cooled/ignored: judged AFK but deliberately not re-flagged.
+			blockedAfk++
 			continue
 		}
 		signal := "no_cursor"
@@ -1242,15 +1254,29 @@ func (e *Engine) checkAfk(scored, blocked map[string]bool) []CheckResult {
 			signal = fmt.Sprintf("extent=%d min=%d", act.Extent, e.cfg.AfkCursorMin)
 		}
 		if didScore {
+			// The gotcha (BUSTED): scored a slot while still = automation.
+			gotcha++
 			out = append(out, CheckResult{SteamID: sid, Type: "afk_score",
 				Detail:  "scored " + signal,
-				Message: "This is not an AFK game."})
+				Message: "You know what you did, knock it off."})
 		} else {
+			// The idle nudge (AFK): still and didn't score.
+			idle++
 			out = append(out, CheckResult{SteamID: sid, Type: "afk_idle",
 				Detail:  "idle " + signal,
 				Message: "This is not an AFK game."})
 		}
 	}
+	// One summary line per round so the AFK pass is visible even when nobody is flagged.
+	e.log.Info("afk_round",
+		zap.Int("round", round),
+		zap.Int("evaluated", len(ids)),
+		zap.Int("scored", len(scored)),
+		zap.Int("afk", afkN),
+		zap.Int("flagged_gotcha", gotcha),
+		zap.Int("flagged_idle", idle),
+		zap.Int("afk_but_blocked", blockedAfk),
+		zap.Int("min", e.cfg.AfkCursorMin))
 	return out
 }
 
