@@ -161,21 +161,31 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   connected non-legacy player is evaluated every round (NOT just scorers), because a player who
   sits still and scores *nothing* is exactly the one to catch. The `game.afkByCursor` predicate
   is AFK when *no* `cursor` messages arrived this round, OR the pointer never moved meaningfully
-  from its round-start spot (per-window bounding-box span < `afk_cursor_min` normalized units).
+  from its round-start spot (per-window bounding-box span < `afk_cursor_min` board-normalized units).
   Buttons spawn at server-RNG'd positions and move, so a real player's cursor travels to reach
-  them. An AFK verdict splits by whether the player took a scoring slot this round: **afk_score**
+  them. **The client only reports the cursor while it is ON the board** (within ±1 before clamp): a
+  pointer parked OUTSIDE the board (over the side leaderboards) used to clamp to the ±1 edge, and
+  tiny hand jitter oscillating across that edge made a still cursor look like it moved a lot; now
+  off-board samples are simply not sent (a parked player reports no cursor → the no-cursor half), so
+  the box is measured cleanly with no edge artefact. *(The board/wire are slated to move to fixed
+  1024×1024 coords; `afk_cursor_min` is tied to today's normalized scale and must be re-tuned then.)*
+  An AFK verdict splits by whether the player took a scoring slot this round: **afk_score**
   (AFK + scored) is the **"gotcha"** (the serious flag, surfaced as **BUSTED** in the client: a
   wire-bot echoing a nonce without aiming is the signature, since a human cannot claim a moving
   button while still), and **afk_idle** (AFK + scored nothing) is the soft idle nudge (the **AFK**
   client row). **Movement clears you:** a player who moves but
   misses every button (no score) is never flagged. **Legacy clients are skipped** (they send no
-  cursors, so the hub omits them; they are never flagged). Both outcomes ride the **same per-bounty
+  cursors, so the hub omits them; they are never flagged). **Only players present for the whole
+  armed window are idle-nudged** (`CursorActivity.Eligible`, stamped from `Hub`'s per-arm `armGen`):
+  a mid-window join or a fresh connection that hasn't had a window yet has an empty cursor box it
+  never had a chance to fill, so `afk_idle` skips it; the gotcha ignores eligibility (scoring proves
+  there was a live window). Both outcomes ride the **same per-bounty
   sanction ladder** (`applySanction` keys per player, not per rule). Players **already
   benched/cooled/ignored** this bounty (`blockedMap`) are logged but never re-flagged (they can't
   score, and an idle benched player must not pile up fresh idle flags). Every connected player is
-  **logged every round** (`afk_eval`: tracked/saw_cursor/extent/min/scored/blocked/afk), so
+  **logged every round** (`afk_eval`: tracked/saw_cursor/extent/min/scored/blocked/eligible/afk), so
   stillness is visible even on no-score rounds. Cursor activity is the per-window `ws/hub.go`
-  `Hub.AllCursorActivity` (`map[steamID]{Tracked,SawCursor,Extent}` over connected non-legacy
+  `Hub.AllCursorActivity` (`map[steamID]{Tracked,SawCursor,Extent,Eligible}` over connected non-legacy
   conns) supplied via `Engine.SetAllCursorActivityFn`; gated by `afk_cursor_min`>0; `Detail`
   records the signal (`scored no_cursor` / `idle extent=… min=…`). The two player messages
   (afk_score "You know what you did, knock it off."; afk_idle "This is not an AFK game.") are

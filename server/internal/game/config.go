@@ -62,14 +62,18 @@ type Config struct {
 	//                         competed (scored at least this many clicks); guards the
 	//                         "one player clicks, the other is idle" false positive.
 	//   AfkCursorMin        - the cursor-movement floor for the v5 AFK pass (see checkAfk,
-	//                         which judges the WHOLE roster every round, not just scorers).
-	//                         A player is AFK when their cursor's bounding box spanned fewer
-	//                         than this many normalized int16 units during the armed window,
-	//                         or they sent no cursor frames at all (tabbed out). v5-only
-	//                         signal (legacy clients send no cursors and are exempt). AFK +
-	//                         scored is the bot "gotcha" (afk_score); AFK + no score is the
-	//                         idle nudge (afk_idle); both ride the sanction ladder. 0 disables
-	//                         the pass. Tune up if it false-positives. See checkAfk.
+	//                         which judges every player present for the whole window, not
+	//                         just scorers). A player is AFK when their cursor's bounding
+	//                         box spanned fewer than this many board-normalized int16 units
+	//                         during the armed window, or they sent no cursor frames at all
+	//                         (parked off the board, or tabbed out). v5-only signal (legacy
+	//                         clients send no cursors and are exempt). AFK + scored is the
+	//                         bot "gotcha" (afk_score); AFK + no score is the idle nudge
+	//                         (afk_idle); both ride the sanction ladder. 0 disables the pass.
+	//                         The client only reports the cursor while it is ON the board,
+	//                         so off-board jitter can't inflate the box. NOTE: tied to the
+	//                         current board-normalized wire; re-tune when the board/wire move
+	//                         to fixed 1024x1024 coords. See checkAfk.
 	FastClickMs         int
 	MaxClickFactor      float64
 	SoloLeadMargin      int
@@ -107,7 +111,7 @@ func DefaultConfig() Config {
 		MaxClickFactor:      2.5,
 		SoloLeadMargin:      4,
 		DominantRunnerUpMin: 5,
-		AfkCursorMin:        1000,
+		AfkCursorMin:        8000,
 
 		CheckCooldownThreshold: 20,
 		CheckCooldownMins:      60,

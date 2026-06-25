@@ -224,6 +224,13 @@ type CursorActivity struct {
 	SawCursor bool
 	Extent    int
 
+	// Eligible is true when the player was connected for the WHOLE armed window (present
+	// at its arm). A mid-window join, or a connection that hasn't seen a window yet, is
+	// not eligible: it has an empty cursor box it never had a chance to fill, so the
+	// idle nudge (afk_idle) skips it. The scoring "gotcha" (afk_score) ignores this: a
+	// player who SCORED necessarily had a live window to score in.
+	Eligible bool
+
 	// TEMP DEBUG (afk diagnostics): the raw per-window box corners, sample count, and
 	// first reported position, so we can see whether a "still" round's extent comes
 	// from one outlier sample vs real movement.
@@ -1214,7 +1221,11 @@ func afkByCursor(act CursorActivity, min int) bool {
 //   - afk_score: AFK AND scored = the "gotcha". Buttons spawn at server-RNG'd spots
 //     and move, so a human cannot claim one without the cursor travelling. Scoring
 //     while still is the bot signature (a wire-bot echoing the nonce). The serious flag.
-//   - afk_idle:  AFK AND did not score = an idle player. The soft nudge.
+//   - afk_idle:  AFK AND did not score = an idle player. The soft nudge. Only raised
+//     for an ELIGIBLE player (CursorActivity.Eligible: present for the whole armed
+//     window). A mid-window join, or a fresh connection that hasn't had a window yet,
+//     has an empty cursor box it never had a chance to fill, so it is skipped here.
+//     The gotcha ignores eligibility: scoring proves there was a live window.
 //
 // Both ride the same per-bounty sanction ladder (applySanction keys per player, not
 // per rule). The player message is deliberately vague for both: it must NOT reveal
@@ -1241,7 +1252,7 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 	sort.Strings(ids)
 
 	var out []CheckResult
-	var afkN, gotcha, idle, blockedAfk int
+	var afkN, gotcha, idle, blockedAfk, ineligible int
 	for _, sid := range ids {
 		act := acts[sid]
 		didScore := scored[sid]
@@ -1258,6 +1269,7 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 			zap.Int("min", e.cfg.AfkCursorMin),
 			zap.Bool("scored", didScore),
 			zap.Bool("blocked", blocked[sid]),
+			zap.Bool("eligible", act.Eligible),
 			zap.Bool("afk", afk),
 			// TEMP DEBUG: raw box so we can see what inflated a "still" extent.
 			zap.Int("samples", act.Samples),
@@ -1278,13 +1290,20 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 			signal = fmt.Sprintf("extent=%d min=%d", act.Extent, e.cfg.AfkCursorMin)
 		}
 		if didScore {
-			// The gotcha (BUSTED): scored a slot while still = automation.
+			// The gotcha (BUSTED): scored a slot while still = automation. Judged even if
+			// not "eligible": anyone who scored necessarily had a live window to do it in.
 			gotcha++
 			out = append(out, CheckResult{SteamID: sid, Type: "afk_score",
 				Detail:  "scored " + signal,
 				Message: "You know what you did, knock it off."})
 		} else {
-			// The idle nudge (AFK): still and didn't score.
+			// The idle nudge (AFK): still and didn't score. Skip players who weren't here
+			// for the whole window (mid-window join / no window yet): they have an empty
+			// cursor box they never had a fair chance to fill.
+			if !act.Eligible {
+				ineligible++
+				continue
+			}
 			idle++
 			out = append(out, CheckResult{SteamID: sid, Type: "afk_idle",
 				Detail:  "idle " + signal,
@@ -1300,6 +1319,7 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 		zap.Int("flagged_gotcha", gotcha),
 		zap.Int("flagged_idle", idle),
 		zap.Int("afk_but_blocked", blockedAfk),
+		zap.Int("afk_but_ineligible", ineligible),
 		zap.Int("min", e.cfg.AfkCursorMin))
 	return out
 }

@@ -191,10 +191,11 @@ func TestRunChecksDominantWinner(t *testing.T) {
 // moved past the threshold is never flagged; legacy/disconnected players aren't in the
 // hub's map, so they're never judged.
 func TestCheckAfk(t *testing.T) {
+	// All eligible (present for the whole window); the ineligible case is covered below.
 	acts := map[string]CursorActivity{
-		"frozen": {Tracked: true, SawCursor: true, Extent: 300},  // sent cursors, never moved
-		"tabbed": {Tracked: true, SawCursor: false},              // no cursor messages at all
-		"active": {Tracked: true, SawCursor: true, Extent: 5000}, // moved plenty
+		"frozen": {Tracked: true, SawCursor: true, Extent: 300, Eligible: true},  // sent cursors, never moved
+		"tabbed": {Tracked: true, SawCursor: false, Eligible: true},              // no cursor messages at all
+		"active": {Tracked: true, SawCursor: true, Extent: 5000, Eligible: true}, // moved plenty
 	}
 	e := New(Config{AfkCursorMin: 1000}, nil, nil, nil)
 	e.SetAllCursorActivityFn(func() map[string]CursorActivity { return acts })
@@ -237,6 +238,24 @@ func TestCheckAfk(t *testing.T) {
 	if hasCheck(blocked, "frozen", "afk_idle") || hasCheck(blocked, "tabbed", "afk_idle") {
 		t.Fatalf("blocked players must not be flagged, got %+v", blocked)
 	}
+
+	// Ineligible (not present for the whole window: mid-window join / no window yet) is
+	// NOT idle-nudged (its empty/still box was never a fair chance) but the scoring
+	// gotcha still fires (scoring proves there was a live window).
+	e.SetAllCursorActivityFn(func() map[string]CursorActivity {
+		return map[string]CursorActivity{
+			"newidle":  {Tracked: true, SawCursor: false, Eligible: false},
+			"newscore": {Tracked: true, SawCursor: false, Eligible: false},
+		}
+	})
+	inel := e.checkAfk(1, map[string]bool{"newscore": true}, none)
+	if hasCheck(inel, "newidle", "afk_idle") {
+		t.Fatalf("an ineligible non-scorer must not be idle-flagged, got %+v", inel)
+	}
+	if !hasCheck(inel, "newscore", "afk_score") {
+		t.Fatalf("an ineligible scorer must still hit the gotcha, got %+v", inel)
+	}
+	e.SetAllCursorActivityFn(func() map[string]CursorActivity { return acts })
 
 	// Boundary: Extent == AfkCursorMin is NOT under the threshold (strictly less flags).
 	e.SetAllCursorActivityFn(func() map[string]CursorActivity {

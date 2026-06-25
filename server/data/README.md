@@ -87,11 +87,15 @@ values. To edit by hand instead:
   runner-up scored at least this many clicks, so out-clicking an idle player is
   never flagged (default 5).
 - `afk_cursor_min` (anticheat): the cursor-movement floor for the v5 AFK pass. Every
-  connected player is checked every round (not just scorers); a player whose cursor's
-  per-window bounding-box span stays below this (or who sends no cursor frames at all)
-  is AFK. AFK + scored is the bot "gotcha", AFK + no score is the idle nudge; both ride
-  the sanction ladder. Default 1000 (normalized int16 units, roughly 1.5% of screen
-  width). `0` disables the AFK pass entirely.
+  connected player present for the whole armed window is checked every round (not just
+  scorers); a player whose cursor's per-window bounding-box span stays below this (or
+  who sends no cursor frames at all, i.e. parked off the board or tabbed out) is AFK.
+  AFK + scored is the bot "gotcha", AFK + no score is the idle nudge; both ride the
+  sanction ladder. Default 8000 (board-normalized int16 units; the client only reports
+  the cursor while it is on the board, so resting-hand jitter sits well under this while
+  real play is far above it). `0` disables the AFK pass entirely. NOTE: this scale is
+  tied to the current board-normalized wire and will need re-tuning when the board/wire
+  move to fixed 1024x1024 coordinates.
 - `check_cooldown_threshold` / `check_cooldown_mins` / `check_ignore_after` — the
   per-bounty sanction ladder: this many flags in a bounty (default 20) start a
   cooldown of this many minutes (default 60); this many more flags after that

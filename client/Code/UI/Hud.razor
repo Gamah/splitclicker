@@ -1794,9 +1794,17 @@
 			if ( r.Width > 0f && r.Height > 0f )
 			{
 				var m = Sandbox.Mouse.Position;
-				float nx = Math.Clamp( ( m.x - r.Center.x ) / ( r.Width / 2f ), -1f, 1f );
-				float ny = Math.Clamp( ( m.y - r.Center.y ) / ( r.Height / 2f ), -1f, 1f );
-				C.SendCursor( nx, ny );
+				float nx = ( m.x - r.Center.x ) / ( r.Width / 2f );
+				float ny = ( m.y - r.Center.y ) / ( r.Height / 2f );
+				// Only report the cursor while it's actually ON the board (within -1..1).
+				// A pointer resting OUTSIDE the board (over the side leaderboards) used to
+				// clamp to the +-1 edge, and tiny hand jitter oscillating across that edge
+				// made a physically-still cursor look like it moved a lot, defeating the
+				// afk check. Off-board samples are simply not sent: a player parked off the
+				// board reports no cursor (the server reads that as afk by the no-cursor
+				// half), and on-board movement is measured cleanly with no edge artefact.
+				if ( nx >= -1f && nx <= 1f && ny >= -1f && ny <= 1f )
+					C.SendCursor( nx, ny );
 			}
 		}
 

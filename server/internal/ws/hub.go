@@ -60,6 +60,12 @@ type Hub struct {
 	bySteam map[string]*Client // newest connection per Steam account
 	engine  *game.Engine
 	log     *zap.Logger
+
+	// armGen counts armed windows. Bumped in Armed; each connected client's armSeen is
+	// stamped to it so the afk check can tell who was present for the WHOLE window (and
+	// is fairly judgeable) from who joined mid-window or hasn't had a window yet. Touched
+	// only from the engine Run goroutine (Armed + AllCursorActivity), so it needs no lock.
+	armGen int
 }
 
 func NewHub(log *zap.Logger) *Hub {
@@ -133,6 +139,11 @@ type Client struct {
 	movN             int   // TEMP DEBUG: cursor samples this window (afk diagnostics)
 	movFirstX        int16 // TEMP DEBUG: the window's first reported position
 	movFirstY        int16 // TEMP DEBUG
+
+	// armSeen is the hub's armGen at the last arm this client was present for. Compared
+	// to the current armGen in AllCursorActivity to decide afk eligibility (present for
+	// the whole window). Touched only from the engine Run goroutine (Hub.Armed).
+	armSeen int
 }
 
 // setCursor records this connection's latest pointer position (from readPump) and
@@ -391,7 +402,8 @@ func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
 		seen, extent := c.movement()
 		n, minX, maxX, minY, maxY, fx, fy := c.movementDebug() // TEMP DEBUG
 		out[c.SteamID] = game.CursorActivity{Tracked: true, SawCursor: seen, Extent: extent,
-			Samples: n, MinX: minX, MaxX: maxX, MinY: minY, MaxY: maxY, FirstX: fx, FirstY: fy}
+			Eligible: c.armSeen == h.armGen,
+			Samples:  n, MinX: minX, MaxX: maxX, MinY: minY, MaxY: maxY, FirstX: fx, FirstY: fy}
 	}
 	return out
 }
@@ -407,7 +419,16 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 	v4base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Nonce: strconv.FormatUint(a.Nonce, 16), Players: a.Players, Clicks: a.Clicks}
 	cleanV5 := mustJSON(v5base)
 	cleanV4 := mustJSON(v4base)
-	for _, c := range h.clientList() {
+	// New armed window: stamp every currently-connected client as present for it, so the
+	// afk check can skip players who weren't here for the whole window (mid-window joins,
+	// or a fresh connection that hasn't had a window yet) instead of flagging an empty
+	// cursor box they never had a chance to fill.
+	h.armGen++
+	clients := h.clientList()
+	for _, c := range clients {
+		c.armSeen = h.armGen
+	}
+	for _, c := range clients {
 		if a.Blocked[c.SteamID] {
 			continue // benched by anticheat: withhold the nonce/buttons until they pass their test
 		}
