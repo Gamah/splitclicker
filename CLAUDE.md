@@ -179,7 +179,13 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   armed window are idle-nudged** (`CursorActivity.Eligible`, stamped from `Hub`'s per-arm `armGen`):
   a mid-window join or a fresh connection that hasn't had a window yet has an empty cursor box it
   never had a chance to fill, so `afk_idle` skips it; the gotcha ignores eligibility (scoring proves
-  there was a live window). Both outcomes ride the **same per-bounty
+  there was a live window). **AFK fires at most ONCE per game per player** (`afkFired`, reset each
+  game in `playGame`): this breaks the loop where a player who answers their math test *mid-round*
+  (clearing the block) is instantly re-flagged for the round they spent answering. The hub withholds
+  the `armed` frame from a benched player, so they never get that round's board and can't send a
+  cursor; without the once-per-game cap, clearing a test mid-round would re-trip AFK at round end. A
+  genuinely-AFK player still ladders out **across** games (the cap resets each game), so escalation
+  is only slowed, not prevented. Both outcomes ride the **same per-bounty
   sanction ladder** (`applySanction` keys per player, not per rule). Players **already
   benched/cooled/ignored** this bounty (`blockedMap`) are logged but never re-flagged (they can't
   score, and an idle benched player must not pile up fresh idle flags). Every connected player is

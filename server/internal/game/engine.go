@@ -719,6 +719,10 @@ func (e *Engine) playGame(ctx context.Context) {
 	// solo_round check (after the loop) keys off this: uncontested == the leader is
 	// the only entry here.
 	sessionScorers := map[string]bool{}
+	// AFK fires at most ONCE per game per player (afk_score or afk_idle). This breaks
+	// the answer-a-test-mid-round re-flag loop within a game, while a player who is AFK
+	// across multiple games still ladders out (the set resets each game). Reset here.
+	afkFired := map[string]bool{}
 	for round := 1; round <= x && ctx.Err() == nil; round++ {
 		// players is the full connected crowd (shown to clients + recorded); N is sized
 		// to the players who can actually race — benched/cooled-down/ignored players are
@@ -753,7 +757,7 @@ func (e *Engine) playGame(ctx context.Context) {
 		// know about it, so its results are filtered in the apply loop below.
 		blocked := e.blockedMap()
 		checks := e.runChecks(clicks, checkCtx{n: n})
-		checks = append(checks, e.checkAfk(round, scoredThisRound, blocked)...)
+		checks = append(checks, e.checkAfk(round, scoredThisRound, blocked, afkFired)...)
 		for _, ch := range checks {
 			if blocked[ch.SteamID] {
 				continue
@@ -1237,10 +1241,18 @@ func afkByCursor(act CursorActivity, min int) bool {
 // score (so there is no gotcha to catch) and an idle benched player must not pile up
 // fresh idle flags while stuck on a test.
 //
+// afkFired is the per-GAME set of players who have already taken an AFK flag this game
+// (caller-owned, reset each game). AFK fires at most once per game per player: this
+// breaks the loop where a player who answers their math test mid-round (clearing the
+// block) is immediately re-flagged for the round they spent answering. A genuinely-AFK
+// player still ladders out across games (the set resets each game), so escalation to
+// cooldown/ignored is only slowed, not prevented. checkAfk marks a player here the
+// moment it flags them.
+//
 // round is logged for correlation. A per-player "afk_eval" line and a single
 // "afk_round" summary print every round, even when nobody is AFK, so stillness and the
 // blocked-skip are visible in the logs rather than inferred from a missing line.
-func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckResult {
+func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) []CheckResult {
 	if e.cfg.AfkCursorMin <= 0 || e.allCursorActivityFn == nil {
 		return nil
 	}
@@ -1252,7 +1264,7 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 	sort.Strings(ids)
 
 	var out []CheckResult
-	var afkN, gotcha, idle, blockedAfk, ineligible int
+	var afkN, gotcha, idle, blockedAfk, ineligible, alreadyFired int
 	for _, sid := range ids {
 		act := acts[sid]
 		didScore := scored[sid]
@@ -1285,6 +1297,12 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 			blockedAfk++
 			continue
 		}
+		if afkFired[sid] {
+			// Already took this game's one AFK flag: don't re-fire (breaks the
+			// answer-a-test-mid-round re-flag loop). They re-arm next game.
+			alreadyFired++
+			continue
+		}
 		signal := "no_cursor"
 		if act.SawCursor {
 			signal = fmt.Sprintf("extent=%d min=%d", act.Extent, e.cfg.AfkCursorMin)
@@ -1293,6 +1311,7 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 			// The gotcha (BUSTED): scored a slot while still = automation. Judged even if
 			// not "eligible": anyone who scored necessarily had a live window to do it in.
 			gotcha++
+			afkFired[sid] = true
 			out = append(out, CheckResult{SteamID: sid, Type: "afk_score",
 				Detail:  "scored " + signal,
 				Message: "You know what you did, knock it off."})
@@ -1305,6 +1324,7 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 				continue
 			}
 			idle++
+			afkFired[sid] = true
 			out = append(out, CheckResult{SteamID: sid, Type: "afk_idle",
 				Detail:  "idle " + signal,
 				Message: "This is not an AFK game."})
@@ -1320,6 +1340,7 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 		zap.Int("flagged_idle", idle),
 		zap.Int("afk_but_blocked", blockedAfk),
 		zap.Int("afk_but_ineligible", ineligible),
+		zap.Int("afk_but_already_fired", alreadyFired),
 		zap.Int("min", e.cfg.AfkCursorMin))
 	return out
 }

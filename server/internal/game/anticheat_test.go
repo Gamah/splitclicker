@@ -203,7 +203,7 @@ func TestCheckAfk(t *testing.T) {
 	none := map[string]bool{}
 
 	// AFK + scored = the gotcha (afk_score), via either half of the predicate.
-	scored := e.checkAfk(1, map[string]bool{"frozen": true, "tabbed": true, "active": true}, none)
+	scored := e.checkAfk(1, map[string]bool{"frozen": true, "tabbed": true, "active": true}, none, map[string]bool{})
 	if !hasCheck(scored, "frozen", "afk_score") {
 		t.Fatalf("frozen cursor + scored should flag afk_score, got %+v", scored)
 	}
@@ -216,7 +216,7 @@ func TestCheckAfk(t *testing.T) {
 	}
 
 	// AFK + did NOT score = the idle nudge (afk_idle), evaluated even with no scorers.
-	idle := e.checkAfk(1, none, none)
+	idle := e.checkAfk(1, none, none, map[string]bool{})
 	if !hasCheck(idle, "frozen", "afk_idle") {
 		t.Fatalf("frozen cursor + no score should flag afk_idle, got %+v", idle)
 	}
@@ -234,7 +234,7 @@ func TestCheckAfk(t *testing.T) {
 
 	// Already-blocked (benched/cooled/ignored) players are logged but never flagged,
 	// so an idle benched player doesn't pile up fresh idle flags.
-	blocked := e.checkAfk(1, none, map[string]bool{"frozen": true, "tabbed": true})
+	blocked := e.checkAfk(1, none, map[string]bool{"frozen": true, "tabbed": true}, map[string]bool{})
 	if hasCheck(blocked, "frozen", "afk_idle") || hasCheck(blocked, "tabbed", "afk_idle") {
 		t.Fatalf("blocked players must not be flagged, got %+v", blocked)
 	}
@@ -248,7 +248,7 @@ func TestCheckAfk(t *testing.T) {
 			"newscore": {Tracked: true, SawCursor: false, Eligible: false},
 		}
 	})
-	inel := e.checkAfk(1, map[string]bool{"newscore": true}, none)
+	inel := e.checkAfk(1, map[string]bool{"newscore": true}, none, map[string]bool{})
 	if hasCheck(inel, "newidle", "afk_idle") {
 		t.Fatalf("an ineligible non-scorer must not be idle-flagged, got %+v", inel)
 	}
@@ -257,11 +257,28 @@ func TestCheckAfk(t *testing.T) {
 	}
 	e.SetAllCursorActivityFn(func() map[string]CursorActivity { return acts })
 
+	// Once per game: a shared afkFired set means a player flagged in one round is NOT
+	// re-flagged in a later round of the same game (the answer-a-test-mid-round loop
+	// breaker). A fresh set (new game) flags them again.
+	game := map[string]bool{}
+	first := e.checkAfk(1, none, none, game)
+	if !hasCheck(first, "frozen", "afk_idle") {
+		t.Fatalf("first AFK of the game should fire, got %+v", first)
+	}
+	second := e.checkAfk(2, none, none, game)
+	if hasCheck(second, "frozen", "afk_idle") {
+		t.Fatalf("a second AFK in the same game must not re-fire, got %+v", second)
+	}
+	fresh := e.checkAfk(1, none, none, map[string]bool{})
+	if !hasCheck(fresh, "frozen", "afk_idle") {
+		t.Fatalf("a new game (fresh afkFired) should flag again, got %+v", fresh)
+	}
+
 	// Boundary: Extent == AfkCursorMin is NOT under the threshold (strictly less flags).
 	e.SetAllCursorActivityFn(func() map[string]CursorActivity {
 		return map[string]CursorActivity{"edge": {Tracked: true, SawCursor: true, Extent: 1000}}
 	})
-	if got := e.checkAfk(1, map[string]bool{"edge": true}, none); hasCheck(got, "edge", "afk_score") {
+	if got := e.checkAfk(1, map[string]bool{"edge": true}, none, map[string]bool{}); hasCheck(got, "edge", "afk_score") {
 		t.Fatalf("Extent == AfkCursorMin should NOT flag (strictly less), got %+v", got)
 	}
 
@@ -270,7 +287,7 @@ func TestCheckAfk(t *testing.T) {
 	off.SetAllCursorActivityFn(func() map[string]CursorActivity {
 		return map[string]CursorActivity{"tabbed": {Tracked: true, SawCursor: false}}
 	})
-	if got := off.checkAfk(1, map[string]bool{"tabbed": true}, none); len(got) != 0 {
+	if got := off.checkAfk(1, map[string]bool{"tabbed": true}, none, map[string]bool{}); len(got) != 0 {
 		t.Fatalf("AfkCursorMin=0 should disable the afk pass, got %+v", got)
 	}
 }
