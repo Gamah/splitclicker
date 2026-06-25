@@ -223,6 +223,14 @@ type CursorActivity struct {
 	Tracked   bool
 	SawCursor bool
 	Extent    int
+
+	// TEMP DEBUG (afk diagnostics): the raw per-window box corners, sample count, and
+	// first reported position, so we can see whether a "still" round's extent comes
+	// from one outlier sample vs real movement.
+	Samples        int
+	MinX, MaxX     int
+	MinY, MaxY     int
+	FirstX, FirstY int
 }
 
 // CheckResult is one anticheat check a round flagged against a player. Type is
@@ -1239,7 +1247,12 @@ func (e *Engine) checkAfk(round int, scored, blocked map[string]bool) []CheckRes
 			zap.Int("min", e.cfg.AfkCursorMin),
 			zap.Bool("scored", didScore),
 			zap.Bool("blocked", blocked[sid]),
-			zap.Bool("afk", afk))
+			zap.Bool("afk", afk),
+			// TEMP DEBUG: raw box so we can see what inflated a "still" extent.
+			zap.Int("samples", act.Samples),
+			zap.Int("minx", act.MinX), zap.Int("maxx", act.MaxX),
+			zap.Int("miny", act.MinY), zap.Int("maxy", act.MaxY),
+			zap.Int("firstx", act.FirstX), zap.Int("firsty", act.FirstY))
 		if !afk {
 			continue
 		}

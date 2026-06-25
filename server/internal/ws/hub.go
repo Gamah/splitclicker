@@ -130,6 +130,9 @@ type Client struct {
 	movSeen          bool
 	movMinX, movMaxX int16
 	movMinY, movMaxY int16
+	movN             int   // TEMP DEBUG: cursor samples this window (afk diagnostics)
+	movFirstX        int16 // TEMP DEBUG: the window's first reported position
+	movFirstY        int16 // TEMP DEBUG
 }
 
 // setCursor records this connection's latest pointer position (from readPump) and
@@ -137,9 +140,11 @@ type Client struct {
 func (c *Client) setCursor(x, y int16) {
 	c.curMu.Lock()
 	c.curX, c.curY, c.hasCur = x, y, true
+	c.movN++ // TEMP DEBUG
 	if !c.movSeen {
 		c.movSeen = true
 		c.movMinX, c.movMaxX, c.movMinY, c.movMaxY = x, y, x, y
+		c.movFirstX, c.movFirstY = x, y // TEMP DEBUG
 	} else {
 		if x < c.movMinX {
 			c.movMinX = x
@@ -177,6 +182,15 @@ func (c *Client) movement() (seen bool, extent int) {
 	return true, (int(c.movMaxX) - int(c.movMinX)) + (int(c.movMaxY) - int(c.movMinY))
 }
 
+// movementDebug returns the raw per-window box corners, sample count, and first
+// sample for the afk diagnostics (TEMP). Same lock as movement.
+func (c *Client) movementDebug() (n int, minX, maxX, minY, maxY, firstX, firstY int) {
+	c.curMu.Lock()
+	defer c.curMu.Unlock()
+	return c.movN, int(c.movMinX), int(c.movMaxX), int(c.movMinY), int(c.movMaxY),
+		int(c.movFirstX), int(c.movFirstY)
+}
+
 // clearCursor drops the stored cursor AND resets the per-window movement box so a
 // stale position from a finished round isn't sampled into the next window, and the
 // afk extent only reflects movement after the next arm (called from Hub.Pending at
@@ -185,6 +199,7 @@ func (c *Client) clearCursor() {
 	c.curMu.Lock()
 	c.hasCur = false
 	c.movSeen = false
+	c.movN = 0 // TEMP DEBUG
 	c.curMu.Unlock()
 }
 
@@ -374,7 +389,9 @@ func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
 			continue
 		}
 		seen, extent := c.movement()
-		out[c.SteamID] = game.CursorActivity{Tracked: true, SawCursor: seen, Extent: extent}
+		n, minX, maxX, minY, maxY, fx, fy := c.movementDebug() // TEMP DEBUG
+		out[c.SteamID] = game.CursorActivity{Tracked: true, SawCursor: seen, Extent: extent,
+			Samples: n, MinX: minX, MaxX: maxX, MinY: minY, MaxY: maxY, FirstX: fx, FirstY: fy}
 	}
 	return out
 }
