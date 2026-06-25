@@ -26,7 +26,7 @@
 
   "solo_lead_margin": 4,
   "dominant_runner_up_min": 5,
-  "afk_cursor_min": 8000,
+  "afk_check": 1,
   "check_cooldown_threshold": 20,
   "check_cooldown_mins": 60,
   "check_ignore_after": 2

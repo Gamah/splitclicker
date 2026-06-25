@@ -211,42 +211,33 @@ type ScoredClick struct {
 	OffsetMs int
 }
 
-// CursorActivity is a connected player's mouse activity during the round just
-// played, supplied by the ws hub (which tracks a per-window cursor bounding box).
-// The afk pass (checkAfk) judges every entry the hub returns; legacy clients send
-// no cursors and the hub omits them, so Tracked is true for everyone present. It is
-// kept for clarity / a future "absent" sentinel. SawCursor is whether any cursor
-// message arrived this window (false means tabbed out / idle pointer). Extent is
-// the Manhattan span of the cursor's bounding box in normalized int16 units (0 =
-// never moved).
+// CursorActivity is a connected player's mouse activity during the round just played,
+// supplied by the ws hub. The afk pass (checkAfk) judges every entry the hub returns;
+// legacy clients send no cursors and the hub omits them, so Tracked is true for everyone
+// present (kept for clarity / a future "absent" sentinel).
 type CursorActivity struct {
+	// Tracked is whether this player can be judged at all (a connected non-legacy
+	// client). SawCursor is whether any cursor message arrived this window. Moved is
+	// whether the cursor changed position after its anchor (the window's second sample;
+	// the first is dropped as a pre-layout transient). AFK == !SawCursor || !Moved.
 	Tracked   bool
 	SawCursor bool
-	Extent    int
+	Moved     bool
 
 	// Eligible is true when the player was connected for the WHOLE armed window (present
 	// at its arm). A mid-window join, or a connection that hasn't seen a window yet, is
-	// not eligible: it has an empty cursor box it never had a chance to fill, so the
-	// idle nudge (afk_idle) skips it. The scoring "gotcha" (afk_score) ignores this: a
-	// player who SCORED necessarily had a live window to score in.
+	// not eligible: it never had a fair chance to play, so the idle nudge (afk_idle)
+	// skips it. The scoring "gotcha" (afk_score) ignores this: a player who SCORED
+	// necessarily had a live window to score in.
 	Eligible bool
-
-	// TEMP DEBUG (afk diagnostics): the raw per-window box corners, sample count, and
-	// first reported position, so we can see whether a "still" round's extent comes
-	// from one outlier sample vs real movement.
-	Samples        int
-	MinX, MaxX     int
-	MinY, MaxY     int
-	FirstX, FirstY int
 }
 
 // CheckResult is one anticheat check a round flagged against a player. Type is
 // the rule that fired ('fast_clicks' | 'too_many_clicks' | 'solo_round' |
 // 'dominant_winner' | 'afk_score' | 'afk_idle'); Detail is a short note ('delta=84ms'
-// / 'clicks=37' / 'clicks=12 vs 5' / 'scored no_cursor' / 'idle extent=120 min=1000')
-// for the audit record;
-// Message is the player-facing line shown in the anticheat popup explaining which rule
-// benched them.
+// / 'clicks=37' / 'clicks=12 vs 5' / 'scored no_cursor' / 'idle still') for the audit
+// record; Message is the player-facing line shown in the anticheat popup explaining
+// which rule benched them.
 type CheckResult struct {
 	SteamID string
 	Type    string
@@ -1203,11 +1194,11 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 }
 
 // afkByCursor is the AFK predicate: a player is AFK this round if no cursor messages
-// arrived at all, or the cursor never moved meaningfully from its round-start position
-// (its bounding-box span over the round stayed below min). It is decoupled from
-// scoring on purpose; checkAfk decides what an AFK verdict means.
-func afkByCursor(act CursorActivity, min int) bool {
-	return !act.SawCursor || act.Extent < min
+// arrived at all, or the cursor never moved (no sample after the anchor differed from
+// it). It is decoupled from scoring on purpose; checkAfk decides what an AFK verdict
+// means.
+func afkByCursor(act CursorActivity) bool {
+	return !act.SawCursor || !act.Moved
 }
 
 // checkAfk is the per-round AFK pass. Unlike runChecks (which only sees scoring
@@ -1215,8 +1206,7 @@ func afkByCursor(act CursorActivity, min int) bool {
 // still player who scores NOTHING is exactly the one to flag, and that player leaves
 // no scoring click to be inspected. The hub supplies every non-legacy player's cursor
 // activity for the window just played (allCursorActivityFn); legacy clients send no
-// cursors and are omitted, so they are never flagged. AfkCursorMin>0 gates the whole
-// pass.
+// cursors and are omitted, so they are never flagged. AfkCheck>0 gates the whole pass.
 //
 // Every connected player is LOGGED every round (even still / no-score ones) for
 // visibility. An AFK verdict splits two ways by whether the player took a scoring slot
@@ -1253,7 +1243,7 @@ func afkByCursor(act CursorActivity, min int) bool {
 // "afk_round" summary print every round, even when nobody is AFK, so stillness and the
 // blocked-skip are visible in the logs rather than inferred from a missing line.
 func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) []CheckResult {
-	if e.cfg.AfkCursorMin <= 0 || e.allCursorActivityFn == nil {
+	if e.cfg.AfkCheck <= 0 || e.allCursorActivityFn == nil {
 		return nil
 	}
 	acts := e.allCursorActivityFn()
@@ -1268,26 +1258,18 @@ func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) 
 	for _, sid := range ids {
 		act := acts[sid]
 		didScore := scored[sid]
-		afk := act.Tracked && afkByCursor(act, e.cfg.AfkCursorMin)
-		// Log EVERY connected player every round, including still / no-score / benched
-		// ones, so stillness is visible in the logs and not only inferred from a missing
-		// line.
+		afk := act.Tracked && afkByCursor(act)
+		// Log EVERY connected player every round, including moving / benched ones, so
+		// stillness is visible in the logs and not only inferred from a missing line.
 		e.log.Info("afk_eval",
 			zap.Int("round", round),
 			zap.String("sid", sid),
-			zap.Bool("tracked", act.Tracked),
 			zap.Bool("saw_cursor", act.SawCursor),
-			zap.Int("extent", act.Extent),
-			zap.Int("min", e.cfg.AfkCursorMin),
+			zap.Bool("moved", act.Moved),
 			zap.Bool("scored", didScore),
 			zap.Bool("blocked", blocked[sid]),
 			zap.Bool("eligible", act.Eligible),
-			zap.Bool("afk", afk),
-			// TEMP DEBUG: raw box so we can see what inflated a "still" extent.
-			zap.Int("samples", act.Samples),
-			zap.Int("minx", act.MinX), zap.Int("maxx", act.MaxX),
-			zap.Int("miny", act.MinY), zap.Int("maxy", act.MaxY),
-			zap.Int("firstx", act.FirstX), zap.Int("firsty", act.FirstY))
+			zap.Bool("afk", afk))
 		if !afk {
 			continue
 		}
@@ -1303,9 +1285,9 @@ func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) 
 			alreadyFired++
 			continue
 		}
-		signal := "no_cursor"
+		reason := "no_cursor"
 		if act.SawCursor {
-			signal = fmt.Sprintf("extent=%d min=%d", act.Extent, e.cfg.AfkCursorMin)
+			reason = "still"
 		}
 		if didScore {
 			// The gotcha (BUSTED): scored a slot while still = automation. Judged even if
@@ -1313,12 +1295,12 @@ func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) 
 			gotcha++
 			afkFired[sid] = true
 			out = append(out, CheckResult{SteamID: sid, Type: "afk_score",
-				Detail:  "scored " + signal,
+				Detail:  "scored " + reason,
 				Message: "You know what you did, knock it off."})
 		} else {
 			// The idle nudge (AFK): still and didn't score. Skip players who weren't here
-			// for the whole window (mid-window join / no window yet): they have an empty
-			// cursor box they never had a fair chance to fill.
+			// for the whole window (mid-window join / no window yet): they never had a
+			// fair chance to play.
 			if !act.Eligible {
 				ineligible++
 				continue
@@ -1326,7 +1308,7 @@ func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) 
 			idle++
 			afkFired[sid] = true
 			out = append(out, CheckResult{SteamID: sid, Type: "afk_idle",
-				Detail:  "idle " + signal,
+				Detail:  "idle " + reason,
 				Message: "This is not an AFK game."})
 		}
 	}
@@ -1340,8 +1322,7 @@ func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) 
 		zap.Int("flagged_idle", idle),
 		zap.Int("afk_but_blocked", blockedAfk),
 		zap.Int("afk_but_ineligible", ineligible),
-		zap.Int("afk_but_already_fired", alreadyFired),
-		zap.Int("min", e.cfg.AfkCursorMin))
+		zap.Int("afk_but_already_fired", alreadyFired))
 	return out
 }
 

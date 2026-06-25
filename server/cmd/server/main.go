@@ -63,7 +63,7 @@ func gameConfig() game.Config {
 	setFloat(f.MaxClickFactor, &c.MaxClickFactor)
 	setInt(f.SoloLeadMargin, &c.SoloLeadMargin)
 	setInt(f.DominantRunnerUpMin, &c.DominantRunnerUpMin)
-	setInt(f.AfkCursorMin, &c.AfkCursorMin)
+	setInt(f.AfkCheck, &c.AfkCheck)
 	setInt(f.CheckCooldownThreshold, &c.CheckCooldownThreshold)
 	setInt(f.CheckCooldownMins, &c.CheckCooldownMins)
 	setInt(f.CheckIgnoreAfter, &c.CheckIgnoreAfter)

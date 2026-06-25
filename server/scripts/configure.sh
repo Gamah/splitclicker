@@ -41,7 +41,7 @@ fi
 KEYS="arm_min_sec arm_max_sec clicks_per_player min_clicks rounds_per_game \
 buttons_on_screen race_max_ms result_display_ms intermission_ms board_size \
 tick_hz tick_sample_k penalty_base_ms penalty_step_ms fast_click_ms \
-max_click_factor solo_lead_margin dominant_runner_up_min afk_cursor_min \
+max_click_factor solo_lead_margin dominant_runner_up_min afk_check \
 check_cooldown_threshold check_cooldown_mins check_ignore_after"
 
 # getval KEY FILE -> KEY's numeric value in FILE (empty if the key is absent).

@@ -128,17 +128,18 @@ type Client struct {
 	hasCur  bool
 	lastCur time.Time
 
-	// Per-window cursor-movement extent, for the engine's afk check: the bounding box
-	// of every cursor position reported since the last clearCursor (i.e. since this
-	// armed window's arming stage). movSeen is false until the first cursor of the
-	// window arrives, distinguishing "didn't move" (box of zero span) from "tabbed
-	// out" (no frames at all). Same curMu as the position above.
-	movSeen          bool
-	movMinX, movMaxX int16
-	movMinY, movMaxY int16
-	movN             int   // TEMP DEBUG: cursor samples this window (afk diagnostics)
-	movFirstX        int16 // TEMP DEBUG: the window's first reported position
-	movFirstY        int16 // TEMP DEBUG
+	// Per-window cursor movement, for the engine's afk check. movN counts the cursor
+	// samples reported since the last clearCursor (this armed window). The FIRST sample
+	// is excluded: the client's first armed-frame report is taken before the board layout
+	// settles, so it lands a constant offset from the rest and would make a still cursor
+	// look like it moved. The anchor is the SECOND sample; moved flips true if any later
+	// sample differs from it. The afk check reads "saw a cursor at all" (movN) and
+	// "moved". Same curMu as the position above.
+	movN       int
+	movSeen    bool // anchor recorded (a second sample arrived this window)
+	moved      bool // a post-anchor sample differed from the anchor
+	movAnchorX int16
+	movAnchorY int16
 
 	// armSeen is the hub's armGen at the last arm this client was present for. Compared
 	// to the current armGen in AllCursorActivity to decide afk eligibility (present for
@@ -147,39 +148,21 @@ type Client struct {
 }
 
 // setCursor records this connection's latest pointer position (from readPump) and
-// folds it into the per-window movement bounding box used by the afk check.
-//
-// The FIRST sample of each window is deliberately excluded from the box: the client's
-// first armed-frame cursor report is taken before the board layout settles, so it lands
-// a constant offset from every later sample and would make a physically-still cursor
-// look like it swept a wide box (seen live as a 8000+/axis span every round). curX/curY
-// (latest position, for rendering and tick sampling) still update on every sample; only
-// the afk box is anchored on the second sample onward.
+// updates the per-window movement state used by the afk check. curX/curY (latest
+// position, for rendering and tick sampling) update on every sample; the movement state
+// skips the transient first sample and anchors on the second (see the field comment).
 func (c *Client) setCursor(x, y int16) {
 	c.curMu.Lock()
 	c.curX, c.curY, c.hasCur = x, y, true
 	c.movN++
-	if c.movN <= 1 {
-		c.movFirstX, c.movFirstY = x, y // TEMP DEBUG: the skipped first (transient) sample
-		c.curMu.Unlock()
-		return
-	}
-	if !c.movSeen {
+	switch {
+	case c.movN <= 1:
+		// Transient first sample (pre-layout): position recorded above, ignored for movement.
+	case !c.movSeen:
 		c.movSeen = true
-		c.movMinX, c.movMaxX, c.movMinY, c.movMaxY = x, y, x, y
-	} else {
-		if x < c.movMinX {
-			c.movMinX = x
-		}
-		if x > c.movMaxX {
-			c.movMaxX = x
-		}
-		if y < c.movMinY {
-			c.movMinY = y
-		}
-		if y > c.movMaxY {
-			c.movMaxY = y
-		}
+		c.movAnchorX, c.movAnchorY = x, y
+	case x != c.movAnchorX || y != c.movAnchorY:
+		c.moved = true
 	}
 	c.curMu.Unlock()
 }
@@ -191,40 +174,24 @@ func (c *Client) cursor() (int16, int16, bool) {
 	return c.curX, c.curY, c.hasCur
 }
 
-// movement reports whether any cursor arrived this window and the Manhattan span
-// of its bounding box (0 = a single stationary position). Read at round end by the
-// hub's CursorActivity for the afk check. seen is "any cursor at all this window"
-// (movN), independent of the box, which is anchored on the second sample onward (the
-// first is the transient pre-layout report, see setCursor); a window of a single
-// sample therefore reports seen with a zero span.
-func (c *Client) movement() (seen bool, extent int) {
+// movement reports whether any cursor arrived this window (movN) and whether it moved
+// (a sample after the anchor differed from it). Read at round end by CursorActivity for
+// the afk check.
+func (c *Client) movement() (seen, moved bool) {
 	c.curMu.Lock()
 	defer c.curMu.Unlock()
-	if !c.movSeen {
-		return c.movN >= 1, 0
-	}
-	// Widen to int before subtracting: a full-width span exceeds int16's range.
-	return true, (int(c.movMaxX) - int(c.movMinX)) + (int(c.movMaxY) - int(c.movMinY))
+	return c.movN >= 1, c.moved
 }
 
-// movementDebug returns the raw per-window box corners, sample count, and first
-// sample for the afk diagnostics (TEMP). Same lock as movement.
-func (c *Client) movementDebug() (n int, minX, maxX, minY, maxY, firstX, firstY int) {
-	c.curMu.Lock()
-	defer c.curMu.Unlock()
-	return c.movN, int(c.movMinX), int(c.movMaxX), int(c.movMinY), int(c.movMaxY),
-		int(c.movFirstX), int(c.movFirstY)
-}
-
-// clearCursor drops the stored cursor AND resets the per-window movement box so a
-// stale position from a finished round isn't sampled into the next window, and the
-// afk extent only reflects movement after the next arm (called from Hub.Pending at
-// the arming stage).
+// clearCursor drops the stored cursor AND resets the per-window movement state so a
+// stale position from a finished round isn't carried into the next window (called from
+// Hub.Pending at the arming stage).
 func (c *Client) clearCursor() {
 	c.curMu.Lock()
 	c.hasCur = false
+	c.movN = 0
 	c.movSeen = false
-	c.movN = 0 // TEMP DEBUG
+	c.moved = false
 	c.curMu.Unlock()
 }
 
@@ -413,11 +380,13 @@ func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
 		if c.Legacy {
 			continue
 		}
-		seen, extent := c.movement()
-		n, minX, maxX, minY, maxY, fx, fy := c.movementDebug() // TEMP DEBUG
-		out[c.SteamID] = game.CursorActivity{Tracked: true, SawCursor: seen, Extent: extent,
-			Eligible: c.armSeen == h.armGen,
-			Samples:  n, MinX: minX, MaxX: maxX, MinY: minY, MaxY: maxY, FirstX: fx, FirstY: fy}
+		seen, moved := c.movement()
+		out[c.SteamID] = game.CursorActivity{
+			Tracked:   true,
+			SawCursor: seen,
+			Moved:     moved,
+			Eligible:  c.armSeen == h.armGen,
+		}
 	}
 	return out
 }

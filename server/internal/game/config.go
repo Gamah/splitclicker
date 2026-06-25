@@ -61,24 +61,22 @@ type Config struct {
 	//   DominantRunnerUpMin — dominant_winner only fires when the runner-up actually
 	//                         competed (scored at least this many clicks); guards the
 	//                         "one player clicks, the other is idle" false positive.
-	//   AfkCursorMin        - the cursor-movement floor for the v5 AFK pass (see checkAfk,
+	//   AfkCheck            - enable gate for the v5 AFK pass (>0 on, 0 off; see checkAfk,
 	//                         which judges every player present for the whole window, not
-	//                         just scorers). A player is AFK when their cursor's bounding
-	//                         box spanned fewer than this many board-normalized int16 units
-	//                         during the armed window, or they sent no cursor frames at all
-	//                         (parked off the board, or tabbed out). v5-only signal (legacy
-	//                         clients send no cursors and are exempt). AFK + scored is the
-	//                         bot "gotcha" (afk_score); AFK + no score is the idle nudge
-	//                         (afk_idle); both ride the sanction ladder. 0 disables the pass.
-	//                         The client only reports the cursor while it is ON the board,
-	//                         so off-board jitter can't inflate the box. NOTE: tied to the
-	//                         current board-normalized wire; re-tune when the board/wire move
-	//                         to fixed 1024x1024 coords. See checkAfk.
+	//                         just scorers). A player is AFK when they sent no cursor frames
+	//                         this window (parked off the board, or tabbed out) OR the cursor
+	//                         never moved. Movement is BINARY (any change of position counts),
+	//                         so there is no threshold to tune and nothing tied to the wire
+	//                         scale. v5-only (legacy clients send no cursors and are exempt).
+	//                         AFK + scored is the bot "gotcha" (afk_score); AFK + no score is
+	//                         the idle nudge (afk_idle); both ride the sanction ladder. The
+	//                         client only reports the cursor while it is ON the board. See
+	//                         checkAfk.
 	FastClickMs         int
 	MaxClickFactor      float64
 	SoloLeadMargin      int
 	DominantRunnerUpMin int
-	AfkCursorMin        int
+	AfkCheck            int
 
 	// Anticheat sanction ladder (per bounty, per player; see Engine.applySanction).
 	// The first CheckCooldownThreshold-1 checks each bench the player behind a math
@@ -111,7 +109,7 @@ func DefaultConfig() Config {
 		MaxClickFactor:      2.5,
 		SoloLeadMargin:      4,
 		DominantRunnerUpMin: 5,
-		AfkCursorMin:        8000,
+		AfkCheck:            1,
 
 		CheckCooldownThreshold: 20,
 		CheckCooldownMins:      60,
@@ -141,7 +139,7 @@ func ConfigFromEnv() Config {
 	c.MaxClickFactor = envFloat("MAX_CLICK_FACTOR", c.MaxClickFactor)
 	c.SoloLeadMargin = envInt("SOLO_LEAD_MARGIN", c.SoloLeadMargin)
 	c.DominantRunnerUpMin = envInt("DOMINANT_RUNNER_UP_MIN", c.DominantRunnerUpMin)
-	c.AfkCursorMin = envInt("AFK_CURSOR_MIN", c.AfkCursorMin)
+	c.AfkCheck = envInt("AFK_CHECK", c.AfkCheck)
 	c.CheckCooldownThreshold = envInt("CHECK_COOLDOWN_THRESHOLD", c.CheckCooldownThreshold)
 	c.CheckCooldownMins = envInt("CHECK_COOLDOWN_MINS", c.CheckCooldownMins)
 	c.CheckIgnoreAfter = envInt("CHECK_IGNORE_AFTER", c.CheckIgnoreAfter)
