@@ -1155,7 +1155,17 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 		// cursor movement is what's measured. Detail records which half of the AFK check
 		// fired, for the audit trail.
 		if e.cfg.AfkCursorMin > 0 && e.cursorActivityFn != nil {
-			if act := e.cursorActivityFn(sid); act.Tracked && afkByCursor(act, e.cfg.AfkCursorMin) {
+			act := e.cursorActivityFn(sid)
+			// TEMP DEBUG: log every scorer's cursor activity so we can see why afk_score
+			// does or doesn't fire. Remove once the check is confirmed working.
+			e.log.Info("afk_check",
+				zap.String("sid", sid),
+				zap.Bool("tracked", act.Tracked),
+				zap.Bool("saw_cursor", act.SawCursor),
+				zap.Int("extent", act.Extent),
+				zap.Int("min", e.cfg.AfkCursorMin),
+				zap.Bool("would_flag", act.Tracked && afkByCursor(act, e.cfg.AfkCursorMin)))
+			if act.Tracked && afkByCursor(act, e.cfg.AfkCursorMin) {
 				detail := "no_cursor"
 				if act.SawCursor {
 					detail = fmt.Sprintf("extent=%d min=%d", act.Extent, e.cfg.AfkCursorMin)
