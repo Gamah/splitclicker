@@ -23,10 +23,6 @@ import (
 // (nil → fall back to env/default) is distinct from a real value; the two
 // strings use "" as their absent sentinel.
 type File struct {
-	// Comment is the human-facing "_comment" header in config.json. Ignored by the
-	// server; carried here only so the `configure` tool can preserve it on rewrite.
-	Comment string `json:"_comment,omitempty"`
-
 	SkinImage      string `json:"skin_image"`
 	WinnerLockTime string `json:"winner_lock_time"`
 

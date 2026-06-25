@@ -7,10 +7,13 @@ directory is bind-mounted into the container at `/data` (see
 
 ## Edit config.json
 
-`make up` reviews this file interactively before building: it seeds `config.json`
-from the example if missing, then walks every value showing the current setting —
-press Enter to keep it or type a new one. `make up SKIP=1` skips the review and
-keeps the current/default values. To edit by hand instead:
+`make up` reviews this file interactively before building (a pure-shell step, no Go
+needed on the host): it seeds `config.json` from the example if missing, then walks
+the numeric game tunables showing the current setting — press Enter to keep it or
+type a new number. The live meta values (`skin_image`, `winner_lock_time`,
+`dev_note`, `live_version`) are re-read per request, so edit those directly here; no
+rebuild needed. `make up SKIP=1` skips the review and keeps the current/default
+values. To edit by hand instead:
 
 1. Copy the example once: `cp config.json.example config.json`
 2. Edit `config.json`:
