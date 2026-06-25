@@ -5,7 +5,7 @@
 #   scripts/configure.sh          review the numeric game tunables (Enter keeps each)
 #   scripts/configure.sh --skip   keep current/default values, no prompts
 #
-# Only the numeric startup tunables are reviewed — a rebuild/restart applies those.
+# Only the numeric startup tunables are reviewed; a rebuild/restart applies those.
 # The live meta values (skin_image, winner_lock_time, dev_note, live_version) are
 # re-read per request, so edit those directly in config.json; no rebuild needed.
 set -u
@@ -35,10 +35,10 @@ fi
 KEYS="arm_min_sec arm_max_sec clicks_per_player min_clicks rounds_per_game \
 buttons_on_screen race_max_ms result_display_ms intermission_ms board_size \
 tick_hz tick_sample_k penalty_base_ms penalty_step_ms fast_click_ms \
-max_click_factor solo_lead_margin dominant_runner_up_min \
+max_click_factor solo_lead_margin dominant_runner_up_min afk_cursor_min \
 check_cooldown_threshold check_cooldown_mins check_ignore_after"
 
-echo "Reviewing $CONF — press Enter to keep each [current] value, or type a new number."
+echo "Reviewing $CONF (press Enter to keep each [current] value, or type a new number)."
 for key in $KEYS; do
 	cur=$(sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\([0-9][0-9.]*\).*/\1/p" "$CONF" | head -n1)
 	printf "  %s [%s]: " "$key" "$cur"
@@ -47,7 +47,7 @@ for key in $KEYS; do
 	# Accept only a plain non-negative number (one optional decimal point).
 	case "$new" in
 		*[!0-9.]* | *.*.* | .)
-			echo "    '$new' is not a number — keeping $cur"
+			echo "    '$new' is not a number, keeping $cur"
 			continue
 			;;
 	esac

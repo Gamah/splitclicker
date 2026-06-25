@@ -227,9 +227,9 @@ func main() {
 		}
 		return bi
 	})
-	// The afk check reads each scoring player's cursor activity for the round just
-	// played from the hub's per-window cursor tracking.
-	engine.SetCursorActivityFn(hub.CursorActivity)
+	// The afk pass reads every connected player's cursor activity for the round just
+	// played from the hub's per-window cursor tracking (whole roster, not just scorers).
+	engine.SetAllCursorActivityFn(hub.AllCursorActivity)
 	engine.SetGameEndHook(func(ctx context.Context) {
 		if err := cache.Refresh(ctx); err != nil {
 			log.Error("refresh leaderboard cache", zap.Error(err))

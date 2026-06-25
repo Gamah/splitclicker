@@ -121,7 +121,7 @@ func TestRunChecksTooManyFractional(t *testing.T) {
 }
 
 // solo_round is a session-level verdict: it fires only when the WHOLE session was
-// uncontested — the bounty leader was the only player to score in any round — AND
+// uncontested (the bounty leader was the only player to score in any round) AND
 // the leader's lead AFTER winning it (the start-of-session snapshot +1, since the
 // sole scorer wins) strictly exceeds SoloLeadMargin. A single scoring click from
 // anyone else makes the session contested and the lead stands.
@@ -184,54 +184,75 @@ func TestRunChecksDominantWinner(t *testing.T) {
 	}
 }
 
-// afk_score (the "gotcha") fires when a SCORING player is AFK by the cursor — either
-// no cursor messages arrived, or the pointer's bounding-box span stayed < AfkCursorMin
-// (didn't move since the round began). Non-scorers are never evaluated, and a
-// legacy/disconnected (untracked) player is skipped.
-func TestRunChecksAfk(t *testing.T) {
+// checkAfk is the whole-roster cursor pass, decoupled from scoring: it judges every
+// connected player every round (not just scorers). An AFK verdict (no cursor messages,
+// or a bounding-box span < AfkCursorMin) splits by whether the player scored: afk_score
+// (the "gotcha") if they did, afk_idle (the soft nudge) if they didn't. A player who
+// moved past the threshold is never flagged; legacy/disconnected players aren't in the
+// hub's map, so they're never judged.
+func TestCheckAfk(t *testing.T) {
+	acts := map[string]CursorActivity{
+		"frozen": {Tracked: true, SawCursor: true, Extent: 300},  // sent cursors, never moved
+		"tabbed": {Tracked: true, SawCursor: false},              // no cursor messages at all
+		"active": {Tracked: true, SawCursor: true, Extent: 5000}, // moved plenty
+	}
 	e := New(Config{AfkCursorMin: 1000}, nil, nil, nil)
-	e.SetCursorActivityFn(func(sid string) CursorActivity {
-		switch sid {
-		case "frozen": // sent cursors, but never moved past the threshold
-			return CursorActivity{Tracked: true, SawCursor: true, Extent: 300}
-		case "tabbed": // no cursor messages at all
-			return CursorActivity{Tracked: true, SawCursor: false}
-		case "active": // moved plenty
-			return CursorActivity{Tracked: true, SawCursor: true, Extent: 5000}
-		default: // legacy / disconnected — can't be judged
-			return CursorActivity{}
-		}
-	})
+	e.SetAllCursorActivityFn(func() map[string]CursorActivity { return acts })
 
-	// Both halves of the AFK check, when the player scored, flag afk_score.
-	if got := e.runChecks(scoredAt("frozen", 0), crowd()); !hasCheck(got, "frozen", "afk_score") {
-		t.Fatalf("scoring with a frozen cursor should flag afk_score, got %+v", got)
+	none := map[string]bool{}
+
+	// AFK + scored = the gotcha (afk_score), via either half of the predicate.
+	scored := e.checkAfk(map[string]bool{"frozen": true, "tabbed": true, "active": true}, none)
+	if !hasCheck(scored, "frozen", "afk_score") {
+		t.Fatalf("frozen cursor + scored should flag afk_score, got %+v", scored)
 	}
-	if got := e.runChecks(scoredAt("tabbed", 0), crowd()); !hasCheck(got, "tabbed", "afk_score") {
-		t.Fatalf("scoring with no cursor messages should flag afk_score, got %+v", got)
+	if !hasCheck(scored, "tabbed", "afk_score") {
+		t.Fatalf("no cursor messages + scored should flag afk_score, got %+v", scored)
 	}
-	// Moved enough → not AFK → no flag.
-	if got := e.runChecks(scoredAt("active", 0), crowd()); hasCheck(got, "active", "afk_score") {
-		t.Fatalf("a player who moved past the threshold should not flag, got %+v", got)
+	// Moved enough → not AFK → never flagged, scoring or not.
+	if hasCheck(scored, "active", "afk_score") || hasCheck(scored, "active", "afk_idle") {
+		t.Fatalf("a player who moved past the threshold should not flag, got %+v", scored)
 	}
-	// Untracked (legacy/gone) → skipped.
-	if got := e.runChecks(scoredAt("legacy", 0), crowd()); hasCheck(got, "legacy", "afk_score") {
-		t.Fatalf("an untracked player should not flag, got %+v", got)
+
+	// AFK + did NOT score = the idle nudge (afk_idle), evaluated even with no scorers.
+	idle := e.checkAfk(none, none)
+	if !hasCheck(idle, "frozen", "afk_idle") {
+		t.Fatalf("frozen cursor + no score should flag afk_idle, got %+v", idle)
 	}
+	if !hasCheck(idle, "tabbed", "afk_idle") {
+		t.Fatalf("no cursor messages + no score should flag afk_idle, got %+v", idle)
+	}
+	// A non-scorer is the idle case, never the gotcha (no double flag across the split).
+	if hasCheck(idle, "frozen", "afk_score") {
+		t.Fatalf("a non-scorer must not flag afk_score, got %+v", idle)
+	}
+	// Moving but missing buttons (no score) is fine; movement clears you.
+	if hasCheck(idle, "active", "afk_idle") {
+		t.Fatalf("a moving non-scorer should not flag, got %+v", idle)
+	}
+
+	// Already-blocked (benched/cooled/ignored) players are logged but never flagged,
+	// so an idle benched player doesn't pile up fresh idle flags.
+	blocked := e.checkAfk(none, map[string]bool{"frozen": true, "tabbed": true})
+	if hasCheck(blocked, "frozen", "afk_idle") || hasCheck(blocked, "tabbed", "afk_idle") {
+		t.Fatalf("blocked players must not be flagged, got %+v", blocked)
+	}
+
 	// Boundary: Extent == AfkCursorMin is NOT under the threshold (strictly less flags).
-	e.SetCursorActivityFn(func(string) CursorActivity {
-		return CursorActivity{Tracked: true, SawCursor: true, Extent: 1000}
+	e.SetAllCursorActivityFn(func() map[string]CursorActivity {
+		return map[string]CursorActivity{"edge": {Tracked: true, SawCursor: true, Extent: 1000}}
 	})
-	if got := e.runChecks(scoredAt("edge", 0), crowd()); hasCheck(got, "edge", "afk_score") {
+	if got := e.checkAfk(map[string]bool{"edge": true}, none); hasCheck(got, "edge", "afk_score") {
 		t.Fatalf("Extent == AfkCursorMin should NOT flag (strictly less), got %+v", got)
 	}
+
 	// Disabled when AfkCursorMin == 0, even with a provider set.
 	off := New(Config{AfkCursorMin: 0}, nil, nil, nil)
-	off.SetCursorActivityFn(func(string) CursorActivity {
-		return CursorActivity{Tracked: true, SawCursor: false}
+	off.SetAllCursorActivityFn(func() map[string]CursorActivity {
+		return map[string]CursorActivity{"tabbed": {Tracked: true, SawCursor: false}}
 	})
-	if got := off.runChecks(scoredAt("tabbed", 0), crowd()); hasCheck(got, "tabbed", "afk_score") {
-		t.Fatalf("AfkCursorMin=0 should disable the cursor check, got %+v", got)
+	if got := off.checkAfk(map[string]bool{"tabbed": true}, none); len(got) != 0 {
+		t.Fatalf("AfkCursorMin=0 should disable the afk pass, got %+v", got)
 	}
 }
 

@@ -9,8 +9,8 @@ directory is bind-mounted into the container at `/data` (see
 
 `make up` reviews this file interactively before building (a pure-shell step, no Go
 needed on the host): it seeds `config.json` from the example if missing, then walks
-the numeric game tunables showing the current setting — press Enter to keep it or
-type a new number. The live meta values (`skin_image`, `winner_lock_time`,
+the numeric game tunables showing the current setting (press Enter to keep it or
+type a new number). The live meta values (`skin_image`, `winner_lock_time`,
 `dev_note`, `live_version`) are re-read per request, so edit those directly here; no
 rebuild needed. `make up SKIP=1` skips the review and keeps the current/default
 values. To edit by hand instead:
@@ -78,14 +78,20 @@ values. To edit by hand instead:
   this round) of the scoring clicks flags them (default 2.5; fractional allowed, the
   limit floors to a whole click count); needs ≥2 scorers, so a round only one player
   clicked is never flagged.
-- `solo_lead_margin` — anticheat: solo_round (a session-level check) only flags the
-  bounty leader for an uncontested session once the lead it produces — their games-won
-  gap over second place (or their own total when alone on the board), *after* winning
-  that session — strictly exceeds this. With the default 4 it first fires at a lead of
+- `solo_lead_margin` (anticheat): solo_round (a session-level check) only flags the
+  bounty leader for an uncontested session once the lead it produces (their games-won
+  gap over second place, or their own total when alone on the board, *after* winning
+  that session) strictly exceeds this. With the default 4 it first fires at a lead of
   5 (e.g. the 5th win alone, or beating a 49-win runner-up to reach 54).
-- `dominant_runner_up_min` — anticheat: dominant_winner only fires when the
+- `dominant_runner_up_min` (anticheat): dominant_winner only fires when the
   runner-up scored at least this many clicks, so out-clicking an idle player is
   never flagged (default 5).
+- `afk_cursor_min` (anticheat): the cursor-movement floor for the v5 AFK pass. Every
+  connected player is checked every round (not just scorers); a player whose cursor's
+  per-window bounding-box span stays below this (or who sends no cursor frames at all)
+  is AFK. AFK + scored is the bot "gotcha", AFK + no score is the idle nudge; both ride
+  the sanction ladder. Default 1000 (normalized int16 units, roughly 1.5% of screen
+  width). `0` disables the AFK pass entirely.
 - `check_cooldown_threshold` / `check_cooldown_mins` / `check_ignore_after` — the
   per-bounty sanction ladder: this many flags in a bounty (default 20) start a
   cooldown of this many minutes (default 60); this many more flags after that

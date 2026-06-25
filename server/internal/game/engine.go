@@ -211,12 +211,12 @@ type ScoredClick struct {
 	OffsetMs int
 }
 
-// CursorActivity is a scoring player's mouse activity during the round just
+// CursorActivity is a connected player's mouse activity during the round just
 // played, supplied by the ws hub (which tracks a per-window cursor bounding box).
-// Tracked is false for a connection that can't be judged — a below-v5 (legacy)
-// client never sends cursors, or the player isn't currently connected — so the
-// afk_score check skips them rather than flagging them. SawCursor is whether any
-// cursor message arrived this window (false ⇒ tabbed out / idle pointer). Extent is
+// The afk pass (checkAfk) judges every entry the hub returns; legacy clients send
+// no cursors and the hub omits them, so Tracked is true for everyone present. It is
+// kept for clarity / a future "absent" sentinel. SawCursor is whether any cursor
+// message arrived this window (false means tabbed out / idle pointer). Extent is
 // the Manhattan span of the cursor's bounding box in normalized int16 units (0 =
 // never moved).
 type CursorActivity struct {
@@ -227,8 +227,9 @@ type CursorActivity struct {
 
 // CheckResult is one anticheat check a round flagged against a player. Type is
 // the rule that fired ('fast_clicks' | 'too_many_clicks' | 'solo_round' |
-// 'dominant_winner' | 'afk_score'); Detail is a short note ('delta=84ms' / 'clicks=37'
-// / 'clicks=12 vs 5' / 'no_cursor' / 'extent=120 min=1000') for the audit record;
+// 'dominant_winner' | 'afk_score' | 'afk_idle'); Detail is a short note ('delta=84ms'
+// / 'clicks=37' / 'clicks=12 vs 5' / 'scored no_cursor' / 'idle extent=120 min=1000')
+// for the audit record;
 // Message is the player-facing line shown in the anticheat popup explaining which rule
 // benched them.
 type CheckResult struct {
@@ -409,17 +410,18 @@ type Engine struct {
 	// bountyInfoFn, if set, returns the active bounty snapshot (id, leader + margin,
 	// resolve time). Used by the session-level solo_round check (leader + margin
 	// gating) and by the sanction ladder (the bounty id scopes counts; the resolve
-	// time bounds the "ignored" rung). Optional — nil disables solo_round and the
+	// time bounds the "ignored" rung). Optional; nil disables solo_round and the
 	// ladder runs with a zero bounty id (counts never reset, no resolve-time
 	// countdown). Read from the in-memory leaderboard cache, so it's cheap to call.
 	bountyInfoFn func() BountyInfo
 
-	// cursorActivityFn, if set, returns a scoring player's cursor activity during the
-	// round just played (whether they sent any cursor messages, and how far the cursor
-	// roamed). Used by the afk_score check (see afkByCursor) to flag a player who took a
-	// scoring slot while AFK by the cursor. Supplied by the ws hub, which tracks the
-	// per-window cursor bounding box. Optional — nil disables afk_score.
-	cursorActivityFn func(steamID string) CursorActivity
+	// allCursorActivityFn, if set, returns the cursor activity of every connected
+	// non-legacy player during the round just played (whether each sent any cursor
+	// messages, and how far the cursor roamed). Used by the per-round afk pass
+	// (checkAfk), which judges movement for the WHOLE roster, not just scorers.
+	// Supplied by the ws hub, which tracks a per-window cursor bounding box per
+	// connection. Optional: nil disables the afk pass.
+	allCursorActivityFn func() map[string]CursorActivity
 
 	// Anticheat sanction ladder, scoped to the current bounty. curBountyID is the
 	// bounty the in-memory sanctions belong to; when bountyInfoFn reports a different
@@ -452,9 +454,12 @@ func (e *Engine) SetDevNoteFn(fn func() string) { e.devNoteFn = fn }
 // solo_round check and the sanction ladder). Call before Run; nil disables both.
 func (e *Engine) SetBountyInfoFn(fn func() BountyInfo) { e.bountyInfoFn = fn }
 
-// SetCursorActivityFn registers the source of per-player cursor activity (used by
-// the afk check). Call before Run; nil disables afk. See CursorActivity.
-func (e *Engine) SetCursorActivityFn(fn func(steamID string) CursorActivity) { e.cursorActivityFn = fn }
+// SetAllCursorActivityFn registers the source of whole-roster cursor activity (used
+// by the per-round afk pass). Call before Run; nil disables the afk pass. See
+// CursorActivity and checkAfk.
+func (e *Engine) SetAllCursorActivityFn(fn func() map[string]CursorActivity) {
+	e.allCursorActivityFn = fn
+}
 
 // New builds an Engine. store may be nil (scoring still works, just not
 // persisted). log may be nil (falls back to a no-op logger).
@@ -715,17 +720,23 @@ func (e *Engine) playGame(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		// Run the end-of-round anticheat checks against this round's scoring clicks.
-		// Every flagged check is logged; applySanction then escalates the ladder for
-		// test-capable players (test → cooldown → ignored) and pushes them a frame.
+		// Run the end-of-round anticheat checks: the scoring-click rules (runChecks)
+		// plus the whole-roster cursor afk pass (checkAfk, judged against who scored
+		// this round). Every flagged check is logged; applySanction then escalates the
+		// ladder for test-capable players (test → cooldown → ignored) and pushes them a
+		// frame. checkAfk reads the per-window cursor boxes here, before the next round's
+		// pending() clears them.
+		scoredThisRound := map[string]bool{}
+		for _, c := range clicks {
+			scoredThisRound[c.SteamID] = true
+			sessionScorers[c.SteamID] = true
+		}
 		checks := e.runChecks(clicks, checkCtx{n: n})
+		checks = append(checks, e.checkAfk(scoredThisRound, e.blockedMap())...)
 		for _, ch := range checks {
 			if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
 				e.applySanction(ch, bi)
 			}
-		}
-		for _, c := range clicks {
-			sessionScorers[c.SteamID] = true
 		}
 		roundLogs = append(roundLogs, RoundLog{
 			RoundID: roundID, RoundNo: round, N: n, Players: players,
@@ -1068,7 +1079,7 @@ func (e *Engine) recordBad(ev ClickEvent) {
 // checkCtx is the round context the per-round checks need beyond the scoring
 // clicks: n, the round's scoring-slot count. The too_many_clicks divisor is
 // derived from the scoring clicks themselves (how many players actually scored
-// this round), not from a connection count. (solo_round is NOT a per-round check —
+// this round), not from a connection count. (solo_round is NOT a per-round check;
 // it's evaluated once across the whole session by checkSoloSession.)
 type checkCtx struct {
 	n int
@@ -1082,18 +1093,11 @@ type checkCtx struct {
 //                      (N / players who scored this round); needs ≥2 scorers.
 //   - dominant_winner: top scorer took > 2× a runner-up who actually competed
 //                      (scored ≥ DominantRunnerUpMin).
-//   - afk_score:       took a scoring slot while AFK by the cursor (afkByCursor: no
-//                      cursor messages this round, or the pointer never moved past
-//                      AfkCursorMin from its round-start spot). The "gotcha" — buttons
-//                      spawn at server-RNG'd spots, so scoring without the cursor
-//                      travelling is the bot signature. Per-player (no ≥2-scorer gate),
-//                      so it catches a lone automated clicker; needs cursorActivityFn +
-//                      AfkCursorMin>0 and skips players it can't judge (legacy clients
-//                      send no cursors; a disconnected player has no activity). Only
-//                      scorers are judged — moving but missing buttons is fine.
 //
-// solo_round is deliberately absent here — it's a session-level verdict (was the
-// WHOLE session uncontested?), evaluated once at session end by checkSoloSession.
+// The cursor-based afk checks are deliberately absent here: they are NOT scoring-click
+// rules, so they run in their own whole-roster pass (checkAfk), called alongside this
+// from playGame. solo_round is likewise absent (a session-level verdict in
+// checkSoloSession).
 func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 	if len(clicks) == 0 {
 		return nil
@@ -1145,36 +1149,6 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 				Detail:  fmt.Sprintf("clicks=%d limit=%d", len(offs), limit),
 				Message: "You took far more of the round's clicks than your share."})
 		}
-		// afk_score (the "gotcha"): this player took a SCORING slot while AFK by the
-		// cursor (see afkByCursor — no cursor messages this round, or the pointer never
-		// moved meaningfully from where it sat when the round began). Buttons spawn at
-		// server-RNG'd spots, so a real player's cursor travels to reach them; claiming
-		// one without that is the bot signature. Only scoring players are judged — moving
-		// around and MISSING buttons (no score) is fine — and legacy/disconnected players
-		// are skipped (not tracked). The message stays vague: it must NOT reveal that
-		// cursor movement is what's measured. Detail records which half of the AFK check
-		// fired, for the audit trail.
-		if e.cfg.AfkCursorMin > 0 && e.cursorActivityFn != nil {
-			act := e.cursorActivityFn(sid)
-			// TEMP DEBUG: log every scorer's cursor activity so we can see why afk_score
-			// does or doesn't fire. Remove once the check is confirmed working.
-			e.log.Info("afk_check",
-				zap.String("sid", sid),
-				zap.Bool("tracked", act.Tracked),
-				zap.Bool("saw_cursor", act.SawCursor),
-				zap.Int("extent", act.Extent),
-				zap.Int("min", e.cfg.AfkCursorMin),
-				zap.Bool("would_flag", act.Tracked && afkByCursor(act, e.cfg.AfkCursorMin)))
-			if act.Tracked && afkByCursor(act, e.cfg.AfkCursorMin) {
-				detail := "no_cursor"
-				if act.SawCursor {
-					detail = fmt.Sprintf("extent=%d min=%d", act.Extent, e.cfg.AfkCursorMin)
-				}
-				out = append(out, CheckResult{SteamID: sid, Type: "afk_score",
-					Detail:  detail,
-					Message: "This is not an AFK game."})
-			}
-		}
 	}
 
 	// dominant_winner: the top scorer took MORE than 2× the runner-up's clicks, but
@@ -1198,26 +1172,100 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 	return out
 }
 
-// afkByCursor is the AFK check: a (tracked) player is AFK this round if no cursor
-// messages arrived at all, or the cursor never moved meaningfully from its round-start
-// position — its bounding-box span over the round stayed below min. The afk_score
-// "gotcha" fires when a player who is AFK by this check nonetheless took a scoring slot.
+// afkByCursor is the AFK predicate: a player is AFK this round if no cursor messages
+// arrived at all, or the cursor never moved meaningfully from its round-start position
+// (its bounding-box span over the round stayed below min). It is decoupled from
+// scoring on purpose; checkAfk decides what an AFK verdict means.
 func afkByCursor(act CursorActivity, min int) bool {
 	return !act.SawCursor || act.Extent < min
+}
+
+// checkAfk is the per-round AFK pass. Unlike runChecks (which only sees scoring
+// clicks), it judges movement for the WHOLE connected roster every round, because a
+// still player who scores NOTHING is exactly the one to flag, and that player leaves
+// no scoring click to be inspected. The hub supplies every non-legacy player's cursor
+// activity for the window just played (allCursorActivityFn); legacy clients send no
+// cursors and are omitted, so they are never flagged. AfkCursorMin>0 gates the whole
+// pass.
+//
+// Every connected player is LOGGED every round (even still / no-score ones) for
+// visibility. An AFK verdict splits two ways by whether the player took a scoring slot
+// this round (scored, derived from the round's clicks in playGame):
+//
+//   - afk_score: AFK AND scored = the "gotcha". Buttons spawn at server-RNG'd spots
+//     and move, so a human cannot claim one without the cursor travelling. Scoring
+//     while still is the bot signature (a wire-bot echoing the nonce). The serious flag.
+//   - afk_idle:  AFK AND did not score = an idle player. The soft nudge.
+//
+// Both ride the same per-bounty sanction ladder (applySanction keys per player, not
+// per rule). The player message is deliberately vague for both: it must NOT reveal
+// that cursor movement is what's measured. Detail records the AFK signal for the audit
+// trail. Results are returned in SteamID order so they are deterministic.
+//
+// blocked is the set of players already benched/cooled/ignored this bounty. They are
+// LOGGED (the visibility requirement covers everyone) but never flagged: they can't
+// score (so there is no gotcha to catch) and an idle benched player must not pile up
+// fresh idle flags while stuck on a test.
+func (e *Engine) checkAfk(scored, blocked map[string]bool) []CheckResult {
+	if e.cfg.AfkCursorMin <= 0 || e.allCursorActivityFn == nil {
+		return nil
+	}
+	acts := e.allCursorActivityFn()
+	ids := make([]string, 0, len(acts))
+	for sid := range acts {
+		ids = append(ids, sid)
+	}
+	sort.Strings(ids)
+
+	var out []CheckResult
+	for _, sid := range ids {
+		act := acts[sid]
+		didScore := scored[sid]
+		afk := act.Tracked && afkByCursor(act, e.cfg.AfkCursorMin)
+		// Log EVERY connected player every round, including still / no-score / benched
+		// ones, so stillness is visible in the logs and not only inferred from a missing
+		// line.
+		e.log.Info("afk_eval",
+			zap.String("sid", sid),
+			zap.Bool("tracked", act.Tracked),
+			zap.Bool("saw_cursor", act.SawCursor),
+			zap.Int("extent", act.Extent),
+			zap.Int("min", e.cfg.AfkCursorMin),
+			zap.Bool("scored", didScore),
+			zap.Bool("blocked", blocked[sid]),
+			zap.Bool("afk", afk))
+		if !afk || blocked[sid] {
+			continue
+		}
+		signal := "no_cursor"
+		if act.SawCursor {
+			signal = fmt.Sprintf("extent=%d min=%d", act.Extent, e.cfg.AfkCursorMin)
+		}
+		if didScore {
+			out = append(out, CheckResult{SteamID: sid, Type: "afk_score",
+				Detail:  "scored " + signal,
+				Message: "This is not an AFK game."})
+		} else {
+			out = append(out, CheckResult{SteamID: sid, Type: "afk_idle",
+				Detail:  "idle " + signal,
+				Message: "This is not an AFK game."})
+		}
+	}
+	return out
 }
 
 // checkSoloSession is the session-level solo_round verdict, evaluated once at the
 // end of a game against the set of players who scored in ANY round of it. It flags
 // the bounty leader for padding a runaway lead when BOTH:
 //
-//   - the session was uncontested — the leader is the ONLY player who scored a
+//   - the session was uncontested: the leader is the ONLY player who scored a
 //     point in any round (a single scoring click from anyone else makes it
 //     contested and the lead stands, however large), and
 //   - the leader's lead AFTER this session's win is strictly greater than
 //     SoloLeadMargin. leadMargin is the snapshot taken at session start (the gap
 //     over the runner-up, or, when the leader is alone on the sessions-won board,
 //     their own games-won total). Because an uncontested session means the leader
-//     was its sole scorer, they win it and gain exactly one — so the lead this
+//     was its sole scorer, they win it and gain exactly one, so the lead this
 //     session produces is leadMargin+1. The first lead that fires is therefore
 //     SoloLeadMargin+1 (e.g. with the default 4, a resulting lead of 5: entering at
 //     4 and winning the 5th uncontested), leaving a newcomer building the board's

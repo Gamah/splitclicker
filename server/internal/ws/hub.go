@@ -125,7 +125,7 @@ type Client struct {
 	// Per-window cursor-movement extent, for the engine's afk check: the bounding box
 	// of every cursor position reported since the last clearCursor (i.e. since this
 	// armed window's arming stage). movSeen is false until the first cursor of the
-	// window arrives — distinguishing "didn't move" (box of zero span) from "tabbed
+	// window arrives, distinguishing "didn't move" (box of zero span) from "tabbed
 	// out" (no frames at all). Same curMu as the position above.
 	movSeen          bool
 	movMinX, movMaxX int16
@@ -358,20 +358,25 @@ func (h *Hub) sampleCursors() []cursorSample {
 	return out
 }
 
-// CursorActivity reports a player's cursor movement during the window just played,
-// for the engine's afk check. A below-v5 (legacy) client never sends cursors, and a
-// player who has since disconnected has no connection to judge — both are reported
-// Tracked:false so afk skips them rather than flagging them. Called from the engine
-// Run goroutine at round end (before the next arming stage clears the box).
-func (h *Hub) CursorActivity(steamID string) game.CursorActivity {
+// AllCursorActivity snapshots cursor movement during the window just played for
+// EVERY connected non-legacy player, for the engine's per-round afk pass. The afk
+// check is decoupled from scoring, so it needs the whole roster (a player who sits
+// still and never scores is exactly the one to catch), not just scorers. Legacy
+// clients send no cursors and are omitted (the afk pass only judges who it can see,
+// so they are never flagged). Called from the engine Run goroutine at round end,
+// before the next arming stage clears the per-window boxes.
+func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
 	h.mu.RLock()
-	c := h.bySteam[steamID]
-	h.mu.RUnlock()
-	if c == nil || c.Legacy {
-		return game.CursorActivity{}
+	defer h.mu.RUnlock()
+	out := make(map[string]game.CursorActivity, len(h.clients))
+	for c := range h.clients {
+		if c.Legacy {
+			continue
+		}
+		seen, extent := c.movement()
+		out[c.SteamID] = game.CursorActivity{Tracked: true, SawCursor: seen, Extent: extent}
 	}
-	seen, extent := c.movement()
-	return game.CursorActivity{Tracked: true, SawCursor: seen, Extent: extent}
+	return out
 }
 
 // Armed fans out the armed frame. The unpenalised majority share one precomputed

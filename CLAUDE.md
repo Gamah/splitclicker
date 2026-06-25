@@ -156,22 +156,33 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   are inspected by `runChecks`: **fast_clicks** (sub-human inter-click gap), **too_many_clicks**
   (over `max_click_factor ×` the round's fair share N÷(players who scored this round); needs ≥2
   scorers, so a lone clicker is never flagged), **dominant_winner** (>2× a runner-up who scored
-  ≥`dominant_runner_up_min`, so beating an idle player is safe). **afk_score** (the "gotcha", v5
-  only) flags a player who took a *scoring* slot while **AFK by the cursor** — the `game.afkByCursor`
-  predicate: *no* `cursor` messages arrived this round, OR the pointer never moved meaningfully from
-  its round-start spot (per-window bounding-box span < `afk_cursor_min` normalized units). Buttons
-  spawn at server-RNG'd positions, so a real player's cursor travels to reach them; scoring without
-  that is the bot signature. **Only scoring players are judged** — moving around and *missing*
-  buttons (no score) is fine — and **legacy/disconnected players are skipped, never flagged** (a v4
-  client sends no cursors). Cursor activity is the per-window `ws/hub.go` `Hub.CursorActivity`
-  (`Tracked`/`SawCursor`/`Extent`) supplied via `Engine.SetCursorActivityFn`; gated by
-  `afk_cursor_min`>0; `Detail` records which half fired (`no_cursor` / `extent=…`). The player
-  message is deliberately vague ("This is not an AFK game.") — it must NOT reveal that cursor
-  movement is what's measured. **solo_round** is the one
+  ≥`dominant_runner_up_min`, so beating an idle player is safe). The **cursor-based AFK checks**
+  (`game.checkAfk`, v5) run in their OWN whole-roster pass, **decoupled from scoring**: every
+  connected non-legacy player is evaluated every round (NOT just scorers), because a player who
+  sits still and scores *nothing* is exactly the one to catch. The `game.afkByCursor` predicate
+  is AFK when *no* `cursor` messages arrived this round, OR the pointer never moved meaningfully
+  from its round-start spot (per-window bounding-box span < `afk_cursor_min` normalized units).
+  Buttons spawn at server-RNG'd positions and move, so a real player's cursor travels to reach
+  them. An AFK verdict splits by whether the player took a scoring slot this round: **afk_score**
+  (AFK + scored) is the **"gotcha"** (the serious flag: a wire-bot echoing a nonce without aiming
+  is the signature, since a human cannot claim a moving button while still), and **afk_idle**
+  (AFK + scored nothing) is the soft idle nudge. **Movement clears you:** a player who moves but
+  misses every button (no score) is never flagged. **Legacy clients are skipped** (they send no
+  cursors, so the hub omits them; they are never flagged). Both outcomes ride the **same per-bounty
+  sanction ladder** (`applySanction` keys per player, not per rule). Players **already
+  benched/cooled/ignored** this bounty (`blockedMap`) are logged but never re-flagged (they can't
+  score, and an idle benched player must not pile up fresh idle flags). Every connected player is
+  **logged every round** (`afk_eval`: tracked/saw_cursor/extent/min/scored/blocked/afk), so
+  stillness is visible even on no-score rounds. Cursor activity is the per-window `ws/hub.go`
+  `Hub.AllCursorActivity` (`map[steamID]{Tracked,SawCursor,Extent}` over connected non-legacy
+  conns) supplied via `Engine.SetAllCursorActivityFn`; gated by `afk_cursor_min`>0; `Detail`
+  records the signal (`scored no_cursor` / `idle extent=… min=…`). The player message is
+  deliberately vague ("This is not an AFK game.") for both outcomes: it must NOT reveal that
+  cursor movement is what's measured. **solo_round** is the one
   *session-level* check (`game.checkSoloSession`, evaluated once at game end, NOT per round):
   it flags the bounty leader for padding a runaway lead only when the session was **uncontested**
-  — the leader was the *only* player to score in *any* round (a single scoring click from anyone
-  else makes it contested and the lead stands) — and the leader's lead **after** winning it
+  (the leader was the *only* player to score in *any* round; a single scoring click from anyone
+  else makes it contested and the lead stands) and the leader's lead **after** winning it
   (start-of-session margin +1, since the sole scorer wins) strictly exceeds `solo_lead_margin`
   (so it first fires at a lead of 5 with the default 4). Each carries a player-facing message.
   Flags escalate

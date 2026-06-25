@@ -52,23 +52,24 @@ type Config struct {
 	//                         slots. Fractional (e.g. 2.5) is allowed; the limit is
 	//                         floored to a whole click count. Skipped in solo rounds
 	//                         (one player legitimately takes every slot).
-	//   SoloLeadMargin      — solo_round (the session-level check; see checkSoloSession)
+	//   SoloLeadMargin      - solo_round (the session-level check; see checkSoloSession)
 	//                         only fires once the bounty leader's lead AFTER winning an
-	//                         uncontested session strictly exceeds this — the gap over the
+	//                         uncontested session strictly exceeds this: the gap over the
 	//                         runner-up, or their own games-won total when alone on the
 	//                         board. So with the default 4 it first fires at a lead of 5,
 	//                         leaving a newcomer building the board's first wins room to play.
 	//   DominantRunnerUpMin — dominant_winner only fires when the runner-up actually
 	//                         competed (scored at least this many clicks); guards the
 	//                         "one player clicks, the other is idle" false positive.
-	//   AfkCursorMin        — afk flags a scoring player whose cursor's bounding box
-	//                         spanned fewer than this many normalized int16 units during
-	//                         the armed window (or who sent no cursor frames at all —
-	//                         tabbed out). v5-only signal (legacy clients send no cursors
-	//                         and are exempt). 0 disables the check. Conservative by
-	//                         design: a low-N round with a button under the resting
-	//                         cursor can move little, so the first ladder rung is only a
-	//                         math test. Tune up if it false-positives. See runChecks.
+	//   AfkCursorMin        - the cursor-movement floor for the v5 AFK pass (see checkAfk,
+	//                         which judges the WHOLE roster every round, not just scorers).
+	//                         A player is AFK when their cursor's bounding box spanned fewer
+	//                         than this many normalized int16 units during the armed window,
+	//                         or they sent no cursor frames at all (tabbed out). v5-only
+	//                         signal (legacy clients send no cursors and are exempt). AFK +
+	//                         scored is the bot "gotcha" (afk_score); AFK + no score is the
+	//                         idle nudge (afk_idle); both ride the sanction ladder. 0 disables
+	//                         the pass. Tune up if it false-positives. See checkAfk.
 	FastClickMs         int
 	MaxClickFactor      float64
 	SoloLeadMargin      int
