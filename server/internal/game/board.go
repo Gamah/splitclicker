@@ -15,13 +15,6 @@ import "time"
 // Positions are server-authoritative and transmitted (initial X in the armed frame,
 // each replacement in its tick claim event) — never derived client-side from a seed,
 // so a client cannot pre-compute where buttons will appear and pre-aim. See PLAN §8.
-//
-// A persistent legacy nonce (board.legacyNonce) is the single below-v5 ("v4") button:
-// it scores into the same N budget but is never consumed or replaced and produces no
-// board mutation, so an old client keeps today's single-button experience. (A future
-// cutover bumps the live floor to v5, after which v4 clients fall to the out-of-date
-// path; the brief window where a v4 player's stationary button is easier than v5's
-// moving board is accepted as benign — see PLAN.)
 
 // Button is one live scoring target during an armed window. SlotID is the compact
 // wire handle the armed/tick frames reference (cheap to ship); Nonce is the secret a
@@ -54,14 +47,13 @@ type BoardClaim struct {
 // the board mutations accumulated since the last tick (drained by the tick emitter).
 // Touched only from the engine's Run goroutine, so it needs no lock.
 type board struct {
-	n           int               // scoring budget for the round (== old raceState.n)
-	legacyNonce uint64            // the persistent below-v5 button (scores, never consumed)
-	live        map[uint16]Button // slotID → live button
-	byNonce     map[uint64]uint16 // live nonce → slotID (scoring lookup)
-	nextSlot    uint16            // monotonic slot-id counter
-	armedAt     time.Time
-	scored      []ClickEvent // arrival order (drives deltas/scores/reached/history)
-	pending     []BoardClaim // mutations since the last tick
+	n        int               // scoring budget for the round (== old raceState.n)
+	live     map[uint16]Button // slotID → live button
+	byNonce  map[uint64]uint16 // live nonce → slotID (scoring lookup)
+	nextSlot uint16            // monotonic slot-id counter
+	armedAt  time.Time
+	scored   []ClickEvent // arrival order (drives deltas/scores/reached/history)
+	pending  []BoardClaim // mutations since the last tick
 
 	// mint spawns a fresh button (new nonce + server-RNG'd, non-overlapping position)
 	// and registers it as live. Supplied by the engine so the board stays free of the
@@ -69,21 +61,20 @@ type board struct {
 	mint func() Button
 }
 
-func newBoard(n int, legacyNonce uint64, armedAt time.Time) *board {
+func newBoard(n int, armedAt time.Time) *board {
 	if n < 1 {
 		n = 1
 	}
 	return &board{
-		n:           n,
-		legacyNonce: legacyNonce,
-		live:        map[uint16]Button{},
-		byNonce:     map[uint64]uint16{},
-		armedAt:     armedAt,
+		n:       n,
+		live:    map[uint16]Button{},
+		byNonce: map[uint64]uint16{},
+		armedAt: armedAt,
 	}
 }
 
 // full reports whether the round's N budget is spent (every scored click took one
-// slot, legacy or button alike), which closes the window — exactly as before.
+// button slot), which closes the window — exactly as before.
 func (b *board) full() bool { return len(b.scored) >= b.n }
 
 // register assigns the next slot id to a (nonce, position) and marks it live.
@@ -105,19 +96,14 @@ func (b *board) positions() []Button {
 }
 
 // offer reports whether ev scored, applying the whole scoring rule. A pre-fire/garbage
-// click (nonce 0) or a spent budget scores nothing; a click echoing the legacy nonce
-// scores without mutating the board (the old single-button path); a click echoing a
-// live button's nonce claims it (consuming it, recording a mutation, and refilling the
-// board unless the round just ended). A click echoing a consumed or unknown non-zero
-// nonce scores nothing and — like before — is not penalised (it's a legitimate lost
-// race; only nonce 0 penalises, via Engine.recordBad).
+// click (nonce 0) or a spent budget scores nothing; a click echoing a live button's
+// nonce claims it (consuming it, recording a mutation, and refilling the board unless
+// the round just ended). A click echoing a consumed or unknown non-zero nonce scores
+// nothing and — like before — is not penalised (it's a legitimate lost race; only
+// nonce 0 penalises, via Engine.recordBad).
 func (b *board) offer(ev ClickEvent) bool {
 	if b.full() || ev.Nonce == 0 {
 		return false
-	}
-	if ev.Nonce == b.legacyNonce {
-		b.scored = append(b.scored, ev) // legacy button: scores, no board mutation
-		return true
 	}
 	slot, ok := b.byNonce[ev.Nonce]
 	if !ok {

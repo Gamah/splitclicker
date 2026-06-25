@@ -21,7 +21,7 @@ func TestMsSinceClamps(t *testing.T) {
 // takePending drains the board mutations accumulated since the last call, carrying the
 // claimer tag and the replacement, so each tick ships only the new ones.
 func TestBoardTakePending(t *testing.T) {
-	b := newBoard(5, 0, time.Now())
+	b := newBoard(5, time.Now())
 	seq := uint64(1)
 	b.mint = func() Button {
 		seq++

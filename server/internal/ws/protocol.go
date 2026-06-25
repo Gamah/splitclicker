@@ -75,6 +75,19 @@ type bountyUpdateWire struct {
 	T string `json:"t"`
 }
 
+// parkWire tells a single client it has been parked (auto-parked off an afk_idle
+// verdict). While a connection is parked the hub withholds every other frame from it
+// until it unparks (a client→server park{on:false}), so the away player drops cleanly
+// off the board and out of the round's N. The client engages its Pause control and
+// sits on a WAIT state until the next arming frame on return. on is always true here —
+// the server only ever sends a park, never an unpark (the client clears its own state
+// when the player hits Pause). Only park-capable (v6+) clients are ever sent this;
+// older builds keep the plain afk ladder with no parking.
+type parkWire struct {
+	T  string `json:"t"`
+	On bool   `json:"on"`
+}
+
 type helloWire struct {
 	T    string    `json:"t"`
 	You  helloYou  `json:"you"`
@@ -112,17 +125,14 @@ type buttonWire struct {
 	Y     int16  `json:"y"`
 }
 
-// penalty_ms is this connection's own arm-delay penalty (the spam deterrent),
-// surfaced so a masher can see they're being throttled. 0 for honest clients.
-//
-// Two shapes share this struct: tick-capable (v5+) clients get Buttons (the initial
-// board; Nonce omitted) while below-v5 clients get the single persistent Nonce
-// (Buttons omitted). The omitempty keeps each wire to just the fields its client uses.
+// armedWire goes live: the race is open. Buttons is the initial board (each a slot id +
+// secret nonce + position); a scoring click echoes one button's nonce. penalty_ms is
+// this connection's own arm-delay penalty (the spam deterrent), surfaced so a masher can
+// see they're being throttled — 0 for honest clients.
 type armedWire struct {
 	T         string       `json:"t"`
 	Round     int          `json:"round"`
 	Seq       int          `json:"seq"`
-	Nonce     string       `json:"nonce,omitempty"`
 	Buttons   []buttonWire `json:"buttons,omitempty"`
 	Players   int          `json:"players"`
 	Clicks    int          `json:"clicks"`
