@@ -12,6 +12,7 @@ import (
 
 	"github.com/gamah/splitclicker/internal/game"
 	"github.com/gamah/splitclicker/internal/store"
+	"github.com/gamah/splitclicker/internal/ws"
 	"go.uber.org/zap"
 )
 
@@ -257,6 +258,14 @@ func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Live connections (the drop panel) + the silent-ban list — both are live
+	// moderation state, independent of the bounty window filter.
+	shadowbans, err := h.store.ListShadowbans(ctx)
+	if err != nil {
+		h.adminError(w, "load shadowbans", err)
+		return
+	}
+
 	mk := func(param string, num, total int) Page {
 		return Page{Base: "/admin", Bounty: bounty, Param: param, Num: num, Size: adminPageSize, Total: total}
 	}
@@ -267,6 +276,8 @@ func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		FilterLabel:     filterLabel,
 		Selectable:      selectable,
 		Bounties:        bounties,
+		Connections:     h.hub.Connections(),
+		Shadowbans:      shadowbans,
 		Games:           games,
 		GamesPage:       mk("gp", gNum, gTotal),
 		AntiCheat:       antiCheat,
@@ -337,6 +348,12 @@ func (h *handler) adminPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	banned, err := h.store.IsShadowbanned(ctx, id)
+	if err != nil {
+		h.adminError(w, "load shadowban state", err)
+		return
+	}
+
 	extra := "id=" + url.QueryEscape(id)
 	mk := func(param string, num, total int) Page {
 		return Page{Base: "/admin/player", Extra: extra, Bounty: bounty, Param: param, Num: num, Size: adminPageSize, Total: total}
@@ -345,9 +362,10 @@ func (h *handler) adminPlayer(w http.ResponseWriter, r *http.Request) {
 		Profile:     profile,
 		Selectable:  selectable,
 		Bounty:      bounty,
-		FilterLabel: filterLabel,
-		Sanction:    sanction,
-		Checks:      checks,
+		FilterLabel:  filterLabel,
+		Sanction:     sanction,
+		Shadowbanned: banned,
+		Checks:       checks,
 		ChecksPage: mk("cp", cNum, cTotal),
 		Tests:      tests,
 		TestsPage:  mk("tp", tNum, tTotal),
@@ -395,6 +413,57 @@ func (h *handler) adminPlayerChecks(w http.ResponseWriter, r *http.Request) {
 		h.engine.SetSanction(id, s)
 	}
 	http.Redirect(w, r, "/admin/player?id="+url.QueryEscape(id), http.StatusSeeOther)
+}
+
+// POST /admin/shadowban — add or remove a SteamID from the silent-ban list.
+// action=ban adds (with an optional reason); action=unban removes. Enforcement is
+// at the WS connect path, so a ban takes effect on the player's NEXT connect — use
+// the connections panel's "drop" to force a reconnect now. `back` chooses the
+// redirect target so the form works from both the dashboard and a player page.
+func (h *handler) adminShadowban(w http.ResponseWriter, r *http.Request) {
+	if !h.adminAuth(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	if !steamIDRe.MatchString(id) {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	var err error
+	switch r.FormValue("action") {
+	case "ban":
+		err = h.store.AddShadowban(r.Context(), id, strings.TrimSpace(r.FormValue("reason")))
+	case "unban":
+		err = h.store.RemoveShadowban(r.Context(), id)
+	default:
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		h.adminError(w, "update shadowban", err)
+		return
+	}
+	if r.FormValue("back") == "player" {
+		http.Redirect(w, r, "/admin/player?id="+url.QueryEscape(id), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+// POST /admin/connections/drop — force-close a live connection so the client has
+// to reconnect. Paired with a saved shadowban, this is how a ban is made to take
+// effect immediately (the reconnect re-runs the connect-time ban check).
+func (h *handler) adminDropConnection(w http.ResponseWriter, r *http.Request) {
+	if !h.adminAuth(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	if !steamIDRe.MatchString(id) {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	h.hub.Drop(id) // no-op if that account has no socket open
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
 // GET /admin/game?id=… — one game's rounds and the per-click arrival timing.
@@ -546,6 +615,9 @@ type dashboardData struct {
 	Selectable  []store.BountyWindow
 	Bounties    []store.Bounty
 
+	Connections []ws.ConnInfo     // live sockets (the drop panel)
+	Shadowbans  []store.Shadowban // current silent-ban list
+
 	Games     []store.AdminGame
 	GamesPage Page
 
@@ -574,7 +646,8 @@ type playerData struct {
 	Bounty      string
 	FilterLabel string
 
-	Sanction store.PlayerSanction // live ladder state for the active bounty (editable)
+	Sanction     store.PlayerSanction // live ladder state for the active bounty (editable)
+	Shadowbanned bool                 // on the silent-ban list
 
 	Checks     []store.AdminCheck
 	ChecksPage Page
@@ -864,6 +937,58 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
   <div class="card"><div class="n">{{.Stats.Players}}</div><div class="lbl">accounts (all-time)</div></div>
 </div>
 
+<h2>Connections <span class="muted">· live sockets ({{len .Connections}}). "drop" force-closes a socket so the client reconnects — paired with a shadowban, that's how a ban takes effect now (the reconnect re-runs the ban check). "shadowban" here adds the account to the silent-ban list; it then takes effect on its next connect, so drop it too.</span></h2>
+<table>
+  <tr><th>player</th><th>tag</th><th class="num">ver</th><th>flags</th><th>ip</th><th></th></tr>
+  {{range .Connections}}
+  <tr>
+    <td>{{plink .SteamID .Username}}</td>
+    <td class="mono">{{.Tag}}</td>
+    <td class="num">{{.Version}}</td>
+    <td>
+      {{if .Shadowbanned}}<span class="pill archived">shadowbanned</span>{{end}}
+      {{if .Legacy}}<span class="pill">legacy</span>{{end}}
+      {{if .Parked}}<span class="pill">parked</span>{{end}}
+    </td>
+    <td class="mono">{{.IP}}</td>
+    <td>
+      <div class="actions">
+        {{if .Shadowbanned}}
+        <form method="post" action="/admin/shadowban"><input type="hidden" name="id" value="{{.SteamID}}"><input type="hidden" name="action" value="unban"><button type="submit">unban</button></form>
+        {{else}}
+        <form method="post" action="/admin/shadowban"><input type="hidden" name="id" value="{{.SteamID}}"><input type="hidden" name="action" value="ban"><button type="submit">shadowban</button></form>
+        {{end}}
+        <form method="post" action="/admin/connections/drop" onsubmit="return confirm('Drop this connection? The client will reconnect.')"><input type="hidden" name="id" value="{{.SteamID}}"><button type="submit">drop</button></form>
+      </div>
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">no live connections</td></tr>
+  {{end}}
+</table>
+
+<h2>Shadowbans <span class="muted">· the silent-ban list. A banned account still connects and sees the world arm, but never scores, wins, or appears on a board, and its clicks are dropped — with nothing that reveals the ban. Takes effect on the player's next connect.</span></h2>
+<table>
+  <tr><th>player</th><th>reason</th><th>added (local)</th><th></th></tr>
+  {{range .Shadowbans}}
+  <tr>
+    <td>{{plink .SteamID .SteamID}}</td>
+    <td>{{if .Reason}}{{.Reason}}{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{lt .CreatedAt}}</td>
+    <td><form method="post" action="/admin/shadowban"><input type="hidden" name="id" value="{{.SteamID}}"><input type="hidden" name="action" value="unban"><button type="submit">unban</button></form></td>
+  </tr>
+  {{else}}
+  <tr><td colspan="4" class="muted">no shadowbans</td></tr>
+  {{end}}
+</table>
+<form class="addbounty" method="post" action="/admin/shadowban">
+  <h3>Shadowban a SteamID <span class="muted">· takes effect on their next connect</span></h3>
+  <input type="hidden" name="action" value="ban">
+  <input type="text" name="id" placeholder="SteamID64" required>
+  <input type="text" name="reason" placeholder="reason (optional)" maxlength="200">
+  <button type="submit">Shadowban</button>
+</form>
+
 <h2>Bounties <span class="muted">· the skin-to-win queue (times shown in your local zone; stored as UTC). When a bounty's win time passes, the player who won the most games during its window is recorded as the winner and the next bounty activates automatically. "hide" removes a bounty from the client (no active skin / not shown as a previous winner) without changing the queue — use it to test, then "unhide".</span></h2>
 <table>
   <tr><th>skin</th><th>label</th><th>status</th><th>window (local)</th><th>winner</th><th></th></tr>
@@ -1040,6 +1165,26 @@ var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<
 <p class="muted">Saving clears any active cooldown/ignored and re-baselines the ladder at the new count; it re-escalates from there and applies live.</p>
 {{else}}
 <p class="muted">No active bounty — the anticheat ladder is per-bounty, so there's nothing to set right now.</p>
+{{end}}
+
+<h2>Shadowban</h2>
+{{if .Shadowbanned}}
+<p class="muted">This account is <span class="err">silently banned</span> — on its next connect it sees the world arm but never scores, wins, or appears on a board, and its clicks are dropped. Already connected? Drop it from the dashboard's Connections panel to apply now.</p>
+<form class="addbounty" method="post" action="/admin/shadowban">
+  <input type="hidden" name="id" value="{{.Profile.SteamID}}">
+  <input type="hidden" name="action" value="unban">
+  <input type="hidden" name="back" value="player">
+  <button type="submit">lift shadowban</button>
+</form>
+{{else}}
+<p class="muted">Not shadowbanned. A shadowban takes effect on the player's next connect; drop their connection from the dashboard to force a reconnect.</p>
+<form class="addbounty" method="post" action="/admin/shadowban">
+  <input type="hidden" name="id" value="{{.Profile.SteamID}}">
+  <input type="hidden" name="action" value="ban">
+  <input type="hidden" name="back" value="player">
+  <label>reason (optional) <input type="text" name="reason" maxlength="200"></label>
+  <button type="submit">shadowban</button>
+</form>
 {{end}}
 
 <h2>Anticheat checks</h2>

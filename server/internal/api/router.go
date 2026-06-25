@@ -106,6 +106,8 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	mux.HandleFunc("GET /admin", rl.wrap(h.adminDashboard))
 	mux.HandleFunc("GET /admin/player", rl.wrap(h.adminPlayer))
 	mux.HandleFunc("POST /admin/player/checks", h.adminPlayerChecks)
+	mux.HandleFunc("POST /admin/shadowban", h.adminShadowban)
+	mux.HandleFunc("POST /admin/connections/drop", h.adminDropConnection)
 	mux.HandleFunc("GET /admin/game", rl.wrap(h.adminGame))
 	mux.HandleFunc("GET /admin/media", h.adminMedia)
 	mux.HandleFunc("POST /admin/bounties", h.adminBountyCreate)
@@ -348,6 +350,14 @@ func (h *handler) wsConnect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "valid ticket required")
 		return
 	}
+	// Silent-ban check, BEFORE the upgrade (r.Context() is live here, but is cancelled
+	// once the conn is hijacked). Fail-open: a DB hiccup must not drop a legit player —
+	// the ban re-applies on their next connect. A banned connection still upgrades and
+	// looks normal; the ban only changes the socket's behaviour (see ws.Client).
+	banned, bErr := h.store.IsShadowbanned(r.Context(), id.SteamID)
+	if bErr != nil {
+		h.log.Warn("shadowban lookup failed", zap.String("steam_id", id.SteamID), zap.Error(bErr))
+	}
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.log.Warn("ws upgrade failed", zap.Error(err))
@@ -357,6 +367,7 @@ func (h *handler) wsConnect(w http.ResponseWriter, r *http.Request) {
 	c := ws.NewClient(conn, id.SteamID, id.Tag, id.Username, clientIP(r), h.hub)
 	c.Version = ver
 	c.Legacy = ver < h.liveVersion()
+	c.Shadowbanned = banned
 	h.hub.ServeClient(c)
 }
 
