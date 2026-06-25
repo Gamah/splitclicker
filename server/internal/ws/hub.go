@@ -14,6 +14,7 @@ package ws
 
 import (
 	"encoding/json"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -90,6 +91,10 @@ type outMsg struct {
 	// force bypasses the parked withhold gate (see enqueue): used only by the park
 	// notification itself, which must reach a connection at the instant it's parked.
 	force bool
+	// banVisible lets a frame through the shadowban withhold gate (see enqueue): set
+	// only on the `hello` and `armed` frames, the sole frames a silently-banned
+	// connection receives (so it looks alive and visibly sees the world arm).
+	banVisible bool
 }
 
 // Client is one connected player.
@@ -114,6 +119,19 @@ type Client struct {
 	// now gated only by !Legacy (see tickCapable), since the live floor is the version
 	// that introduced it.
 	Version int
+
+	// Shadowbanned marks a silently-banned account. Set once at connect from the DB
+	// ban list (api.wsConnect), before the pumps start, so it needs no lock. A
+	// shadowbanned connection still receives `hello` and `armed` (so the client looks
+	// alive and the world visibly keeps arming), but EVERY other frame is withheld at
+	// the enqueue choke point and ALL its inbound messages are dropped in readPump —
+	// it can click forever and never score, win, or appear on a board, with nothing
+	// that reveals the ban. It's left out of the round's N (ActivePlayerCount), the
+	// name roster, the cursor sample, and the AFK pass, so it never generates sanctions
+	// or leaks its tag to others — but it DOES count toward PlayerCount, so a lone
+	// banned player still sees the world arm. Enforcement is at connect, so a ban takes
+	// effect on the next connect (the admin "drop" control forces that reconnect).
+	Shadowbanned bool
 
 	smu        sync.Mutex // guards sendClosed + the send channel
 	sendClosed bool
@@ -256,6 +274,56 @@ func (h *Hub) unregister(c *Client) {
 	c.closeSend()
 }
 
+// ConnInfo is a snapshot of one live connection for the admin connections panel.
+type ConnInfo struct {
+	SteamID      string
+	Tag          string
+	Username     string
+	IP           string
+	Version      int
+	Legacy       bool
+	Parked       bool
+	Shadowbanned bool
+}
+
+// Connections snapshots every live connection, sorted by SteamID for a stable
+// admin display. Read-only; safe to call from the HTTP goroutine.
+func (h *Hub) Connections() []ConnInfo {
+	h.mu.RLock()
+	out := make([]ConnInfo, 0, len(h.clients))
+	for c := range h.clients {
+		out = append(out, ConnInfo{
+			SteamID:      c.SteamID,
+			Tag:          c.Tag,
+			Username:     c.Username,
+			IP:           c.IP,
+			Version:      c.Version,
+			Legacy:       c.Legacy,
+			Parked:       c.parked.Load(),
+			Shadowbanned: c.Shadowbanned,
+		})
+	}
+	h.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].SteamID < out[j].SteamID })
+	return out
+}
+
+// Drop force-closes steamID's current connection so the client must reconnect.
+// Closing the underlying conn makes both pumps exit; readPump's defer unregisters
+// it. Returns false if no connection for that account is open. Used by the admin
+// "drop" control — and, with a shadowban already saved, it's how a ban is made to
+// take effect now (the reconnect re-runs the connect-time ban check).
+func (h *Hub) Drop(steamID string) bool {
+	h.mu.RLock()
+	c := h.bySteam[steamID]
+	h.mu.RUnlock()
+	if c == nil {
+		return false
+	}
+	c.conn.Close()
+	return true
+}
+
 func (h *Hub) clientList() []*Client {
 	h.mu.RLock()
 	out := make([]*Client, 0, len(h.clients))
@@ -291,7 +359,8 @@ func (h *Hub) ActivePlayerCount(benched map[string]bool) int {
 	for c := range h.clients {
 		// Parked players have stepped away — exclude them from N alongside the benched,
 		// so a round's scoring slots are sized only to players who can actually race.
-		if !c.Legacy && !c.parked.Load() && !benched[c.SteamID] {
+		// Shadowbanned players can't score either, so they never inflate N.
+		if !c.Legacy && !c.parked.Load() && !c.Shadowbanned && !benched[c.SteamID] {
 			n++
 		}
 	}
@@ -332,7 +401,8 @@ func (h *Hub) roster() []rosterEntry {
 	for c := range h.clients {
 		// Parked players aren't in the round, so they aren't opponents — leave them out
 		// of the name-resolution roster (no pips/cursors will reference them anyway).
-		if !c.Legacy && !c.parked.Load() {
+		// Shadowbanned players aren't real opponents either, and we never leak their tag.
+		if !c.Legacy && !c.parked.Load() && !c.Shadowbanned {
 			out = append(out, rosterEntry{Tag: c.Tag, Username: c.Username})
 		}
 	}
@@ -370,7 +440,7 @@ func (h *Hub) sampleCursors() []cursorSample {
 	}
 	out := make([]cursorSample, 0, k)
 	for _, c := range h.clientList() {
-		if !tickCapable(c) || c.parked.Load() {
+		if !tickCapable(c) || c.parked.Load() || c.Shadowbanned {
 			continue
 		}
 		if x, y, ok := c.cursor(); ok {
@@ -398,7 +468,9 @@ func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
 		// Parked players have stepped away and receive no armed frame, so they can't move
 		// a cursor — omit them so the afk pass never (re)flags an away player. Their park
 		// already removed them; re-flagging would be both pointless and unfair.
-		if c.Legacy || c.parked.Load() {
+		// Shadowbanned players are omitted too: they receive armed but their cursors are
+		// dropped (and we never want to sanction/park a silently-banned account).
+		if c.Legacy || c.parked.Load() || c.Shadowbanned {
 			continue
 		}
 		seen, moved := c.movement()
@@ -435,14 +507,16 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 		if a.Blocked[c.SteamID] {
 			continue // benched by anticheat: withhold the buttons until they pass their test
 		}
+		// banVisible: `armed` is the one in-game frame a shadowbanned client receives,
+		// so it sees the world arm (and clicks into the void).
 		if d := a.Penalties[c.SteamID]; d > 0 {
 			w := base
 			w.PenaltyMs = int(d.Milliseconds())
 			msg := mustJSON(w)
 			cc := c
-			time.AfterFunc(d, func() { cc.trySend(msg) })
+			time.AfterFunc(d, func() { cc.enqueue(outMsg{banVisible: true, data: msg}) })
 		} else {
-			c.trySend(clean)
+			c.enqueue(outMsg{banVisible: true, data: clean})
 		}
 	}
 }
@@ -637,7 +711,9 @@ func (h *Hub) hello(c *Client) {
 	if c.Legacy {
 		devNote = outdatedNote // outdated client: the hard-coded "update" note
 	}
-	c.trySend(mustJSON(helloWire{
+	// banVisible: a shadowbanned client still gets hello, so its HUD initializes and
+	// the ban stays invisible (a client that never received hello would visibly fail).
+	c.enqueue(outMsg{banVisible: true, data: mustJSON(helloWire{
 		T:    "hello",
 		You:  helloYou{Tag: c.Tag, Username: c.Username},
 		Game: helloGame{
@@ -648,7 +724,7 @@ func (h *Hub) hello(c *Client) {
 			DevNote: devNote,
 			TickMs:  snap.TickMs,
 		},
-	}))
+	})})
 }
 
 // --- per-client send (concurrency-safe vs. delayed/penalised writes) ---
@@ -664,6 +740,12 @@ func (c *Client) enqueue(m outMsg) {
 	c.smu.Lock()
 	defer c.smu.Unlock()
 	if c.sendClosed {
+		return
+	}
+	// Shadowbanned: withhold every frame except those marked banVisible (`hello` +
+	// `armed`), so the client looks alive and sees the world arm but never receives a
+	// result, standings, tick, or test that would let it score or reveal the ban.
+	if c.Shadowbanned && !m.banVisible {
 		return
 	}
 	// Parked: the player has stepped away, so withhold every frame until they unpark —
@@ -727,6 +809,12 @@ func (c *Client) readPump() {
 		now := time.Now()
 		if err != nil {
 			return
+		}
+		if c.Shadowbanned {
+			// Silently banned: drop every inbound frame (click/cursor/park/test_answer/
+			// ping). We keep reading so the pong handler refreshes the read deadline and a
+			// real disconnect is still detected — the socket just does nothing.
+			continue
 		}
 		var in inbound
 		if err := json.Unmarshal(raw, &in); err != nil {
