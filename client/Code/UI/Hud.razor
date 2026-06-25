@@ -506,7 +506,11 @@
 			<div class="park-card">
 				<div class="park-title">PAUSED — AWAY</div>
 				<div class="park-sub">You've stepped away, so you're out of the round and off the leaderboard race — no AFK flags while you're paused.</div>
-				<div class="park-hint">Hit PAUSE again to rejoin. You'll be back in on the next button.</div>
+				<div class="park-hint">Press RESUME to rejoin — you'll be back in on the next button.</div>
+				@* RESUME is a child of the overlay card (painted above the backdrop), so it's
+				   reliably clickable — unlike the bottom-left PAUSE bar, which s&box hit-tests
+				   under this full-screen overlay regardless of z-index. ── *@
+				<div class="park-resume" onclick="@TogglePause">RESUME</div>
 			</div>
 		</div>
 	}
@@ -634,9 +638,11 @@
 		border-radius: 8px;
 		cursor: pointer;
 		pointer-events: all;
-		/* Above the parked overlay backdrop (z:190) so it stays clickable to rejoin while
-		   parked; still below the anticheat test gate (z:200). */
-		z-index: 195;
+		/* The PARK direction (not parked → away) happens here, with no overlay up. While
+		   PARKED the full-screen overlay sits over this bar (s&box hit-tests the overlay
+		   on top regardless of z-index), so rejoin is the overlay's RESUME button, not this
+		   bar — the bar then just reads "PAUSED" as a status. */
+		z-index: 150;
 	}
 
 	.pause-fab:hover { background-color: rgba(6, 214, 160, 1); }
@@ -697,6 +703,25 @@
 		color: rgba(6, 214, 160, 0.95);
 		text-align: center;
 	}
+
+	/* RESUME button on the parked overlay card — the reliable rejoin control. */
+	.park-resume {
+		margin-top: 8px;
+		padding: 12px 40px;
+		justify-content: center;
+		align-items: center;
+		font-size: 18px;
+		font-weight: bold;
+		letter-spacing: 2px;
+		color: #04130b;
+		background-color: rgba(6, 214, 160, 0.92);
+		border: 1.5px solid rgba(6, 214, 160, 0.6);
+		border-radius: 8px;
+		cursor: pointer;
+		pointer-events: all;
+	}
+
+	.park-resume:hover { background-color: rgba(6, 214, 160, 1); }
 
 	/* ── "How to Play" popup: a dim full-screen backdrop (captures input) with a
 	   floating card centred over it, like the music player. Sits below the anticheat
