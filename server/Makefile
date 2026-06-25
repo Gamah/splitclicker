@@ -21,7 +21,11 @@ migrate-down:
 	goose -dir migrations postgres "$(DATABASE_URL)" down
 
 # ── Docker Compose ──────────────────────────────────────────────────────────
+# `make up` reviews data/config.json interactively (Enter keeps each current value)
+# before building. `make up SKIP=1` skips the review and keeps current/default values
+# (seeding data/config.json from the example only if it doesn't exist yet).
 up:
+	go run ./cmd/configure $(if $(SKIP),--skip)
 	GIT_HASH=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	docker compose -f docker/docker-compose.yml --env-file .env up -d --build
 

@@ -7,6 +7,11 @@ directory is bind-mounted into the container at `/data` (see
 
 ## Edit config.json
 
+`make up` reviews this file interactively before building: it seeds `config.json`
+from the example if missing, then walks every value showing the current setting —
+press Enter to keep it or type a new one. `make up SKIP=1` skips the review and
+keeps the current/default values. To edit by hand instead:
+
 1. Copy the example once: `cp config.json.example config.json`
 2. Edit `config.json`:
    ```json
@@ -30,7 +35,7 @@ directory is bind-mounted into the container at `/data` (see
      "tick_sample_k": 8,
      "fast_click_ms": 130,
      "max_click_factor": 2.5,
-     "solo_lead_margin": 15,
+     "solo_lead_margin": 4,
      "dominant_runner_up_min": 5,
      "check_cooldown_threshold": 20,
      "check_cooldown_mins": 60,
@@ -73,8 +78,8 @@ directory is bind-mounted into the container at `/data` (see
 - `solo_lead_margin` — anticheat: solo_round (a session-level check) only flags the
   bounty leader for an uncontested session once the lead it produces — their games-won
   gap over second place (or their own total when alone on the board), *after* winning
-  that session — strictly exceeds this. With the default 15 it first fires at a lead of
-  16 (e.g. the 16th win alone, or beating a 50-win runner-up to reach 66).
+  that session — strictly exceeds this. With the default 4 it first fires at a lead of
+  5 (e.g. the 5th win alone, or beating a 49-win runner-up to reach 54).
 - `dominant_runner_up_min` — anticheat: dominant_winner only fires when the
   runner-up scored at least this many clicks, so out-clicking an idle player is
   never flagged (default 5).

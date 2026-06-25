@@ -1145,10 +1145,10 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 //     over the runner-up, or, when the leader is alone on the sessions-won board,
 //     their own games-won total). Because an uncontested session means the leader
 //     was its sole scorer, they win it and gain exactly one — so the lead this
-//     session produces is leadMargin+1. The first margin that fires is therefore 16
-//     (entering at 15, winning the 16th), leaving a newcomer building the board's
-//     first wins room to play; this is the "fires on the 66th win vs a 50-win
-//     runner-up" case.
+//     session produces is leadMargin+1. The first lead that fires is therefore
+//     SoloLeadMargin+1 (e.g. with the default 4, a resulting lead of 5: entering at
+//     4 and winning the 5th uncontested), leaving a newcomer building the board's
+//     first wins room to play.
 //
 // Gating on the leader being the sole scorer also means it never fires on a session
 // the leader sat out: if someone else played solo they're the scorer (not leaderID)
@@ -1164,7 +1164,7 @@ func (e *Engine) checkSoloSession(scorers map[string]bool, leaderID string, lead
 	// +1: this uncontested session is itself a win for the sole-scoring leader, so
 	// the resulting lead is one past the start-of-session snapshot.
 	postLead := leadMargin + 1
-	if postLead <= e.cfg.SoloLeadMargin { // strictly greater: a resulting lead of 16 fires, 15 doesn't
+	if postLead <= e.cfg.SoloLeadMargin { // strictly greater: with the default 4, a lead of 5 fires, 4 doesn't
 		return nil
 	}
 	return &CheckResult{SteamID: leaderID, Type: "solo_round",

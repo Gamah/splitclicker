@@ -162,7 +162,7 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   — the leader was the *only* player to score in *any* round (a single scoring click from anyone
   else makes it contested and the lead stands) — and the leader's lead **after** winning it
   (start-of-session margin +1, since the sole scorer wins) strictly exceeds `solo_lead_margin`
-  (so it first fires at a lead of 16 with the default 15). Each carries a player-facing message.
+  (so it first fires at a lead of 5 with the default 4). Each carries a player-facing message.
   Flags escalate
   **per-bounty** (counts reset each bounty, persisted in `anticheat_sanctions`): test (math) →
   cooldown (`check_cooldown_threshold` flags → `check_cooldown_mins`) → ignored

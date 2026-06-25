@@ -52,11 +52,12 @@ type Config struct {
 	//                         slots. Fractional (e.g. 2.5) is allowed; the limit is
 	//                         floored to a whole click count. Skipped in solo rounds
 	//                         (one player legitimately takes every slot).
-	//   SoloLeadMargin      — solo_round only fires once the lone entry on the bounty's
-	//                         sessions-won board has at least this many games won (their
-	//                         lead IS their total when alone), so a newcomer building the
-	//                         board's first wins isn't punished. Keys off the board, not
-	//                         how many players happen to be connected.
+	//   SoloLeadMargin      — solo_round (the session-level check; see checkSoloSession)
+	//                         only fires once the bounty leader's lead AFTER winning an
+	//                         uncontested session strictly exceeds this — the gap over the
+	//                         runner-up, or their own games-won total when alone on the
+	//                         board. So with the default 4 it first fires at a lead of 5,
+	//                         leaving a newcomer building the board's first wins room to play.
 	//   DominantRunnerUpMin — dominant_winner only fires when the runner-up actually
 	//                         competed (scored at least this many clicks); guards the
 	//                         "one player clicks, the other is idle" false positive.
@@ -94,7 +95,7 @@ func DefaultConfig() Config {
 		PenaltyStepMs:   100,
 		FastClickMs:         130,
 		MaxClickFactor:      2.5,
-		SoloLeadMargin:      15,
+		SoloLeadMargin:      4,
 		DominantRunnerUpMin: 5,
 
 		CheckCooldownThreshold: 20,
