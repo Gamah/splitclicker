@@ -24,8 +24,9 @@
   "fast_click_ms": 130,
   "max_click_factor": 2.5,
 
-  "solo_lead_margin": 15,
+  "solo_lead_margin": 4,
   "dominant_runner_up_min": 5,
+  "afk_check": 1,
   "check_cooldown_threshold": 20,
   "check_cooldown_mins": 60,
   "check_ignore_after": 2

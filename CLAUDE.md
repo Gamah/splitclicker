@@ -151,16 +151,67 @@ Run Go tooling from `server/` (the module root). The s&box project is `client/`.
   Fixed formula (not env-configurable); mirrored client-side (`ClickController.IdlePenaltyMs`) for
   a live estimate that the authoritative `armed` value overwrites. Mashing becomes self-defeating.
   Idle clicks still rate-limited so this doesn't reintroduce idle traffic.
-- **Anticheat checks + sanction ladder** (`game.runChecks` / `game.applySanction`; tunables in
-  `data/config.json`). End of every round, the scoring clicks are inspected: **fast_clicks**
-  (sub-human inter-click gap), **too_many_clicks** (over `max_click_factor ×` the round's fair
-  share N÷(players who scored this round); needs ≥2 scorers, so a lone clicker is never flagged),
-  **solo_round** (lone leader padding a ≥`solo_lead_margin`
-  games-won lead), **dominant_winner** (>2× a runner-up who scored ≥`dominant_runner_up_min`, so
-  beating an idle player is safe). Each carries a player-facing message. Flags escalate
+- **Anticheat checks + sanction ladder** (`game.runChecks` / `game.checkSoloSession` /
+  `game.applySanction`; tunables in `data/config.json`). End of every round, the scoring clicks
+  are inspected by `runChecks`: **fast_clicks** (sub-human inter-click gap), **too_many_clicks**
+  (over `max_click_factor ×` the round's fair share N÷(players who scored this round); needs ≥2
+  scorers, so a lone clicker is never flagged), **dominant_winner** (>2× a runner-up who scored
+  ≥`dominant_runner_up_min`, so beating an idle player is safe). The **cursor-based AFK checks**
+  (`game.checkAfk`, v5) run in their OWN whole-roster pass, **decoupled from scoring**: every
+  connected non-legacy player is evaluated every round (NOT just scorers), because a player who
+  sits still and scores *nothing* is exactly the one to catch. The `game.afkByCursor` predicate
+  is AFK when *no* `cursor` messages arrived this round, OR the cursor **never moved** (no sample
+  after its anchor differed from it). Movement is **binary** (any change of position counts) so
+  there is no threshold to tune and nothing tied to the wire scale (`afk_check`>0 just gates the
+  pass). **The client only reports the cursor while it is ON the board** (within ±1): a pointer
+  parked OUTSIDE the board (over the side leaderboards) is simply not sent, so a parked player
+  reports no cursor (the no-cursor half) rather than a clamped edge value. The hub also **drops the
+  first cursor sample of each window** (`ws/hub.go` `setCursor`): the client's first armed-frame
+  report is taken before the board layout settles and lands offset from the rest, which would make a
+  still cursor look like it moved; the movement anchor is the second sample.
+  An AFK verdict splits by whether the player took a scoring slot this round: **afk_score**
+  (AFK + scored) is the **"gotcha"** (the serious flag, surfaced as **BUSTED** in the client: a
+  wire-bot echoing a nonce without aiming is the signature, since a human cannot claim a button
+  without moving onto it), and **afk_idle** (AFK + scored nothing) is the soft idle nudge (the
+  **AFK** client row). **Movement clears you:** a player who moves but
+  misses every button (no score) is never flagged. **Legacy clients are skipped** (they send no
+  cursors, so the hub omits them; they are never flagged). **Only players present for the whole
+  armed window are idle-nudged** (`CursorActivity.Eligible`, stamped from `Hub`'s per-arm `armGen`):
+  a mid-window join or a fresh connection that hasn't had a window yet never had a fair chance to
+  play, so `afk_idle` skips it; the gotcha ignores eligibility (scoring proves there was a live
+  window). **AFK fires at most ONCE per game per player** (`afkFired`, reset each
+  game in `playGame`): this breaks the loop where a player who answers their math test *mid-round*
+  (clearing the block) is instantly re-flagged for the round they spent answering. The hub withholds
+  the `armed` frame from a benched player, so they never get that round's board and can't send a
+  cursor; without the once-per-game cap, clearing a test mid-round would re-trip AFK at round end. A
+  genuinely-AFK player still ladders out **across** games (the cap resets each game), so escalation
+  is only slowed, not prevented. Both outcomes ride the **same per-bounty
+  sanction ladder** (`applySanction` keys per player, not per rule). Players **already
+  benched/cooled/ignored** this bounty (`blockedMap`) are logged but never re-flagged (they can't
+  score, and an idle benched player must not pile up fresh idle flags). Every connected player is
+  **logged every round** (`afk_eval`: saw_cursor/moved/scored/blocked/eligible/afk; plus an
+  `afk_round` summary), so stillness is visible even on no-score rounds. Cursor activity is the
+  per-window `ws/hub.go` `Hub.AllCursorActivity` (`map[steamID]{Tracked,SawCursor,Moved,Eligible}`
+  over connected non-legacy conns) supplied via `Engine.SetAllCursorActivityFn`; gated by
+  `afk_check`>0; `Detail` records the signal (`scored still` / `idle no_cursor`). The two player
+  messages (afk_score "You know what you did, knock it off."; afk_idle "This is not an AFK game.")
+  are deliberately vague: neither reveals that cursor movement is what's measured. **solo_round** is the one
+  *session-level* check (`game.checkSoloSession`, evaluated once at game end, NOT per round):
+  it flags the bounty leader for padding a runaway lead only when the session was **uncontested**
+  (the leader was the *only* player to score in *any* round; a single scoring click from anyone
+  else makes it contested and the lead stands) and the leader's lead **after** winning it
+  (start-of-session margin +1, since the sole scorer wins) strictly exceeds `solo_lead_margin`
+  (so it first fires at a lead of 5 with the default 4). Each carries a player-facing message.
+  Flags escalate
   **per-bounty** (counts reset each bounty, persisted in `anticheat_sanctions`): test (math) →
   cooldown (`check_cooldown_threshold` flags → `check_cooldown_mins`) → ignored
-  (`check_ignore_after` more → until the bounty resolves). The server pushes the rung as a `test`
+  (`check_ignore_after` more → until the bounty resolves). **A player who is currently
+  blocked (an unanswered math test, an active cooldown, or ignored, i.e. `blockedMap`) is skipped
+  from ALL checks that round**, both the per-round `runChecks`/`checkAfk` and the session-level
+  `solo_round`: someone working through their outstanding test must not pile up fresh flags (and
+  so escalate) before they have answered it. The skip is keyed off the in-memory rung, so it
+  holds across games within a session; a player who disconnects mid-test leaves a harmless
+  orphaned rung (we don't try to suppress checks for a session that no longer exists). The server pushes the rung as a `test`
   frame with `state`/`message`/`until_ms`; the client shows the test, then a countdown. The
   bounty snapshot the checks need (id, leader+margin, resolve time) is supplied via
   `Engine.SetBountyInfoFn` from the leaderboard cache. Every leaderboard row + the WS

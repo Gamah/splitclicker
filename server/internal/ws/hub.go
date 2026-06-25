@@ -60,6 +60,12 @@ type Hub struct {
 	bySteam map[string]*Client // newest connection per Steam account
 	engine  *game.Engine
 	log     *zap.Logger
+
+	// armGen counts armed windows. Bumped in Armed; each connected client's armSeen is
+	// stamped to it so the afk check can tell who was present for the WHOLE window (and
+	// is fairly judgeable) from who joined mid-window or hasn't had a window yet. Touched
+	// only from the engine Run goroutine (Armed + AllCursorActivity), so it needs no lock.
+	armGen int
 }
 
 func NewHub(log *zap.Logger) *Hub {
@@ -121,12 +127,43 @@ type Client struct {
 	curY    int16
 	hasCur  bool
 	lastCur time.Time
+
+	// Per-window cursor movement, for the engine's afk check. movN counts the cursor
+	// samples reported since the last clearCursor (this armed window). The FIRST sample
+	// is excluded: the client's first armed-frame report is taken before the board layout
+	// settles, so it lands a constant offset from the rest and would make a still cursor
+	// look like it moved. The anchor is the SECOND sample; moved flips true if any later
+	// sample differs from it. The afk check reads "saw a cursor at all" (movN) and
+	// "moved". Same curMu as the position above.
+	movN       int
+	movSeen    bool // anchor recorded (a second sample arrived this window)
+	moved      bool // a post-anchor sample differed from the anchor
+	movAnchorX int16
+	movAnchorY int16
+
+	// armSeen is the hub's armGen at the last arm this client was present for. Compared
+	// to the current armGen in AllCursorActivity to decide afk eligibility (present for
+	// the whole window). Touched only from the engine Run goroutine (Hub.Armed).
+	armSeen int
 }
 
-// setCursor records this connection's latest pointer position (from readPump).
+// setCursor records this connection's latest pointer position (from readPump) and
+// updates the per-window movement state used by the afk check. curX/curY (latest
+// position, for rendering and tick sampling) update on every sample; the movement state
+// skips the transient first sample and anchors on the second (see the field comment).
 func (c *Client) setCursor(x, y int16) {
 	c.curMu.Lock()
 	c.curX, c.curY, c.hasCur = x, y, true
+	c.movN++
+	switch {
+	case c.movN <= 1:
+		// Transient first sample (pre-layout): position recorded above, ignored for movement.
+	case !c.movSeen:
+		c.movSeen = true
+		c.movAnchorX, c.movAnchorY = x, y
+	case x != c.movAnchorX || y != c.movAnchorY:
+		c.moved = true
+	}
 	c.curMu.Unlock()
 }
 
@@ -137,11 +174,24 @@ func (c *Client) cursor() (int16, int16, bool) {
 	return c.curX, c.curY, c.hasCur
 }
 
-// clearCursor drops the stored cursor so a stale position from a finished round
-// isn't sampled into the next window (called from Hub.Pending at the arming stage).
+// movement reports whether any cursor arrived this window (movN) and whether it moved
+// (a sample after the anchor differed from it). Read at round end by CursorActivity for
+// the afk check.
+func (c *Client) movement() (seen, moved bool) {
+	c.curMu.Lock()
+	defer c.curMu.Unlock()
+	return c.movN >= 1, c.moved
+}
+
+// clearCursor drops the stored cursor AND resets the per-window movement state so a
+// stale position from a finished round isn't carried into the next window (called from
+// Hub.Pending at the arming stage).
 func (c *Client) clearCursor() {
 	c.curMu.Lock()
 	c.hasCur = false
+	c.movN = 0
+	c.movSeen = false
+	c.moved = false
 	c.curMu.Unlock()
 }
 
@@ -315,6 +365,32 @@ func (h *Hub) sampleCursors() []cursorSample {
 	return out
 }
 
+// AllCursorActivity snapshots cursor movement during the window just played for
+// EVERY connected non-legacy player, for the engine's per-round afk pass. The afk
+// check is decoupled from scoring, so it needs the whole roster (a player who sits
+// still and never scores is exactly the one to catch), not just scorers. Legacy
+// clients send no cursors and are omitted (the afk pass only judges who it can see,
+// so they are never flagged). Called from the engine Run goroutine at round end,
+// before the next arming stage clears the per-window boxes.
+func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[string]game.CursorActivity, len(h.clients))
+	for c := range h.clients {
+		if c.Legacy {
+			continue
+		}
+		seen, moved := c.movement()
+		out[c.SteamID] = game.CursorActivity{
+			Tracked:   true,
+			SawCursor: seen,
+			Moved:     moved,
+			Eligible:  c.armSeen == h.armGen,
+		}
+	}
+	return out
+}
+
 // Armed fans out the armed frame. The unpenalised majority share one precomputed
 // frame; penalised connections get theirs after a delay (the spam deterrent)
 // with their own penalty_ms echoed in, so they can see they're being throttled.
@@ -326,7 +402,16 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 	v4base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Nonce: strconv.FormatUint(a.Nonce, 16), Players: a.Players, Clicks: a.Clicks}
 	cleanV5 := mustJSON(v5base)
 	cleanV4 := mustJSON(v4base)
-	for _, c := range h.clientList() {
+	// New armed window: stamp every currently-connected client as present for it, so the
+	// afk check can skip players who weren't here for the whole window (mid-window joins,
+	// or a fresh connection that hasn't had a window yet) instead of flagging an empty
+	// cursor box they never had a chance to fill.
+	h.armGen++
+	clients := h.clientList()
+	for _, c := range clients {
+		c.armSeen = h.armGen
+	}
+	for _, c := range clients {
 		if a.Blocked[c.SteamID] {
 			continue // benched by anticheat: withhold the nonce/buttons until they pass their test
 		}

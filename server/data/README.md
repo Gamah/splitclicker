@@ -7,6 +7,15 @@ directory is bind-mounted into the container at `/data` (see
 
 ## Edit config.json
 
+`make up` reviews this file interactively before building (a pure-shell step, no Go
+needed on the host): it seeds `config.json` from the example if missing, backfills any
+individual tunable absent from the file with the example default, then walks every
+numeric game tunable showing the current setting in `[brackets]` (press Enter to keep
+exactly that value, or type a new number). The live meta values (`skin_image`, `winner_lock_time`,
+`dev_note`, `live_version`) are re-read per request, so edit those directly here; no
+rebuild needed. `make up SKIP=1` skips the review and keeps the current/default
+values. To edit by hand instead:
+
 1. Copy the example once: `cp config.json.example config.json`
 2. Edit `config.json`:
    ```json
@@ -30,7 +39,7 @@ directory is bind-mounted into the container at `/data` (see
      "tick_sample_k": 8,
      "fast_click_ms": 130,
      "max_click_factor": 2.5,
-     "solo_lead_margin": 15,
+     "solo_lead_margin": 4,
      "dominant_runner_up_min": 5,
      "check_cooldown_threshold": 20,
      "check_cooldown_mins": 60,
@@ -70,11 +79,21 @@ directory is bind-mounted into the container at `/data` (see
   this round) of the scoring clicks flags them (default 2.5; fractional allowed, the
   limit floors to a whole click count); needs ≥2 scorers, so a round only one player
   clicked is never flagged.
-- `solo_lead_margin` — anticheat: solo_round only flags a lone leader once their
-  games-won lead over second place is at least this (default 15).
-- `dominant_runner_up_min` — anticheat: dominant_winner only fires when the
+- `solo_lead_margin` (anticheat): solo_round (a session-level check) only flags the
+  bounty leader for an uncontested session once the lead it produces (their games-won
+  gap over second place, or their own total when alone on the board, *after* winning
+  that session) strictly exceeds this. With the default 4 it first fires at a lead of
+  5 (e.g. the 5th win alone, or beating a 49-win runner-up to reach 54).
+- `dominant_runner_up_min` (anticheat): dominant_winner only fires when the
   runner-up scored at least this many clicks, so out-clicking an idle player is
   never flagged (default 5).
+- `afk_check` (anticheat): enable gate for the v5 AFK pass (`1` on, `0` off). Every
+  connected player present for the whole armed window is checked every round (not just
+  scorers); a player who sends no cursor frames (parked off the board or tabbed out) OR
+  whose cursor never moves is AFK. Movement is binary (any change of position counts), so
+  there is no threshold to tune. AFK + scored is the bot "gotcha", AFK + no score is the
+  idle nudge; both ride the sanction ladder. The client only reports the cursor while it
+  is on the board.
 - `check_cooldown_threshold` / `check_cooldown_mins` / `check_ignore_after` — the
   per-bounty sanction ladder: this many flags in a bounty (default 20) start a
   cooldown of this many minutes (default 60); this many more flags after that

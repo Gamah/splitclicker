@@ -63,6 +63,7 @@ func gameConfig() game.Config {
 	setFloat(f.MaxClickFactor, &c.MaxClickFactor)
 	setInt(f.SoloLeadMargin, &c.SoloLeadMargin)
 	setInt(f.DominantRunnerUpMin, &c.DominantRunnerUpMin)
+	setInt(f.AfkCheck, &c.AfkCheck)
 	setInt(f.CheckCooldownThreshold, &c.CheckCooldownThreshold)
 	setInt(f.CheckCooldownMins, &c.CheckCooldownMins)
 	setInt(f.CheckIgnoreAfter, &c.CheckIgnoreAfter)
@@ -209,23 +210,26 @@ func main() {
 	engine.SetDevNoteFn(func() string { return runtimecfg.Load().DevNote })
 	// The anticheat checks + sanction ladder need the active bounty snapshot: its id
 	// (scopes the ladder), winner-lock time (the "ignored" countdown), and the
-	// games-won leader + margin (solo_round). All read from the in-memory cache, so
-	// it's free to call per round.
+	// games-won leader + margin (the session-level solo_round check). All read from
+	// the in-memory cache, so it's free to call once per game.
 	engine.SetBountyInfoFn(func() game.BountyInfo {
 		id, resolveMs, ok := cache.ActiveBountyMeta()
 		bi := game.BountyInfo{ID: id, ResolveAtMs: resolveMs, Active: ok}
 		if sw := cache.SessionsWon(2); len(sw) > 0 {
 			bi.LeaderID = sw[0].SteamID
+			// Lead = gap over the runner-up; when alone on the board no runner-up
+			// exists, so the lead IS the leader's own total. The session-level
+			// solo_round check keys off this margin, not how many players are connected.
 			bi.LeadMargin = sw[0].Points
-			// Alone on the board: no runner-up exists, so the lead IS the leader's
-			// total. solo_round keys off this, not how many players are connected.
-			bi.LeaderAlone = len(sw) == 1
 			if len(sw) > 1 {
 				bi.LeadMargin = sw[0].Points - sw[1].Points
 			}
 		}
 		return bi
 	})
+	// The afk pass reads every connected player's cursor activity for the round just
+	// played from the hub's per-window cursor tracking (whole roster, not just scorers).
+	engine.SetAllCursorActivityFn(hub.AllCursorActivity)
 	engine.SetGameEndHook(func(ctx context.Context) {
 		if err := cache.Refresh(ctx); err != nil {
 			log.Error("refresh leaderboard cache", zap.Error(err))

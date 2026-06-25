@@ -46,7 +46,7 @@ func hasCheck(checks []CheckResult, sid, typ string) bool {
 }
 
 // crowd is a multi-player round context with a generous fair-share limit, so the
-// fast_clicks / solo_round / dominant tests aren't perturbed by too_many_clicks.
+// fast_clicks / dominant tests aren't perturbed by too_many_clicks.
 func crowd() checkCtx { return checkCtx{n: 500} }
 
 // fast_clicks fires only when two consecutive scoring clicks are STRICTLY under
@@ -120,31 +120,43 @@ func TestRunChecksTooManyFractional(t *testing.T) {
 	}
 }
 
-// solo_round fires only when the bounty leader is the LONE entry on the sessions-won
-// board (leaderAlone) AND their games-won lead is at least SoloLeadMargin. Connection
-// and scorer counts are irrelevant — the board, not the crowd, drives this.
-func TestRunChecksSoloRound(t *testing.T) {
+// solo_round is a session-level verdict: it fires only when the WHOLE session was
+// uncontested (the bounty leader was the only player to score in any round) AND
+// the leader's lead AFTER winning it (the start-of-session snapshot +1, since the
+// sole scorer wins) strictly exceeds SoloLeadMargin. A single scoring click from
+// anyone else makes the session contested and the lead stands.
+func TestCheckSoloSession(t *testing.T) {
 	e := New(Config{SoloLeadMargin: 15}, nil, nil, nil)
-	lone := func(leader string, margin int) checkCtx {
-		return checkCtx{n: 50, leaderID: leader, leadMargin: margin, leaderAlone: true}
+	scorers := func(ids ...string) map[string]bool {
+		m := map[string]bool{}
+		for _, id := range ids {
+			m[id] = true
+		}
+		return m
 	}
+	fired := func(ch *CheckResult) bool { return ch != nil && ch.Type == "solo_round" }
 
-	// Alone on the board, the leader, lead ≥ 15 → flag.
-	if got := e.runChecks(scoredAt("a", 0, 500, 1000), lone("a", 15)); !hasCheck(got, "a", "solo_round") {
-		t.Fatalf("lone leader with a 15 lead should flag solo_round, got %+v", got)
+	// Entering at 15, the leader wins this uncontested session (→16) → first fire.
+	// This is the "66th win vs a 50-win runner-up" boundary (entering lead 15).
+	if ch := e.checkSoloSession(scorers("a"), "a", 15); !fired(ch) {
+		t.Fatalf("sole scorer reaching a 16 lead should flag solo_round, got %+v", ch)
 	}
-	// Lead below the margin → no flag (newcomer building the board's first wins).
-	if got := e.runChecks(scoredAt("a", 0, 500), lone("a", 14)); hasCheck(got, "a", "solo_round") {
-		t.Fatalf("lone leader under the margin should NOT flag solo_round, got %+v", got)
+	// Entering at 14 → wins to 15, == margin, not strictly greater → no fire.
+	if ch := e.checkSoloSession(scorers("a"), "a", 14); fired(ch) {
+		t.Fatalf("a resulting lead == margin should NOT fire (strictly greater), got %+v", ch)
 	}
-	// Someone else leads → no flag.
-	if got := e.runChecks(scoredAt("a", 0, 500), lone("b", 99)); hasCheck(got, "a", "solo_round") {
-		t.Fatalf("lone non-leader should NOT flag solo_round, got %+v", got)
+	// Contested: anyone else scored even once → not solo, however large the lead.
+	if ch := e.checkSoloSession(scorers("a", "e"), "a", 99); fired(ch) {
+		t.Fatalf("a contested session should NOT flag solo_round, got %+v", ch)
 	}
-	// More than one entry on the board (leaderAlone=false) → not a solo round,
-	// however large the lead and however few players are connected/scoring.
-	if got := e.runChecks(scoredAt("a", 0, 500), checkCtx{n: 50, leaderID: "a", leadMargin: 99}); hasCheck(got, "a", "solo_round") {
-		t.Fatalf("a contested board should NOT flag solo_round, got %+v", got)
+	// The leader sat the session out (someone else played solo) → not flagged on the
+	// leader (they aren't a scorer); the actual scorer isn't the leader.
+	if ch := e.checkSoloSession(scorers("b"), "a", 99); fired(ch) {
+		t.Fatalf("leader who didn't score should NOT flag solo_round, got %+v", ch)
+	}
+	// Nobody scored at all → no padding, no flag.
+	if ch := e.checkSoloSession(scorers(), "a", 99); fired(ch) {
+		t.Fatalf("an empty session should NOT flag solo_round, got %+v", ch)
 	}
 }
 
@@ -169,6 +181,125 @@ func TestRunChecksDominantWinner(t *testing.T) {
 	clicks = append(scoredAt("a", 0, 100, 200, 300, 400, 500), scoredAt("b", 50, 150, 250)...)
 	if got := e.runChecks(clicks, ctx); hasCheck(got, "a", "dominant_winner") {
 		t.Fatalf("6 vs 3 (==2×) should NOT flag dominant_winner, got %+v", got)
+	}
+}
+
+// checkAfk is the whole-roster cursor pass, decoupled from scoring: it judges every
+// connected player every round (not just scorers). An AFK verdict (no cursor messages,
+// or the cursor never moved) splits by whether the player scored: afk_score (the
+// "gotcha") if they did, afk_idle (the soft nudge) if they didn't. A player who moved is
+// never flagged; legacy/disconnected players aren't in the hub's map, so they're never
+// judged.
+func TestCheckAfk(t *testing.T) {
+	// All eligible (present for the whole window); the ineligible case is covered below.
+	acts := map[string]CursorActivity{
+		"frozen": {Tracked: true, SawCursor: true, Moved: false, Eligible: true}, // sent cursors, never moved
+		"tabbed": {Tracked: true, SawCursor: false, Eligible: true},              // no cursor messages at all
+		"active": {Tracked: true, SawCursor: true, Moved: true, Eligible: true},  // moved
+	}
+	e := New(Config{AfkCheck: 1}, nil, nil, nil)
+	e.SetAllCursorActivityFn(func() map[string]CursorActivity { return acts })
+
+	none := map[string]bool{}
+
+	// AFK + scored = the gotcha (afk_score), via either half of the predicate.
+	scored := e.checkAfk(1, map[string]bool{"frozen": true, "tabbed": true, "active": true}, none, map[string]bool{})
+	if !hasCheck(scored, "frozen", "afk_score") {
+		t.Fatalf("still cursor + scored should flag afk_score, got %+v", scored)
+	}
+	if !hasCheck(scored, "tabbed", "afk_score") {
+		t.Fatalf("no cursor messages + scored should flag afk_score, got %+v", scored)
+	}
+	// Moved → not AFK → never flagged, scoring or not.
+	if hasCheck(scored, "active", "afk_score") || hasCheck(scored, "active", "afk_idle") {
+		t.Fatalf("a player who moved should not flag, got %+v", scored)
+	}
+
+	// AFK + did NOT score = the idle nudge (afk_idle), evaluated even with no scorers.
+	idle := e.checkAfk(1, none, none, map[string]bool{})
+	if !hasCheck(idle, "frozen", "afk_idle") {
+		t.Fatalf("still cursor + no score should flag afk_idle, got %+v", idle)
+	}
+	if !hasCheck(idle, "tabbed", "afk_idle") {
+		t.Fatalf("no cursor messages + no score should flag afk_idle, got %+v", idle)
+	}
+	// A non-scorer is the idle case, never the gotcha (no double flag across the split).
+	if hasCheck(idle, "frozen", "afk_score") {
+		t.Fatalf("a non-scorer must not flag afk_score, got %+v", idle)
+	}
+	// Moving but missing buttons (no score) is fine; movement clears you.
+	if hasCheck(idle, "active", "afk_idle") {
+		t.Fatalf("a moving non-scorer should not flag, got %+v", idle)
+	}
+
+	// Already-blocked (benched/cooled/ignored) players are logged but never flagged,
+	// so an idle benched player doesn't pile up fresh idle flags.
+	blocked := e.checkAfk(1, none, map[string]bool{"frozen": true, "tabbed": true}, map[string]bool{})
+	if hasCheck(blocked, "frozen", "afk_idle") || hasCheck(blocked, "tabbed", "afk_idle") {
+		t.Fatalf("blocked players must not be flagged, got %+v", blocked)
+	}
+
+	// Ineligible (not present for the whole window: mid-window join / no window yet) is
+	// NOT idle-nudged (it never had a fair chance) but the scoring gotcha still fires
+	// (scoring proves there was a live window).
+	e.SetAllCursorActivityFn(func() map[string]CursorActivity {
+		return map[string]CursorActivity{
+			"newidle":  {Tracked: true, SawCursor: false, Eligible: false},
+			"newscore": {Tracked: true, SawCursor: false, Eligible: false},
+		}
+	})
+	inel := e.checkAfk(1, map[string]bool{"newscore": true}, none, map[string]bool{})
+	if hasCheck(inel, "newidle", "afk_idle") {
+		t.Fatalf("an ineligible non-scorer must not be idle-flagged, got %+v", inel)
+	}
+	if !hasCheck(inel, "newscore", "afk_score") {
+		t.Fatalf("an ineligible scorer must still hit the gotcha, got %+v", inel)
+	}
+	e.SetAllCursorActivityFn(func() map[string]CursorActivity { return acts })
+
+	// Once per game: a shared afkFired set means a player flagged in one round is NOT
+	// re-flagged in a later round of the same game (the answer-a-test-mid-round loop
+	// breaker). A fresh set (new game) flags them again.
+	game := map[string]bool{}
+	first := e.checkAfk(1, none, none, game)
+	if !hasCheck(first, "frozen", "afk_idle") {
+		t.Fatalf("first AFK of the game should fire, got %+v", first)
+	}
+	second := e.checkAfk(2, none, none, game)
+	if hasCheck(second, "frozen", "afk_idle") {
+		t.Fatalf("a second AFK in the same game must not re-fire, got %+v", second)
+	}
+	fresh := e.checkAfk(1, none, none, map[string]bool{})
+	if !hasCheck(fresh, "frozen", "afk_idle") {
+		t.Fatalf("a new game (fresh afkFired) should flag again, got %+v", fresh)
+	}
+
+	// Disabled when AfkCheck == 0, even with a provider set.
+	off := New(Config{AfkCheck: 0}, nil, nil, nil)
+	off.SetAllCursorActivityFn(func() map[string]CursorActivity {
+		return map[string]CursorActivity{"tabbed": {Tracked: true, SawCursor: false, Eligible: true}}
+	})
+	if got := off.checkAfk(1, map[string]bool{"tabbed": true}, none, map[string]bool{}); len(got) != 0 {
+		t.Fatalf("AfkCheck=0 should disable the afk pass, got %+v", got)
+	}
+}
+
+// afkByCursor unit-checks the AFK predicate directly: no cursor messages, OR a cursor
+// that never moved, is AFK; a cursor that moved is not.
+func TestAfkByCursor(t *testing.T) {
+	cases := []struct {
+		name string
+		act  CursorActivity
+		want bool
+	}{
+		{"no messages", CursorActivity{Tracked: true, SawCursor: false}, true},
+		{"still", CursorActivity{Tracked: true, SawCursor: true, Moved: false}, true},
+		{"moved", CursorActivity{Tracked: true, SawCursor: true, Moved: true}, false},
+	}
+	for _, c := range cases {
+		if got := afkByCursor(c.act); got != c.want {
+			t.Fatalf("%s: afkByCursor = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
