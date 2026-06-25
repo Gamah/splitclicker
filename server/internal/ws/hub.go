@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gamah/splitclicker/internal/game"
@@ -44,6 +45,15 @@ const (
 	// split is therefore dead — TestCapable/SanctionCapable now collapse to
 	// !Legacy. When the floor next moves to v5, this gate collapses the same way.
 	minTickVersion = 5
+
+	// minParkVersion is the oldest client API version that understands the park
+	// protocol — the server→client `park` frame (auto-park off an afk_idle verdict)
+	// and the client→server `park {on}` toggle (the Pause control). Below it, a client
+	// can't be parked (it would silently stop receiving frames with no way to rejoin),
+	// so an afk_idle on an older build keeps the plain sanction ladder with no parking.
+	// New capability ⇒ a new version: this is the only v6 wire, with the live floor
+	// still v5 (so v6 is testable and v5 stays the supported N-1).
+	minParkVersion = 6
 
 	// outdatedNote replaces the dev note for outdated (below-live) clients, telling
 	// them to update — shown alongside the troll leaderboards.
@@ -89,6 +99,9 @@ func (h *Hub) SetEngine(e *game.Engine) { h.engine = e }
 type outMsg struct {
 	data   []byte
 	binary bool
+	// force bypasses the parked withhold gate (see enqueue): used only by the park
+	// notification itself, which must reach a connection at the instant it's parked.
+	force bool
 }
 
 // Client is one connected player.
@@ -115,6 +128,16 @@ type Client struct {
 
 	smu        sync.Mutex // guards sendClosed + the send channel
 	sendClosed bool
+
+	// parked is set when this connection has stepped away: either auto-parked by the
+	// engine off an afk_idle verdict (Hub.Park) or by the player hitting Pause (a
+	// client→server park{on:true}). While parked the hub withholds EVERY frame from it
+	// except the forced park notification, and the connection counts toward neither the
+	// crowd (PlayerCount) nor the round's N (ActivePlayerCount), nor is it judged by the
+	// afk pass (AllCursorActivity omits it) — it's cleanly "not here" until it unparks
+	// (park{on:false}). Atomic: written from Hub.Park (engine goroutine) and readPump
+	// (this conn), read from the send path + the count/roster/cursor methods.
+	parked atomic.Bool
 
 	// Cursor is this connection's last reported pointer position (normalized int16,
 	// 0 = centre), sampled into tick frames so others can render the roaming cursor.
@@ -260,7 +283,9 @@ func (h *Hub) PlayerCount() int {
 	h.mu.RLock()
 	n := 0
 	for c := range h.clients {
-		if !c.Legacy { // outdated clients don't count toward the live crowd
+		// Outdated clients don't count toward the live crowd; parked (away) players
+		// don't either, so the engine pauses if everyone present has stepped away.
+		if !c.Legacy && !c.parked.Load() {
 			n++
 		}
 	}
@@ -275,7 +300,9 @@ func (h *Hub) ActivePlayerCount(benched map[string]bool) int {
 	h.mu.RLock()
 	n := 0
 	for c := range h.clients {
-		if !c.Legacy && !benched[c.SteamID] {
+		// Parked players have stepped away — exclude them from N alongside the benched,
+		// so a round's scoring slots are sized only to players who can actually race.
+		if !c.Legacy && !c.parked.Load() && !benched[c.SteamID] {
 			n++
 		}
 	}
@@ -314,7 +341,9 @@ func (h *Hub) roster() []rosterEntry {
 	h.mu.RLock()
 	out := make([]rosterEntry, 0, len(h.clients))
 	for c := range h.clients {
-		if !c.Legacy {
+		// Parked players aren't in the round, so they aren't opponents — leave them out
+		// of the name-resolution roster (no pips/cursors will reference them anyway).
+		if !c.Legacy && !c.parked.Load() {
 			out = append(out, rosterEntry{Tag: c.Tag, Username: c.Username})
 		}
 	}
@@ -352,7 +381,7 @@ func (h *Hub) sampleCursors() []cursorSample {
 	}
 	out := make([]cursorSample, 0, k)
 	for _, c := range h.clientList() {
-		if !tickCapable(c) {
+		if !tickCapable(c) || c.parked.Load() {
 			continue
 		}
 		if x, y, ok := c.cursor(); ok {
@@ -377,7 +406,10 @@ func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
 	defer h.mu.RUnlock()
 	out := make(map[string]game.CursorActivity, len(h.clients))
 	for c := range h.clients {
-		if c.Legacy {
+		// Parked players have stepped away and receive no armed frame, so they can't move
+		// a cursor — omit them so the afk pass never (re)flags an away player. Their park
+		// already removed them; re-flagging would be both pointless and unfair.
+		if c.Legacy || c.parked.Load() {
 			continue
 		}
 		seen, moved := c.movement()
@@ -511,6 +543,35 @@ func tickCapable(c *Client) bool {
 	return c != nil && !c.Legacy && c.Version >= minTickVersion
 }
 
+// parkCapable reports whether c understands the park protocol (v6+): the server→client
+// `park` frame and the client→server `park {on}` toggle. Only such a client may be
+// parked — parking one that can't render/clear it would silently strand it (frames
+// withheld, no Pause control to rejoin).
+func parkCapable(c *Client) bool {
+	return c != nil && !c.Legacy && c.Version >= minParkVersion
+}
+
+// Park marks steamID's connection as away (auto-parked off an afk_idle verdict): the
+// hub withholds every subsequent frame from it until the client unparks, and it drops
+// out of the crowd count, the round's N, and the afk pass. Only park-capable (v6+)
+// clients are parked — on an older build this is a no-op, so afk_idle there keeps the
+// plain sanction ladder. Implements game.Broadcaster; called from the engine Run
+// goroutine. The client is told via a forced park frame (it bypasses the withhold gate
+// set just before), then engages its Pause control and waits for the next arm to
+// rejoin. A second Park on an already-parked connection is a no-op.
+func (h *Hub) Park(steamID string) {
+	h.mu.RLock()
+	c := h.bySteam[steamID]
+	h.mu.RUnlock()
+	if !parkCapable(c) {
+		return
+	}
+	if c.parked.Swap(true) {
+		return // already parked
+	}
+	c.enqueue(outMsg{data: mustJSON(parkWire{T: "park", On: true}), force: true})
+}
+
 // FireAchievement pushes a manual achievement unlock to every open connection
 // from the given IP (a player may have several). It backs the out-of-band troll
 // achievements — poking the backend into a 404, fumbling the admin password —
@@ -618,6 +679,13 @@ func (c *Client) enqueue(m outMsg) {
 	if c.sendClosed {
 		return
 	}
+	// Parked: the player has stepped away, so withhold every frame until they unpark —
+	// EXCEPT the forced park notification, which is what tells them they're parked. This
+	// single choke point covers every broadcast path (including the delayed/penalised
+	// armed writes that fire from AfterFunc timers).
+	if !m.force && c.parked.Load() {
+		return
+	}
 	select {
 	case c.send <- m:
 	default:
@@ -649,6 +717,9 @@ type inbound struct {
 	// distinct from a real 0,0 — absent ⇒ the click scores but carries no position.
 	X *int `json:"x"`
 	Y *int `json:"y"`
+	// On is the park toggle (v6 `park` frame): true = the player hit Pause / stepped
+	// away, false = they're back. Drives the parked withhold gate.
+	On bool `json:"on"`
 }
 
 func (c *Client) readPump() {
@@ -713,6 +784,19 @@ func (c *Client) readPump() {
 			}
 			c.lastCur = now
 			c.setCursor(clampI16(*in.X), clampI16(*in.Y))
+		case "park":
+			// The Pause control (v6+): on=true steps away (withhold all frames, drop out
+			// of the crowd/N/afk pass), on=false rejoins. Ignored from older builds, which
+			// have no park protocol. Setting parked here also covers a player who hits
+			// Pause BEFORE the server ever auto-parks them.
+			if !parkCapable(c) {
+				continue
+			}
+			if in.On {
+				c.parked.Store(true)
+			} else if c.parked.Swap(false) && c.hub.engine != nil {
+				c.hub.engine.Wake() // back from away: re-check the player count / restart a paused engine
+			}
 		case "test_answer":
 			if c.Legacy {
 				continue // outdated client: never under test

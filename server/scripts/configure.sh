@@ -5,9 +5,11 @@
 #   scripts/configure.sh          review the numeric game tunables (Enter keeps each)
 #   scripts/configure.sh --skip   keep current/default values, no prompts
 #
-# Only the numeric startup tunables are reviewed; a rebuild/restart applies those.
-# The live meta values (skin_image, winner_lock_time, dev_note, live_version) are
-# re-read per request, so edit those directly in config.json; no rebuild needed.
+# The numeric startup tunables are reviewed (a rebuild/restart applies those), plus
+# live_version — the live client API version — which is numeric and so fits the same
+# review, but is re-read per request and applies LIVE (no rebuild). The remaining meta
+# values (skin_image, winner_lock_time, dev_note) are strings, so edit those directly
+# in config.json; they're also re-read per request, no rebuild needed.
 #
 # Any tunable missing from config.json (e.g. a key added after the file was created)
 # is first seeded from the example default, so every key shows a real [current] value
@@ -44,6 +46,13 @@ tick_hz tick_sample_k penalty_base_ms penalty_step_ms fast_click_ms \
 max_click_factor solo_lead_margin dominant_runner_up_min afk_check \
 check_cooldown_threshold check_cooldown_mins check_ignore_after"
 
+# live_version is reviewed alongside the tunables (it's numeric), but unlike them it's
+# re-read per request — a change applies LIVE with no rebuild. Reviewed FIRST and below
+# uses the same seed/getval/sed machinery. Kept separate from KEYS so the "startup
+# tunable" framing of that list stays accurate. REVIEW is the full review/seed order.
+LIVE_KEYS="live_version"
+REVIEW="$LIVE_KEYS $KEYS"
+
 # getval KEY FILE -> KEY's numeric value in FILE (empty if the key is absent).
 getval() {
 	sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\([0-9][0-9.]*\).*/\1/p" "$2" | head -n1
@@ -52,7 +61,7 @@ getval() {
 # Seed any tunable missing from config.json with the example's default, so EVERY key
 # has an explicit value to review (no blank brackets) and a typed change can never be
 # lost to an absent key. Missing keys are inserted right after the opening brace.
-for key in $KEYS; do
+for key in $REVIEW; do
 	[ -n "$(getval "$key" "$CONF")" ] && continue
 	def=$(getval "$key" "$EXAMPLE")
 	if [ -z "$def" ]; then
@@ -70,7 +79,8 @@ for key in $KEYS; do
 done
 
 echo "Reviewing $CONF. The value in [brackets] is current; press Enter to keep it, or type a new number to change it."
-for key in $KEYS; do
+echo "(live_version applies LIVE on save — re-read per request; the rest need 'docker compose restart app'.)"
+for key in $REVIEW; do
 	cur=$(getval "$key" "$CONF")
 	printf "  %s [%s]: " "$key" "$cur"
 	if ! read new; then new=""; fi

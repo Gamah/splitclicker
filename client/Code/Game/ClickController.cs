@@ -32,14 +32,14 @@ public sealed class ClickController : Component
 	/// http://localhost:8080 for a local play-test. Applied to ApiClient at startup.</summary>
 	[Property] public string BackendUrl { get; set; } = "";
 
-	/// <summary>API version to talk to, editable in the scene inspector. "v5" is the
-	/// real game (the live-window tick: descending counter + opponent pips, on top of
-	/// the v4 anticheat sanction ladder); "v4" is the previous live build (no tick);
-	/// "v3" and below exercise the legacy/troll path the server gives clients below
-	/// its live version. LEAVE BLANK to use raw, unversioned paths (bare /ws) — for
-	/// the live old master backend. Applied to <see cref="ApiClient.ApiVersion"/> at
-	/// startup.</summary>
-	[Property] public string ApiVersion { get; set; } = "v5";
+	/// <summary>API version to talk to, editable in the scene inspector. "v6" is this
+	/// build (adds the park / Pause protocol on top of v5's live-window tick); "v5" is
+	/// the previous live build (the tick: descending counter + opponent pips); "v4" the
+	/// one before (no tick); "v3" and below exercise the legacy/troll path the server
+	/// gives clients below its live version. LEAVE BLANK to use raw, unversioned paths
+	/// (bare /ws) — for the live old master backend. Applied to
+	/// <see cref="ApiClient.ApiVersion"/> at startup.</summary>
+	[Property] public string ApiVersion { get; set; } = "v6";
 
 	public GamePhase Phase { get; private set; } = GamePhase.Connecting;
 	public int Round { get; private set; }
@@ -136,10 +136,18 @@ public sealed class ClickController : Component
 	public long SanctionUntilMs { get; private set; }
 	public string SanctionMessage { get; private set; } = "";
 
+	/// <summary>True while the player has stepped away ("parked"): set when the player
+	/// hits Pause OR when the server auto-parks them off an afk_idle verdict (the `park`
+	/// frame). While parked the client sends no clicks/cursors and the server withholds
+	/// every frame; the Hud shows the Pause control engaged + a WAIT state. Cleared when
+	/// the player hits Pause again (rejoin) or, defensively, when a fresh round arrives
+	/// (the server resumed sending = we're back in play). Park is a v6 capability.</summary>
+	public bool Parked { get; private set; }
+
 	/// <summary>True only while a valid click can score — drives the button's enabled
 	/// state and scoring eligibility from one source. Armed with either a live board
-	/// (v5) or a persistent legacy nonce (below-v5).</summary>
-	public bool CanClick => Phase == GamePhase.Armed && ( HasBoard || !string.IsNullOrEmpty( _nonce ) );
+	/// (v5) or a persistent legacy nonce (below-v5), and never while parked (away).</summary>
+	public bool CanClick => !Parked && Phase == GamePhase.Armed && ( HasBoard || !string.IsNullOrEmpty( _nonce ) );
 
 	static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
@@ -482,6 +490,9 @@ public sealed class ClickController : Component
 	// a scoring click or when there's no socket to penalise it.
 	public bool SendClick( float nx = 0f, float ny = 0f, bool hasPos = false )
 	{
+		// Parked (stepped away): swallow the input entirely — no score, no idle penalty,
+		// no sound. The player rejoins via Pause, not by clicking through the overlay.
+		if ( Parked ) return false;
 		// Scoring here is the below-v5 single-button path only: armed, no v5 board, and a
 		// live legacy nonce. In v5 the board buttons score via SendButtonClick, so a bare
 		// SendClick (empty space) is a miss — a penalised idle click.
@@ -531,6 +542,7 @@ public sealed class ClickController : Component
 	// phase falls through to the penalised idle path.
 	public bool SendButtonClick( LiveButton btn )
 	{
+		if ( Parked ) return false; // away: ignore board clicks (see SendClick)
 		if ( btn == null || Phase != GamePhase.Armed )
 			return SendClick( btn?.X ?? 0f, btn?.Y ?? 0f, btn != null );
 
@@ -549,7 +561,7 @@ public sealed class ClickController : Component
 	// cursors are an armed-window thing only.
 	public void SendCursor( float nx, float ny )
 	{
-		if ( Phase != GamePhase.Armed || _ws == null || !_ws.Connected ) return;
+		if ( Parked || Phase != GamePhase.Armed || _ws == null || !_ws.Connected ) return;
 		if ( RealTime.Now - _lastCursorSent < CursorSendInterval ) return;
 		_lastCursorSent = RealTime.Now;
 		int xi = (int)Math.Clamp( nx * 32767f, -32767f, 32767f );
@@ -575,6 +587,28 @@ public sealed class ClickController : Component
 		var id = JsonSerializer.Serialize( TestId );
 		var ans = JsonSerializer.Serialize( answer ?? "" );
 		_ = _ws.Send( $"{{\"t\":\"test_answer\",\"id\":{id},\"answer\":{ans}}}" );
+	}
+
+	// Toggle the away/parked state from the Pause control. Stepping away parks us
+	// immediately (and tells the server to withhold frames + drop us from the round's N
+	// and the afk pass); coming back unparks and drops to a WAIT/stand-by state until the
+	// next arm rejoins us. No-op without a live socket. Park is a v6 capability — an older
+	// backend just ignores the frame, but we still suppress our own clicks while parked.
+	public void TogglePark()
+	{
+		if ( _ws == null || !_ws.Connected ) return;
+		if ( Parked )
+		{
+			Parked = false;
+			// We rejoin at the next arm; until the server sends one, sit on stand-by.
+			Phase = GamePhase.Waiting;
+			_ = _ws.Send( "{\"t\":\"park\",\"on\":false}" );
+		}
+		else
+		{
+			Parked = true;
+			_ = _ws.Send( "{\"t\":\"park\",\"on\":true}" );
+		}
 	}
 
 	void ClearTest()
@@ -682,6 +716,9 @@ public sealed class ClickController : Component
 					_tickMs = h.Game.TickMs;
 					DevNote = h.Game.DevNote ?? "";
 					Phase = PhaseFrom( h.Game.Phase );
+					// A (re)connect is a fresh server-side connection (never parked) — clear
+					// any parked state carried from before a reconnect.
+					Parked = false;
 					// A (re)connect: refresh the bounty state so a client that was offline
 					// across a rollover picks up the new skin + previous winner on rejoin.
 					BountyRefreshSeq++;
@@ -716,6 +753,9 @@ public sealed class ClickController : Component
 					// repopulated by this round's round_result. Fixes the session board
 					// "lagging a game behind" after game_over.
 					if ( p.Round == 1 ) Standings = new();
+					// A round_pending only reaches us when the server is sending us frames
+					// again, i.e. we're not parked — clear any stale parked state.
+					Parked = false;
 					// NB: the throttle is NOT reset here — bad clicks accrue across phases
 					// (result/game-over/intermission included) and are forgiven only at the
 					// next arm, mirroring the server. The armed frame resets _idleClicks.
@@ -749,6 +789,9 @@ public sealed class ClickController : Component
 					Phase = GamePhase.Armed;
 					// Receiving an arm means we're no longer benched — clear any stale test.
 					ClearTest();
+					// The server withholds frames from a parked client, so an arm reaching us
+					// proves we're back in play — clear any stale parked state defensively.
+					Parked = false;
 					SoundPlayer.PlayArmed();
 					break;
 
@@ -819,6 +862,15 @@ public sealed class ClickController : Component
 					// Out-of-band unlock the server pushed for a feat it detected off the
 					// game socket (e.g. fart / hackerman), matched to us by IP.
 					AchievementTracker.OnAchievement( Deser<AchievementMsg>( json ).Ident );
+					break;
+
+				case "park":
+					// The server auto-parked us off an afk_idle verdict (we sat still and
+					// scored nothing — legitimately away). Engage the Pause control; the
+					// server now withholds every frame until we hit Pause to rejoin, so the
+					// Hud shows a parked/WAIT state. The server only ever sends on:true (it
+					// never unparks us — that's the client's call), but honour the field.
+					Parked = Deser<ParkMsg>( json ).On;
 					break;
 
 				case "bounty_update":

@@ -226,6 +226,7 @@ func (b *captureBC) ActivePlayerCount(map[string]bool) int { return 1 }
 func (b *captureBC) SendTest(string, TestFrame)            {}
 func (b *captureBC) TestCapable(string) bool               { return true }
 func (b *captureBC) SanctionCapable(string) bool           { return true }
+func (b *captureBC) Park(string)                           {}
 
 // TestEngineLoopScores runs the real timed loop with tiny delays: one round
 // (which is therefore the final round), N=1, fire a valid click on arm, assert it

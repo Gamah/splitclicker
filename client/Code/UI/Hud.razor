@@ -92,6 +92,16 @@
 	     the open/closed choice is persisted to local storage (PlayerData) so it
 	     survives across sessions. The popup itself is rendered near the end of the
 	     root so it overlays everything. ── *@
+	@* ── PAUSE control: lets a player step away without being flagged AFK. Pinned
+	     bottom-left ABOVE the GAME INFO bar. Green "PAUSE" at rest; red "PAUSED" while
+	     away. Pressing it parks the player (the server withholds frames + drops them
+	     from the round's N); pressing again rejoins on the next button. Also engaged
+	     automatically when the server auto-parks an idle player. Hidden until connected. ── *@
+	@if ( C != null && C.Phase != GamePhase.Connecting && C.Phase != GamePhase.Disconnected )
+	{
+		<div class="pause-fab @(C.Parked ? "paused" : "")" onclick="@TogglePause">@(C.Parked ? "PAUSED" : "PAUSE")</div>
+	}
+
 	<div class="info-fab" onclick="@ToggleHowTo">GAME INFO</div>
 
 	@* ── the music opener is the Skafinity library's own toggle button: it lives on the
@@ -462,6 +472,11 @@
 				<div class="line penalty-note">Clicking while not live is allowed but delays your button becoming live behind other players.</div>
 
 				<div class="divider"></div>
+				<div class="howto-subtitle">STEPPING AWAY</div>
+				<div class="state-row"><span class="tag wait">PAUSE</span><span class="desc">Need to step away? Hit PAUSE (above GAME INFO). You drop out of the round and the leaderboard race and won't be flagged AFK. Hit it again to rejoin on the next button.</span></div>
+				<div class="line penalty-note">Sit still and idle through a round and the server pauses you automatically — just hit PAUSE to come back when you're ready.</div>
+
+				<div class="divider"></div>
 				<div class="howto-subtitle">ANTI-CHEAT</div>
 				<div class="line">Every round, the server inspects the scoring clicks for tell-tale bot behaviour. The first flags just bench you behind a quick math question before the button arms again.</div>
 				<div class="state-row"><span class="tag over">TOO FAST</span><span class="desc">Two of your scoring clicks landed closer together than any human hand can manage.</span></div>
@@ -476,6 +491,22 @@
 				@* Single interpolated string (mixed literal + @() text nodes reorder on
 				   rebuild — see CLAUDE.md). Click copies the invite; toast confirms. *@
 				<div class="discord-line clickable" onclick="@CopyDiscord">@($"Think a flag was wrong, or want a heads-up on upcoming changes? Click here to copy our Discord invite ({DiscordInvite}) and come say hi.")</div>
+			</div>
+		</div>
+	}
+
+	@* ── parked / away gate: shown while the player has stepped away — either they hit
+	     PAUSE or the server auto-parked them off an afk_idle verdict. A dim overlay
+	     captures input so nothing underneath registers; the server withholds every game
+	     frame until they rejoin, so there's nothing to play here. The PAUSE bar (which
+	     stays visible above GAME INFO) is the single place to rejoin. ── *@
+	@if ( C?.Parked == true )
+	{
+		<div class="park-overlay">
+			<div class="park-card">
+				<div class="park-title">PAUSED — AWAY</div>
+				<div class="park-sub">You've stepped away, so you're out of the round and off the leaderboard race — no AFK flags while you're paused.</div>
+				<div class="park-hint">Hit PAUSE again to rejoin. You'll be back in on the next button.</div>
 			</div>
 		</div>
 	}
@@ -582,6 +613,89 @@
 	.info-fab:hover {
 		color: #ffffff;
 		border-color: rgba(6, 214, 160, 0.6);
+	}
+
+	/* PAUSE control: same wide-bar geometry as the GAME INFO / MUSIC bars, pinned one
+	   slot ABOVE the GAME INFO bar. Green "PAUSE" at rest; red "PAUSED" while away. */
+	.pause-fab {
+		position: absolute;
+		left: 14px;
+		bottom: 120px;
+		width: 300px;
+		height: 44px;
+		justify-content: center;
+		align-items: center;
+		font-size: 15px;
+		font-weight: bold;
+		letter-spacing: 1px;
+		color: #04130b;
+		background-color: rgba(6, 214, 160, 0.9);
+		border: 1.5px solid rgba(6, 214, 160, 0.55);
+		border-radius: 8px;
+		cursor: pointer;
+		pointer-events: all;
+		/* Above the parked overlay backdrop (z:190) so it stays clickable to rejoin while
+		   parked; still below the anticheat test gate (z:200). */
+		z-index: 195;
+	}
+
+	.pause-fab:hover { background-color: rgba(6, 214, 160, 1); }
+
+	.pause-fab.paused {
+		color: #ffffff;
+		background-color: rgba(214, 40, 40, 0.9);
+		border-color: rgba(214, 40, 40, 0.65);
+	}
+
+	.pause-fab.paused:hover { background-color: rgba(214, 40, 40, 1); }
+
+	/* ── parked / away overlay: a dim full-screen backdrop (captures input so nothing
+	   underneath registers) with a centred card. Sits above the how-to popup, below the
+	   anticheat test gate (z:200). The PAUSE bar is lifted above this backdrop (z:195) so
+	   it stays clickable — it's the one way to rejoin. ── */
+	.park-overlay {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		align-items: center;
+		justify-content: center;
+		background-color: rgba(0, 0, 0, 0.72);
+		pointer-events: all;
+		z-index: 190;
+	}
+
+	.park-card {
+		flex-direction: column;
+		flex-shrink: 0;
+		width: 520px;
+		padding: 26px 30px;
+		align-items: center;
+		background-color: rgba(3, 13, 7, 0.98);
+		border: 1.5px solid rgba(214, 40, 40, 0.55);
+		border-radius: 12px;
+		gap: 10px;
+		pointer-events: all;
+	}
+
+	.park-title {
+		font-size: 26px;
+		font-weight: bold;
+		letter-spacing: 2px;
+		color: #ff6b6b;
+	}
+
+	.park-sub {
+		font-size: 16px;
+		color: rgba(255, 255, 255, 0.85);
+		text-align: center;
+	}
+
+	.park-hint {
+		font-size: 15px;
+		color: rgba(6, 214, 160, 0.95);
+		text-align: center;
 	}
 
 	/* ── "How to Play" popup: a dim full-screen backdrop (captures input) with a
@@ -1659,6 +1773,14 @@
 		StateHasChanged();
 	}
 
+	// Toggle the away/parked state from the PAUSE bar. Delegates to the controller (which
+	// flips Parked + tells the server) and re-renders so the bar + overlay update at once.
+	void TogglePause()
+	{
+		ClickController.Instance?.TogglePark();
+		StateHasChanged();
+	}
+
 	// ── "copied profile link" toast: shown for ToastDuration after a name click ──
 	const float ToastDuration = 1.2f;
 	string _toast = "";
@@ -2245,8 +2367,9 @@
 			C?.HasTest ?? false, C?.TestPrompt ),
 		_howtoOpen,
 		// sanction overlay state (the per-second countdown tick is already covered by
-		// the seconds term in the second combine above).
-		HashCode.Combine( C?.TestMessage, C?.SanctionState, C?.SanctionUntilMs ),
+		// the seconds term in the second combine above); plus the parked/away state so
+		// the PAUSE bar + parked overlay repaint the instant it flips.
+		HashCode.Combine( C?.TestMessage, C?.SanctionState, C?.SanctionUntilMs, C?.Parked ?? false ),
 		// round-scores flash: FlashVisible flips the panel off on time; round + count
 		// rebuild it when a new round's scores come up.
 		HashCode.Combine( FlashVisible, _flashRound, _flashWinners.Count ),
