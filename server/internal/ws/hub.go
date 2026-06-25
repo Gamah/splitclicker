@@ -148,14 +148,25 @@ type Client struct {
 
 // setCursor records this connection's latest pointer position (from readPump) and
 // folds it into the per-window movement bounding box used by the afk check.
+//
+// The FIRST sample of each window is deliberately excluded from the box: the client's
+// first armed-frame cursor report is taken before the board layout settles, so it lands
+// a constant offset from every later sample and would make a physically-still cursor
+// look like it swept a wide box (seen live as a 8000+/axis span every round). curX/curY
+// (latest position, for rendering and tick sampling) still update on every sample; only
+// the afk box is anchored on the second sample onward.
 func (c *Client) setCursor(x, y int16) {
 	c.curMu.Lock()
 	c.curX, c.curY, c.hasCur = x, y, true
-	c.movN++ // TEMP DEBUG
+	c.movN++
+	if c.movN <= 1 {
+		c.movFirstX, c.movFirstY = x, y // TEMP DEBUG: the skipped first (transient) sample
+		c.curMu.Unlock()
+		return
+	}
 	if !c.movSeen {
 		c.movSeen = true
 		c.movMinX, c.movMaxX, c.movMinY, c.movMaxY = x, y, x, y
-		c.movFirstX, c.movFirstY = x, y // TEMP DEBUG
 	} else {
 		if x < c.movMinX {
 			c.movMinX = x
@@ -182,12 +193,15 @@ func (c *Client) cursor() (int16, int16, bool) {
 
 // movement reports whether any cursor arrived this window and the Manhattan span
 // of its bounding box (0 = a single stationary position). Read at round end by the
-// hub's CursorActivity for the afk check.
+// hub's CursorActivity for the afk check. seen is "any cursor at all this window"
+// (movN), independent of the box, which is anchored on the second sample onward (the
+// first is the transient pre-layout report, see setCursor); a window of a single
+// sample therefore reports seen with a zero span.
 func (c *Client) movement() (seen bool, extent int) {
 	c.curMu.Lock()
 	defer c.curMu.Unlock()
 	if !c.movSeen {
-		return false, 0
+		return c.movN >= 1, 0
 	}
 	// Widen to int before subtracting: a full-width span exceeds int16's range.
 	return true, (int(c.movMaxX) - int(c.movMinX)) + (int(c.movMaxY) - int(c.movMinY))
