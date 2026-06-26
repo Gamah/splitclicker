@@ -86,8 +86,6 @@ public record HelloGame(
 	[property: JsonPropertyName( "clicks" )] int Clicks,
 	[property: JsonPropertyName( "arm_min" )] int ArmMin,
 	[property: JsonPropertyName( "arm_max" )] int ArmMax,
-	[property: JsonPropertyName( "penalty_base_ms" )] int PenaltyBaseMs,
-	[property: JsonPropertyName( "penalty_step_ms" )] int PenaltyStepMs,
 	[property: JsonPropertyName( "dev_note" )] string DevNote,
 	// Live-window tick interval in ms (0 = ticking off). Sizes the pip jitter-buffer
 	// playback delay so opponent pips replay at their true relative moment.
@@ -128,15 +126,13 @@ public record ButtonMsg(
 
 // buttons is the initial multi-button board; each button carries a hex nonce (an
 // unguessable 64-bit token) echoed back verbatim in the click frame — never
-// parse/reformat it. penalty_ms is this connection's own arm-delay penalty (0 for
-// honest clients), surfaced so a masher sees the throttle.
+// parse/reformat it. (The old per-connection arm-delay penalty_ms was gutted in v7.)
 public record ArmedMsg(
 	[property: JsonPropertyName( "round" )] int Round,
 	[property: JsonPropertyName( "seq" )] int Seq,
 	[property: JsonPropertyName( "buttons" )] List<ButtonMsg> Buttons,
 	[property: JsonPropertyName( "players" )] int Players,
-	[property: JsonPropertyName( "clicks" )] int Clicks,
-	[property: JsonPropertyName( "penalty_ms" )] int PenaltyMs
+	[property: JsonPropertyName( "clicks" )] int Clicks
 );
 
 public record YouResult(
