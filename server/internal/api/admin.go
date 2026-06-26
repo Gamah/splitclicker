@@ -185,7 +185,7 @@ func requestIsHTTPS(r *http.Request) bool {
 }
 
 // GET /admin — dashboard: history counts, the live leaderboards, the recent
-// games, and the per-player anticheat roll-up. Every table is paginated
+// games, and the most-recent anticheat checks. Every table is paginated
 // (adminPageSize rows/page, each with its own page query param) and the whole
 // view can be scoped to a single bounty window via the ?bounty= filter.
 func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
@@ -214,9 +214,9 @@ func (h *handler) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	acNum, acOff := pageOffset(r, "acp")
-	antiCheat, acTotal, err := h.store.AntiCheatAggregate(ctx, win, adminPageSize, acOff)
+	antiCheat, acTotal, err := h.store.RecentChecks(ctx, win, adminPageSize, acOff)
 	if err != nil {
-		h.adminError(w, "load anticheat summary", err)
+		h.adminError(w, "load recent checks", err)
 		return
 	}
 	fNum, fOff := pageOffset(r, "fp")
@@ -621,7 +621,7 @@ type dashboardData struct {
 	Games     []store.AdminGame
 	GamesPage Page
 
-	AntiCheat     []store.AdminAntiCheat
+	AntiCheat     []store.AdminCheck
 	AntiCheatPage Page
 
 	Fastest     []store.FastestClicker
@@ -1049,18 +1049,19 @@ var dashboardTmpl = template.Must(template.New("dash").Funcs(adminFuncs).Parse(`
 </table>
 {{template "pager" .GamesPage}}
 
-<h2>Anticheat <span class="muted">· per-player roll-up — checks flagged and tests passed/failed in this view. Click a player for the per-event detail.</span></h2>
+<h2>Anticheat <span class="muted">· most-recently flagged checks in this view, newest first. Click a player for their full per-event detail.</span></h2>
 <table>
-  <tr><th>player</th><th class="num">checks failed</th><th class="num">tests passed</th><th class="num">tests failed</th></tr>
+  <tr><th>when (local)</th><th>player</th><th>check</th><th>detail</th><th>game · round</th></tr>
   {{range .AntiCheat}}
   <tr>
+    <td>{{lt .CreatedAt}}</td>
     <td>{{plink .SteamID .Name}}</td>
-    <td class="num">{{if gt .Checks 0}}<span class="flag">{{.Checks}}</span>{{else}}0{{end}}</td>
-    <td class="num">{{.TestsPassed}}</td>
-    <td class="num">{{if gt .TestsFailed 0}}<span class="flag">{{.TestsFailed}}</span>{{else}}0{{end}}</td>
+    <td class="mono">{{.Type}}</td>
+    <td>{{.Detail}}</td>
+    <td><a class="mono" href="/admin/game?id={{.GameID}}">{{short .GameID}}</a> · {{.RoundNo}}</td>
   </tr>
   {{else}}
-  <tr><td colspan="4" class="muted">no anticheat activity in this view</td></tr>
+  <tr><td colspan="5" class="muted">no anticheat activity in this view</td></tr>
   {{end}}
 </table>
 {{template "pager" .AntiCheatPage}}

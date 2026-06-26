@@ -251,51 +251,20 @@ func (s *Store) GameDetail(ctx context.Context, gameID string) (d AdminGameDetai
 	return d, true, nil
 }
 
-// AdminAntiCheat is one row of the dashboard's anticheat summary: a player and
-// their aggregate counts within the window — checks flagged, and tests they've
-// passed / failed. It's the top-level roll-up; the per-event detail (individual
-// checks and tests) lives on that player's profile view.
-type AdminAntiCheat struct {
-	SteamID     string
-	Name        string
-	Checks      int
-	TestsPassed int
-	TestsFailed int
-}
-
-// AntiCheatAggregate returns one page of the per-player anticheat roll-up scoped
-// to w: checks flagged (created_at in window) and tests passed/failed (sent_at
-// in window, settled by the `correct` flag — pending tests count as neither).
-// Players with no anticheat activity in the window are omitted. Ordered by most
-// checks, then most failed tests. Returns the total player count for pagination.
-func (s *Store) AntiCheatAggregate(ctx context.Context, w Window, limit, offset int) ([]AdminAntiCheat, int, error) {
+// RecentChecks returns one page of the most-recently flagged anticheat checks
+// across ALL players within w, newest first, each with the player and the
+// game/round it came from. This is the dashboard's anticheat feed (it replaced
+// the old per-player roll-up). Returns the total count for pagination.
+func (s *Store) RecentChecks(ctx context.Context, w Window, limit, offset int) ([]AdminCheck, int, error) {
 	start, end := w.bounds()
 	rows, err := s.pool.Query(ctx, `
-		WITH ck AS (
-			SELECT steam_id, COUNT(*) AS checks
-			FROM anticheat_checks
-			WHERE created_at > $1 AND created_at <= $2
-			GROUP BY steam_id
-		),
-		ts AS (
-			SELECT steam_id,
-			       COUNT(*) FILTER (WHERE correct IS TRUE)  AS passed,
-			       COUNT(*) FILTER (WHERE correct IS FALSE) AS failed
-			FROM anticheat_tests
-			WHERE sent_at > $1 AND sent_at <= $2
-			GROUP BY steam_id
-		),
-		agg AS (
-			SELECT COALESCE(ck.steam_id, ts.steam_id) AS steam_id,
-			       COALESCE(ck.checks, 0) AS checks,
-			       COALESCE(ts.passed, 0) AS passed,
-			       COALESCE(ts.failed, 0) AS failed
-			FROM ck FULL OUTER JOIN ts ON ck.steam_id = ts.steam_id
-		)
-		SELECT a.steam_id, p.username, p.display_name,
-		       a.checks, a.passed, a.failed, COUNT(*) OVER()
-		FROM agg a LEFT JOIN players p ON p.steam_id = a.steam_id
-		ORDER BY a.checks DESC, a.failed DESC, a.steam_id ASC
+		SELECT r.game_id, r.round_no, ac.steam_id, p.username, p.display_name,
+		       ac.check_type, ac.detail, ac.created_at, COUNT(*) OVER()
+		FROM anticheat_checks ac
+		JOIN game_rounds r ON r.id = ac.round_id
+		LEFT JOIN players p ON p.steam_id = ac.steam_id
+		WHERE ac.created_at > $1 AND ac.created_at <= $2
+		ORDER BY ac.id DESC
 		LIMIT $3 OFFSET $4
 	`, start, end, limit, offset)
 	if err != nil {
@@ -303,17 +272,17 @@ func (s *Store) AntiCheatAggregate(ctx context.Context, w Window, limit, offset 
 	}
 	defer rows.Close()
 
-	out := []AdminAntiCheat{}
+	out := []AdminCheck{}
 	total := 0
 	for rows.Next() {
-		var a AdminAntiCheat
+		var ch AdminCheck
 		var name, disp *string
-		if err := rows.Scan(&a.SteamID, &name, &disp,
-			&a.Checks, &a.TestsPassed, &a.TestsFailed, &total); err != nil {
+		if err := rows.Scan(&ch.GameID, &ch.RoundNo, &ch.SteamID, &name, &disp,
+			&ch.Type, &ch.Detail, &ch.CreatedAt, &total); err != nil {
 			return nil, 0, err
 		}
-		a.Name = pickName(name, disp)
-		out = append(out, a)
+		ch.Name = pickName(name, disp)
+		out = append(out, ch)
 	}
 	return out, total, rows.Err()
 }
