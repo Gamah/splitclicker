@@ -249,6 +249,23 @@ func (s *Store) RecordGame(ctx context.Context, log game.GameLog) error {
 	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 		return err
 	}
+
+	// The replay blob rides the SAME transaction as the history above: if it can't be
+	// built or written, the whole game rolls back, so a game on the leaderboards always
+	// has its replay (and the admin viewer never 404s on a recorded game).
+	blob, err := buildReplayBlob(log)
+	if err != nil {
+		return err
+	}
+	if blob != nil {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO game_replays (game_id, data) VALUES ($1, $2)
+			 ON CONFLICT (game_id) DO NOTHING`,
+			log.GameID, blob,
+		); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
 

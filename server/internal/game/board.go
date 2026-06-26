@@ -53,7 +53,8 @@ type board struct {
 	nextSlot uint16            // monotonic slot-id counter
 	armedAt  time.Time
 	scored   []ClickEvent // arrival order (drives deltas/scores/reached/history)
-	pending  []BoardClaim // mutations since the last tick
+	pending  []BoardClaim // mutations since the last tick (drained by the tick emitter)
+	log      []BoardClaim // every claim this window, never drained — the replay button timeline
 
 	// mint spawns a fresh button (new nonce + server-RNG'd, non-overlapping position)
 	// and registers it as live. Supplied by the engine so the board stays free of the
@@ -118,6 +119,7 @@ func (b *board) offer(ev ClickEvent) bool {
 		claim.Spawn = &nb
 	}
 	b.pending = append(b.pending, claim)
+	b.log = append(b.log, claim) // durable replay timeline (pending gets drained by ticks)
 	return true
 }
 

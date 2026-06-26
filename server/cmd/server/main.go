@@ -230,6 +230,9 @@ func main() {
 	// The afk pass reads every connected player's cursor activity for the round just
 	// played from the hub's per-window cursor tracking (whole roster, not just scorers).
 	engine.SetAllCursorActivityFn(hub.AllCursorActivity)
+	// The whole game's cursor paths feed the durable replay (admin viewer), captured the
+	// same per-window way as the afk pass but kept as the full sample list.
+	engine.SetCursorTracksFn(hub.AllCursorTracks)
 	engine.SetGameEndHook(func(ctx context.Context) {
 		if err := cache.Refresh(ctx); err != nil {
 			log.Error("refresh leaderboard cache", zap.Error(err))

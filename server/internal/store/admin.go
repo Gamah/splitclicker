@@ -143,6 +143,7 @@ type AdminGameDetail struct {
 	EndedAt   time.Time
 	Rounds    int
 	RoundList []AdminRound
+	HasReplay bool // a replay blob exists for this game (older games predate the feature)
 }
 
 // AdminRound is one round in the detail view, with its scoring clicks in slot
@@ -248,54 +249,29 @@ func (s *Store) GameDetail(ctx context.Context, gameID string) (d AdminGameDetai
 	for i := range d.RoundList {
 		d.RoundList[i].Checks = byRound[d.RoundList[i].RoundNo]
 	}
+
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM game_replays WHERE game_id = $1)`, gameID,
+	).Scan(&d.HasReplay); err != nil {
+		return AdminGameDetail{}, false, err
+	}
 	return d, true, nil
 }
 
-// AdminAntiCheat is one row of the dashboard's anticheat summary: a player and
-// their aggregate counts within the window — checks flagged, and tests they've
-// passed / failed. It's the top-level roll-up; the per-event detail (individual
-// checks and tests) lives on that player's profile view.
-type AdminAntiCheat struct {
-	SteamID     string
-	Name        string
-	Checks      int
-	TestsPassed int
-	TestsFailed int
-}
-
-// AntiCheatAggregate returns one page of the per-player anticheat roll-up scoped
-// to w: checks flagged (created_at in window) and tests passed/failed (sent_at
-// in window, settled by the `correct` flag — pending tests count as neither).
-// Players with no anticheat activity in the window are omitted. Ordered by most
-// checks, then most failed tests. Returns the total player count for pagination.
-func (s *Store) AntiCheatAggregate(ctx context.Context, w Window, limit, offset int) ([]AdminAntiCheat, int, error) {
+// RecentChecks returns one page of the most-recently flagged anticheat checks
+// across ALL players within w, newest first, each with the player and the
+// game/round it came from. This is the dashboard's anticheat feed (it replaced
+// the old per-player roll-up). Returns the total count for pagination.
+func (s *Store) RecentChecks(ctx context.Context, w Window, limit, offset int) ([]AdminCheck, int, error) {
 	start, end := w.bounds()
 	rows, err := s.pool.Query(ctx, `
-		WITH ck AS (
-			SELECT steam_id, COUNT(*) AS checks
-			FROM anticheat_checks
-			WHERE created_at > $1 AND created_at <= $2
-			GROUP BY steam_id
-		),
-		ts AS (
-			SELECT steam_id,
-			       COUNT(*) FILTER (WHERE correct IS TRUE)  AS passed,
-			       COUNT(*) FILTER (WHERE correct IS FALSE) AS failed
-			FROM anticheat_tests
-			WHERE sent_at > $1 AND sent_at <= $2
-			GROUP BY steam_id
-		),
-		agg AS (
-			SELECT COALESCE(ck.steam_id, ts.steam_id) AS steam_id,
-			       COALESCE(ck.checks, 0) AS checks,
-			       COALESCE(ts.passed, 0) AS passed,
-			       COALESCE(ts.failed, 0) AS failed
-			FROM ck FULL OUTER JOIN ts ON ck.steam_id = ts.steam_id
-		)
-		SELECT a.steam_id, p.username, p.display_name,
-		       a.checks, a.passed, a.failed, COUNT(*) OVER()
-		FROM agg a LEFT JOIN players p ON p.steam_id = a.steam_id
-		ORDER BY a.checks DESC, a.failed DESC, a.steam_id ASC
+		SELECT r.game_id, r.round_no, ac.steam_id, p.username, p.display_name,
+		       ac.check_type, ac.detail, ac.created_at, COUNT(*) OVER()
+		FROM anticheat_checks ac
+		JOIN game_rounds r ON r.id = ac.round_id
+		LEFT JOIN players p ON p.steam_id = ac.steam_id
+		WHERE ac.created_at > $1 AND ac.created_at <= $2
+		ORDER BY ac.id DESC
 		LIMIT $3 OFFSET $4
 	`, start, end, limit, offset)
 	if err != nil {
@@ -303,17 +279,17 @@ func (s *Store) AntiCheatAggregate(ctx context.Context, w Window, limit, offset 
 	}
 	defer rows.Close()
 
-	out := []AdminAntiCheat{}
+	out := []AdminCheck{}
 	total := 0
 	for rows.Next() {
-		var a AdminAntiCheat
+		var ch AdminCheck
 		var name, disp *string
-		if err := rows.Scan(&a.SteamID, &name, &disp,
-			&a.Checks, &a.TestsPassed, &a.TestsFailed, &total); err != nil {
+		if err := rows.Scan(&ch.GameID, &ch.RoundNo, &ch.SteamID, &name, &disp,
+			&ch.Type, &ch.Detail, &ch.CreatedAt, &total); err != nil {
 			return nil, 0, err
 		}
-		a.Name = pickName(name, disp)
-		out = append(out, a)
+		ch.Name = pickName(name, disp)
+		out = append(out, ch)
 	}
 	return out, total, rows.Err()
 }
@@ -482,6 +458,70 @@ func (s *Store) PlayerProfile(ctx context.Context, steamID string, w Window) (Pl
 	p.DisplayName = deref(disp)
 	p.Tag = session.PlayerTag(steamID, p.Username)
 	return p, true, nil
+}
+
+// PlayerGame is one game a player scored in, from their point of view: the game
+// identity plus their placement/points and the game's overall winner.
+type PlayerGame struct {
+	ID         string
+	EndedAt    time.Time
+	Rounds     int
+	Placement  int // the player's finishing rank (1 = won)
+	Points     int // the player's points in this game
+	Scorers    int // distinct players who scored this game
+	WinnerName string
+	WinnerID   string
+}
+
+// PlayerGames returns one page of the games steamID scored in, newest first,
+// scoped to w, each with the player's placement/points and the game's winner.
+// The total row count (within the window) is returned for pagination. A player
+// appears here only for games they took a scoring slot in (game_standings is
+// derived from round_scores).
+func (s *Store) PlayerGames(ctx context.Context, steamID string, w Window, limit, offset int) ([]PlayerGame, int, error) {
+	start, end := w.bounds()
+	rows, err := s.pool.Query(ctx, `
+		SELECT g.id, g.ended_at, g.rounds,
+		       me.placement, me.points,
+		       COALESCE(c.scorers, 0),
+		       win.steam_id, win.username, win.display_name,
+		       COUNT(*) OVER()
+		FROM games g
+		JOIN game_standings me ON me.game_id = g.id AND me.steam_id = $1
+		LEFT JOIN LATERAL (
+			SELECT COUNT(DISTINCT rs.steam_id) AS scorers
+			FROM game_rounds r JOIN round_scores rs ON rs.round_id = r.id
+			WHERE r.game_id = g.id
+		) c ON true
+		LEFT JOIN LATERAL (
+			SELECT gs.steam_id, p.username, p.display_name
+			FROM game_standings gs LEFT JOIN players p ON p.steam_id = gs.steam_id
+			WHERE gs.game_id = g.id AND gs.placement = 1
+			ORDER BY gs.steam_id LIMIT 1
+		) win ON true
+		WHERE g.ended_at > $2 AND g.ended_at <= $3
+		ORDER BY g.ended_at DESC
+		LIMIT $4 OFFSET $5
+	`, steamID, start, end, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := []PlayerGame{}
+	total := 0
+	for rows.Next() {
+		var g PlayerGame
+		var wid, name, disp *string
+		if err := rows.Scan(&g.ID, &g.EndedAt, &g.Rounds, &g.Placement, &g.Points,
+			&g.Scorers, &wid, &name, &disp, &total); err != nil {
+			return nil, 0, err
+		}
+		g.WinnerID = deref(wid)
+		g.WinnerName = pickName(name, disp)
+		out = append(out, g)
+	}
+	return out, total, rows.Err()
 }
 
 // PlayerSanction is a player's live anticheat ladder state for the ACTIVE bounty:
