@@ -1476,19 +1476,24 @@ var replayTmpl = template.Must(template.New("replay").Parse(`<!doctype html>
   function updateClock() { clock.textContent = (t / 1000).toFixed(1) + 's / ' + ((rounds[ri].dur_ms || 0) / 1000).toFixed(1) + 's'; }
   function setPlaying(p) { playing = p; playBtn.innerHTML = p ? '&#10073;&#10073; pause' : '&#9658; play'; if (p) lastTs = 0; }
 
+  function atEnd() { return ri >= rounds.length - 1 && t >= (rounds[ri].dur_ms || 1); }
+
   function frame(ts) {
     if (playing && rounds) {
       if (!lastTs) lastTs = ts;
       t += (ts - lastTs) * speed; lastTs = ts;
       var dur = rounds[ri].dur_ms || 1;
-      if (t >= dur) { t = dur; setPlaying(false); }
+      if (t >= dur) {
+        if (ri < rounds.length - 1) { ri++; roundSel.value = ri; prep(); lastTs = ts; } // roll into the next round and keep playing
+        else { t = dur; setPlaying(false); } // end of the last round — stop
+      }
       seek.value = Math.round(t); updateClock();
     }
     draw();
     requestAnimationFrame(frame);
   }
 
-  playBtn.onclick = function () { if (!rounds) return; if (!playing && t >= (rounds[ri].dur_ms || 1)) t = 0; setPlaying(!playing); };
+  playBtn.onclick = function () { if (!rounds) return; if (!playing && atEnd()) { ri = 0; roundSel.value = 0; prep(); } setPlaying(!playing); };
   roundSel.onchange = function () { ri = +roundSel.value; setPlaying(false); prep(); draw(); };
   seek.oninput = function () { t = +seek.value; setPlaying(false); updateClock(); draw(); };
   speedSel.onchange = function () { speed = +speedSel.value; };
