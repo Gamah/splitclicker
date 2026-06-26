@@ -21,10 +21,6 @@ type helloGame struct {
 	Clicks  int    `json:"clicks"`
 	ArmMin  int    `json:"arm_min"` // arming-window bounds, seconds (the delay itself is secret)
 	ArmMax  int    `json:"arm_max"`
-	// Bad-click penalty escalation (ms), so the client mirrors the live throttle
-	// estimate without hardcoding the formula.
-	PenaltyBase int `json:"penalty_base_ms"`
-	PenaltyStep int `json:"penalty_step_ms"`
 	// DevNote is the current host-editable broadcast note (empty = none), so a
 	// mid-game joiner shows it without waiting for the next game's dev_note frame.
 	DevNote string `json:"dev_note"`
@@ -75,14 +71,14 @@ type bountyUpdateWire struct {
 	T string `json:"t"`
 }
 
-// parkWire tells a single client it has been parked (auto-parked off an afk_idle
-// verdict). While a connection is parked the hub withholds every other frame from it
-// until it unparks (a client→server park{on:false}), so the away player drops cleanly
-// off the board and out of the round's N. The client engages its Pause control and
-// sits on a WAIT state until the next arming frame on return. on is always true here —
-// the server only ever sends a park, never an unpark (the client clears its own state
-// when the player hits Pause). Only park-capable (v6+) clients are ever sent this;
-// older builds keep the plain afk ladder with no parking.
+// parkWire tells a single client it has been parked (auto-parked off an afk verdict, now
+// raised at the end of arming). While a connection is parked the hub withholds every other
+// frame from it until it unparks (a client→server park{on:false}), so the away player drops
+// cleanly off the board and out of the round's N. The client engages its Pause control and
+// sits on a WAIT state until the next arming frame on return. on is always true here — the
+// server only ever sends a park, never an unpark (the client clears its own state when the
+// player hits Pause). Only park-capable (non-legacy) clients are ever sent this; legacy
+// builds keep the plain afk ladder with no parking.
 type parkWire struct {
 	T  string `json:"t"`
 	On bool   `json:"on"`
@@ -126,17 +122,17 @@ type buttonWire struct {
 }
 
 // armedWire goes live: the race is open. Buttons is the initial board (each a slot id +
-// secret nonce + position); a scoring click echoes one button's nonce. penalty_ms is
-// this connection's own arm-delay penalty (the spam deterrent), surfaced so a masher can
-// see they're being throttled — 0 for honest clients.
+// secret nonce + position); a scoring click echoes one button's nonce. The old per-
+// connection arm-delay penalty (penalty_ms / the spam deterrent) was gutted in v7 — the
+// nonce + rate limiter + the anticheat checks cover blind flooding, and a delayed arm
+// desynced a penalised player's window in a game whose premise is wire-arrival fairness.
 type armedWire struct {
-	T         string       `json:"t"`
-	Round     int          `json:"round"`
-	Seq       int          `json:"seq"`
-	Buttons   []buttonWire `json:"buttons,omitempty"`
-	Players   int          `json:"players"`
-	Clicks    int          `json:"clicks"`
-	PenaltyMs int          `json:"penalty_ms"`
+	T       string       `json:"t"`
+	Round   int          `json:"round"`
+	Seq     int          `json:"seq"`
+	Buttons []buttonWire `json:"buttons,omitempty"`
+	Players int          `json:"players"`
+	Clicks  int          `json:"clicks"`
 }
 
 // youResult lets the client drive its `points` achievement stat exactly once:

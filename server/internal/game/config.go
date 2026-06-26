@@ -38,12 +38,6 @@ type Config struct {
 	TickHz      int
 	TickSampleK int
 
-	// Bad-click penalty escalation (ms): the kth bad click since the last arm adds
-	// PenaltyBaseMs + PenaltyStepMs·(k−1) to that connection's held arm delay. Sent
-	// to clients on connect so they mirror the live estimate. See idlePenalty.
-	PenaltyBaseMs int
-	PenaltyStepMs int
-
 	// Anticheat checks (run at the end of every round; see Engine.runChecks).
 	//   FastClickMs         — flags a player whose two consecutive SCORING clicks
 	//                         landed less than this many ms apart (autoclicker-fast).
@@ -61,28 +55,62 @@ type Config struct {
 	//   DominantRunnerUpMin — dominant_winner only fires when the runner-up actually
 	//                         competed (scored at least this many clicks); guards the
 	//                         "one player clicks, the other is idle" false positive.
-	//   AfkCheck            - enable gate for the v5 AFK pass (>0 on, 0 off; see checkAfk,
-	//                         which judges every player present for the whole window, not
-	//                         just scorers). A player is AFK when they sent no cursor frames
-	//                         this window (parked off the board, or tabbed out) OR the cursor
-	//                         never moved. Movement is BINARY (any change of position counts),
-	//                         so there is no threshold to tune and nothing tied to the wire
-	//                         scale. v5-only (legacy clients send no cursors and are exempt).
-	//                         AFK + scored is the bot "gotcha" (afk_score); AFK + no score is
-	//                         the idle nudge (afk_idle); both ride the sanction ladder. The
-	//                         client only reports the cursor while it is ON the board. See
-	//                         checkAfk.
+	//   AfkCheck            - enable gate for the AFK pass (>0 on, 0 off; see checkAfk).
+	//                         AFK is now a purely MOVEMENT signal evaluated at the END of the
+	//                         arming phase (between round_pending and armed): a player who
+	//                         sent no cursor frame during arming, OR whose cursor never moved,
+	//                         is AFK and is parked BEFORE the button arms, so they never take a
+	//                         scoring slot. Movement is BINARY (any change of position counts),
+	//                         so there is no threshold to tune. Score NEVER enters AFK logic
+	//                         (the wire-bot signature is caught by the separate `busted` check).
+	//                         Only v7+ clients send arming cursors, so only they are AFK-checked
+	//                         (v6 sends cursors armed-only and is exempt — see minArmingVersion).
 	FastClickMs         int
 	MaxClickFactor      float64
 	SoloLeadMargin      int
 	DominantRunnerUpMin int
 	AfkCheck            int
 
+	// Extra anticheat checks (issue #43 analysis). All reuse data already on hand.
+	//   ReactionMinMs      - human reaction floor (ms). #1 fast_reaction: flags a scoring
+	//                        click whose arm→click latency (the first ScoredClick's OffsetMs)
+	//                        is below this — catches a one-shot bot that fast_clicks (which
+	//                        needs ≥2 scoring clicks) structurally can't. Also the touch→click
+	//                        dwell floor for fast_hover (see TouchCheck). 0 = off.
+	//   ImpossibleLatency  - >0 enables impossible_latency (#2): a scoring click whose
+	//                        OffsetMs is below that connection's own min observed ping RTT is
+	//                        physically impossible (the armed frame couldn't have arrived and a
+	//                        click returned in the time). Per-connection, self-calibrating; the
+	//                        hub supplies each conn's min RTT. 0 = off.
+	//   MetronomeMinClicks - min scoring clicks (per player, per round) before the metronome
+	//                        cadence check (#3) runs; MetronomeMaxCV is the coefficient-of-
+	//                        variation ceiling below which the cadence is machine-flat. 0
+	//                        MinClicks = off. Default off (opt-in: needs tuning per crowd).
+	//   TouchCheck         - >0 enables the touch-derived checks (#stretch/#5): no_hover (a
+	//                        button claimed with no prior `touch` over its hitbox → automation)
+	//                        and fast_hover (touch→click dwell below ReactionMinMs). The client
+	//                        sends `touch {id}` on first entry into a live button. 0 = off.
+	//   StraightPathRatio  - >0 enables straight_path (#6, signal-only, false-positive-prone so
+	//                        default OFF): flags a window whose cursor path is implausibly
+	//                        straight (net displacement / total path length above this ratio)
+	//                        across ≥ StraightPathMinSamples points. 0 = off.
+	ReactionMinMs      int
+	ImpossibleLatency  int
+	MetronomeMinClicks int
+	MetronomeMaxCV     float64
+	TouchCheck         int
+	StraightPathRatio  float64
+	StraightPathMin    int
+
 	// Anticheat sanction ladder (per bounty, per player; see Engine.applySanction).
 	// The first CheckCooldownThreshold-1 checks each bench the player behind a math
 	// test. The CheckCooldownThreshold'th check starts a CheckCooldownMins cooldown
 	// (clicks ignored, no test). CheckIgnoreAfter more checks past that sidelines
 	// them until the bounty resolves. Counts reset when the bounty changes.
+	//
+	// A single round that trips ≥2 DISTINCT check types against one player is near-certain
+	// automation, so applySanction bumps the ladder by the number of distinct types that
+	// round, not just 1 (#4) — stacked evidence escalates faster.
 	CheckCooldownThreshold int
 	CheckCooldownMins      int
 	CheckIgnoreAfter       int
@@ -103,13 +131,19 @@ func DefaultConfig() Config {
 		BoardSize:       20,
 		TickHz:          20,
 		TickSampleK:     8,
-		PenaltyBaseMs:   500,
-		PenaltyStepMs:   100,
 		FastClickMs:         130,
 		MaxClickFactor:      2.5,
 		SoloLeadMargin:      4,
 		DominantRunnerUpMin: 5,
 		AfkCheck:            1,
+
+		ReactionMinMs:      80,
+		ImpossibleLatency:  1,
+		MetronomeMinClicks: 0, // off by default — cadence check needs per-crowd tuning
+		MetronomeMaxCV:     0.06,
+		TouchCheck:         1,
+		StraightPathRatio:  0, // off by default — false-positive-prone (issue #6)
+		StraightPathMin:    12,
 
 		CheckCooldownThreshold: 20,
 		CheckCooldownMins:      60,
@@ -133,13 +167,18 @@ func ConfigFromEnv() Config {
 	c.BoardSize = envInt("BOARD_SIZE", c.BoardSize)
 	c.TickHz = envInt("TICK_HZ", c.TickHz)
 	c.TickSampleK = envInt("TICK_SAMPLE_K", c.TickSampleK)
-	c.PenaltyBaseMs = envInt("PENALTY_BASE_MS", c.PenaltyBaseMs)
-	c.PenaltyStepMs = envInt("PENALTY_STEP_MS", c.PenaltyStepMs)
 	c.FastClickMs = envInt("FAST_CLICK_MS", c.FastClickMs)
 	c.MaxClickFactor = envFloat("MAX_CLICK_FACTOR", c.MaxClickFactor)
 	c.SoloLeadMargin = envInt("SOLO_LEAD_MARGIN", c.SoloLeadMargin)
 	c.DominantRunnerUpMin = envInt("DOMINANT_RUNNER_UP_MIN", c.DominantRunnerUpMin)
 	c.AfkCheck = envInt("AFK_CHECK", c.AfkCheck)
+	c.ReactionMinMs = envInt("REACTION_MIN_MS", c.ReactionMinMs)
+	c.ImpossibleLatency = envInt("IMPOSSIBLE_LATENCY", c.ImpossibleLatency)
+	c.MetronomeMinClicks = envInt("METRONOME_MIN_CLICKS", c.MetronomeMinClicks)
+	c.MetronomeMaxCV = envFloat("METRONOME_MAX_CV", c.MetronomeMaxCV)
+	c.TouchCheck = envInt("TOUCH_CHECK", c.TouchCheck)
+	c.StraightPathRatio = envFloat("STRAIGHT_PATH_RATIO", c.StraightPathRatio)
+	c.StraightPathMin = envInt("STRAIGHT_PATH_MIN", c.StraightPathMin)
 	c.CheckCooldownThreshold = envInt("CHECK_COOLDOWN_THRESHOLD", c.CheckCooldownThreshold)
 	c.CheckCooldownMins = envInt("CHECK_COOLDOWN_MINS", c.CheckCooldownMins)
 	c.CheckIgnoreAfter = envInt("CHECK_IGNORE_AFTER", c.CheckIgnoreAfter)

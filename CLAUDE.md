@@ -10,10 +10,14 @@ sanction ladder, Docker/Caddy, and unit tests. `client/` is a playable s&box gam
 `ClickController` (WS lifecycle/phase), the single-root `Hud.razor` (boards, the
 multi-button board + opponent cursors, GAME INFO popup, anticheat overlays), the
 Skafinity music library, and s&box-Services achievements. **The current build is
-`v6`** (the step-away **park / Pause** protocol, on top of the v5 multi-button board +
-opponent cursors); the config-driven `live_version` floor is `v5` (the multi-button
-board + live-window tick), with **v5 as the supported N-1**. The old v4 single-button
-path was pruned when v6 landed (the API-bump cleanup rule below).
+`v7`** (arming-phase cursors + the arming-phase **movement-only AFK** check, the new
+`busted` wire-bot check, the `touch`/dwell + reaction/latency anticheat signals, and
+park/unpark **deferral** to the arming boundary, on top of the v6 park/Pause protocol);
+the config-driven `live_version` floor is `v6` (the park / Pause protocol), with **v6 as
+the supported N-1**. The old delayed-arm spam penalty was gutted when v7 landed (kept only
+as `badClicks` telemetry); the `minParkVersion` gate collapsed into `!Legacy` (the
+API-bump cleanup rule below). The one remaining N-1 gate is `minArmingVersion` (v7), which
+exempts v6 from the arming-AFK pass + `touch` (v6 sends cursors armed-only).
 
 ---
 

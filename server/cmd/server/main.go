@@ -57,13 +57,18 @@ func gameConfig() game.Config {
 	setInt(f.BoardSize, &c.BoardSize)
 	setInt(f.TickHz, &c.TickHz)
 	setInt(f.TickSampleK, &c.TickSampleK)
-	setInt(f.PenaltyBaseMs, &c.PenaltyBaseMs)
-	setInt(f.PenaltyStepMs, &c.PenaltyStepMs)
 	setInt(f.FastClickMs, &c.FastClickMs)
 	setFloat(f.MaxClickFactor, &c.MaxClickFactor)
 	setInt(f.SoloLeadMargin, &c.SoloLeadMargin)
 	setInt(f.DominantRunnerUpMin, &c.DominantRunnerUpMin)
 	setInt(f.AfkCheck, &c.AfkCheck)
+	setInt(f.ReactionMinMs, &c.ReactionMinMs)
+	setInt(f.ImpossibleLatency, &c.ImpossibleLatency)
+	setInt(f.MetronomeMinClicks, &c.MetronomeMinClicks)
+	setFloat(f.MetronomeMaxCV, &c.MetronomeMaxCV)
+	setInt(f.TouchCheck, &c.TouchCheck)
+	setFloat(f.StraightPathRatio, &c.StraightPathRatio)
+	setInt(f.StraightPathMin, &c.StraightPathMin)
 	setInt(f.CheckCooldownThreshold, &c.CheckCooldownThreshold)
 	setInt(f.CheckCooldownMins, &c.CheckCooldownMins)
 	setInt(f.CheckIgnoreAfter, &c.CheckIgnoreAfter)
@@ -227,9 +232,20 @@ func main() {
 		}
 		return bi
 	})
-	// The afk pass reads every connected player's cursor activity for the round just
-	// played from the hub's per-window cursor tracking (whole roster, not just scorers).
+	// The arming-phase AFK pass (issue #43) reads cursor movement during arming for the
+	// v7+ roster (v6 sends cursors armed-only, so the hub omits it here — it can't be
+	// arming-judged). Evaluated after pending() returns, before the button arms.
+	engine.SetArmingCursorActivityFn(hub.ArmingCursorActivity)
+	// The round-end whole-round cursor activity (arming + armed) feeds the score-aware
+	// checks: busted (scored with no cursor all round) and the path/cadence signals. This
+	// one includes v6 (it sends armed cursors, so busted won't false-fire on it).
 	engine.SetAllCursorActivityFn(hub.AllCursorActivity)
+	// Per-window touch data (the `touch {id}` first-entry stamps) feeds the no_hover /
+	// fast_hover dwell checks. Keyed by SteamID → button id → ms-since-arm.
+	engine.SetTouchDataFn(hub.AllTouchData)
+	// Per-connection minimum observed ping RTT feeds impossible_latency: a scoring click
+	// faster than the connection's own round-trip is physically impossible.
+	engine.SetMinRTTFn(hub.MinRTTms)
 	// The whole game's cursor paths feed the durable replay (admin viewer), captured the
 	// same per-window way as the afk pass but kept as the full sample list.
 	engine.SetCursorTracksFn(hub.AllCursorTracks)

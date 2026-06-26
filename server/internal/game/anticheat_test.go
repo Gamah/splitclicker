@@ -184,103 +184,104 @@ func TestRunChecksDominantWinner(t *testing.T) {
 	}
 }
 
-// checkAfk is the whole-roster cursor pass, decoupled from scoring: it judges every
-// connected player every round (not just scorers). An AFK verdict (no cursor messages,
-// or the cursor never moved) splits by whether the player scored: afk_score (the
-// "gotcha") if they did, afk_idle (the soft nudge) if they didn't. A player who moved is
-// never flagged; legacy/disconnected players aren't in the hub's map, so they're never
-// judged.
+// checkAfk is the ARMING-PHASE movement pass (issue #43), decoupled from scoring: it judges
+// every judgeable (v7+) player's arming-window cursor movement. AFK (no cursor messages, or
+// the cursor never moved) flags a single "afk" verdict, but ONLY for an eligible player
+// (present at the start of the window). Score never enters it. A player who moved is never
+// flagged; legacy/disconnected/v6 players aren't in the arming map, so they're never judged.
 func TestCheckAfk(t *testing.T) {
-	// All eligible (present for the whole window); the ineligible case is covered below.
+	// All eligible (present at the window start); the ineligible case is covered below.
 	acts := map[string]CursorActivity{
 		"frozen": {Tracked: true, SawCursor: true, Moved: false, Eligible: true}, // sent cursors, never moved
 		"tabbed": {Tracked: true, SawCursor: false, Eligible: true},              // no cursor messages at all
 		"active": {Tracked: true, SawCursor: true, Moved: true, Eligible: true},  // moved
 	}
 	e := New(Config{AfkCheck: 1}, nil, nil, nil)
-	e.SetAllCursorActivityFn(func() map[string]CursorActivity { return acts })
+	e.SetArmingCursorActivityFn(func() map[string]CursorActivity { return acts })
 
 	none := map[string]bool{}
 
-	// AFK + scored = the gotcha (afk_score), via either half of the predicate.
-	scored := e.checkAfk(1, map[string]bool{"frozen": true, "tabbed": true, "active": true}, none, map[string]bool{})
-	if !hasCheck(scored, "frozen", "afk_score") {
-		t.Fatalf("still cursor + scored should flag afk_score, got %+v", scored)
+	// Still (either half of the predicate) → "afk"; moved → never flagged.
+	got := e.checkAfk(1, none, map[string]bool{})
+	if !hasCheck(got, "frozen", "afk") {
+		t.Fatalf("still cursor should flag afk, got %+v", got)
 	}
-	if !hasCheck(scored, "tabbed", "afk_score") {
-		t.Fatalf("no cursor messages + scored should flag afk_score, got %+v", scored)
+	if !hasCheck(got, "tabbed", "afk") {
+		t.Fatalf("no cursor messages should flag afk, got %+v", got)
 	}
-	// Moved → not AFK → never flagged, scoring or not.
-	if hasCheck(scored, "active", "afk_score") || hasCheck(scored, "active", "afk_idle") {
-		t.Fatalf("a player who moved should not flag, got %+v", scored)
-	}
-
-	// AFK + did NOT score = the idle nudge (afk_idle), evaluated even with no scorers.
-	idle := e.checkAfk(1, none, none, map[string]bool{})
-	if !hasCheck(idle, "frozen", "afk_idle") {
-		t.Fatalf("still cursor + no score should flag afk_idle, got %+v", idle)
-	}
-	if !hasCheck(idle, "tabbed", "afk_idle") {
-		t.Fatalf("no cursor messages + no score should flag afk_idle, got %+v", idle)
-	}
-	// A non-scorer is the idle case, never the gotcha (no double flag across the split).
-	if hasCheck(idle, "frozen", "afk_score") {
-		t.Fatalf("a non-scorer must not flag afk_score, got %+v", idle)
-	}
-	// Moving but missing buttons (no score) is fine; movement clears you.
-	if hasCheck(idle, "active", "afk_idle") {
-		t.Fatalf("a moving non-scorer should not flag, got %+v", idle)
+	if hasCheck(got, "active", "afk") {
+		t.Fatalf("a player who moved should not flag, got %+v", got)
 	}
 
-	// Already-blocked (benched/cooled/ignored) players are logged but never flagged,
-	// so an idle benched player doesn't pile up fresh idle flags.
-	blocked := e.checkAfk(1, none, map[string]bool{"frozen": true, "tabbed": true}, map[string]bool{})
-	if hasCheck(blocked, "frozen", "afk_idle") || hasCheck(blocked, "tabbed", "afk_idle") {
+	// Already-blocked (benched/cooled/ignored) players are logged but never flagged.
+	blocked := e.checkAfk(1, map[string]bool{"frozen": true, "tabbed": true}, map[string]bool{})
+	if hasCheck(blocked, "frozen", "afk") || hasCheck(blocked, "tabbed", "afk") {
 		t.Fatalf("blocked players must not be flagged, got %+v", blocked)
 	}
 
-	// Ineligible (not present for the whole window: mid-window join / no window yet) is
-	// NOT idle-nudged (it never had a fair chance) but the scoring gotcha still fires
-	// (scoring proves there was a live window).
-	e.SetAllCursorActivityFn(func() map[string]CursorActivity {
-		return map[string]CursorActivity{
-			"newidle":  {Tracked: true, SawCursor: false, Eligible: false},
-			"newscore": {Tracked: true, SawCursor: false, Eligible: false},
-		}
+	// Ineligible (not present at the window start: mid-window join / no window yet) is NOT
+	// flagged — it never had a fair chance to put its cursor down.
+	e.SetArmingCursorActivityFn(func() map[string]CursorActivity {
+		return map[string]CursorActivity{"newcomer": {Tracked: true, SawCursor: false, Eligible: false}}
 	})
-	inel := e.checkAfk(1, map[string]bool{"newscore": true}, none, map[string]bool{})
-	if hasCheck(inel, "newidle", "afk_idle") {
-		t.Fatalf("an ineligible non-scorer must not be idle-flagged, got %+v", inel)
+	if inel := e.checkAfk(1, none, map[string]bool{}); hasCheck(inel, "newcomer", "afk") {
+		t.Fatalf("an ineligible player must not be flagged, got %+v", inel)
 	}
-	if !hasCheck(inel, "newscore", "afk_score") {
-		t.Fatalf("an ineligible scorer must still hit the gotcha, got %+v", inel)
-	}
-	e.SetAllCursorActivityFn(func() map[string]CursorActivity { return acts })
+	e.SetArmingCursorActivityFn(func() map[string]CursorActivity { return acts })
 
 	// Once per game: a shared afkFired set means a player flagged in one round is NOT
-	// re-flagged in a later round of the same game (the answer-a-test-mid-round loop
-	// breaker). A fresh set (new game) flags them again.
+	// re-flagged in a later round of the same game. A fresh set (new game) flags them again.
 	game := map[string]bool{}
-	first := e.checkAfk(1, none, none, game)
-	if !hasCheck(first, "frozen", "afk_idle") {
+	first := e.checkAfk(1, none, game)
+	if !hasCheck(first, "frozen", "afk") {
 		t.Fatalf("first AFK of the game should fire, got %+v", first)
 	}
-	second := e.checkAfk(2, none, none, game)
-	if hasCheck(second, "frozen", "afk_idle") {
+	second := e.checkAfk(2, none, game)
+	if hasCheck(second, "frozen", "afk") {
 		t.Fatalf("a second AFK in the same game must not re-fire, got %+v", second)
 	}
-	fresh := e.checkAfk(1, none, none, map[string]bool{})
-	if !hasCheck(fresh, "frozen", "afk_idle") {
+	fresh := e.checkAfk(1, none, map[string]bool{})
+	if !hasCheck(fresh, "frozen", "afk") {
 		t.Fatalf("a new game (fresh afkFired) should flag again, got %+v", fresh)
 	}
 
 	// Disabled when AfkCheck == 0, even with a provider set.
 	off := New(Config{AfkCheck: 0}, nil, nil, nil)
-	off.SetAllCursorActivityFn(func() map[string]CursorActivity {
+	off.SetArmingCursorActivityFn(func() map[string]CursorActivity {
 		return map[string]CursorActivity{"tabbed": {Tracked: true, SawCursor: false, Eligible: true}}
 	})
-	if got := off.checkAfk(1, map[string]bool{"tabbed": true}, none, map[string]bool{}); len(got) != 0 {
+	if got := off.checkAfk(1, none, map[string]bool{}); len(got) != 0 {
 		t.Fatalf("AfkCheck=0 should disable the afk pass, got %+v", got)
+	}
+}
+
+// checkBusted is the round-end wire-bot check: a scorer who sent NO cursor the whole round
+// is automation. It reads the whole-round cursor activity and only flags scorers.
+func TestCheckBusted(t *testing.T) {
+	e := New(Config{}, nil, nil, nil)
+	e.SetAllCursorActivityFn(func() map[string]CursorActivity {
+		return map[string]CursorActivity{
+			"bot":   {Tracked: true, SawCursor: false}, // scored, never sent a cursor
+			"human": {Tracked: true, SawCursor: true, Moved: true},
+		}
+	})
+	scored := map[string]bool{"bot": true, "human": true}
+	none := map[string]bool{}
+
+	got := e.checkBusted(scored, none)
+	if !hasCheck(got, "bot", "busted") {
+		t.Fatalf("a scorer with no cursor should be busted, got %+v", got)
+	}
+	if hasCheck(got, "human", "busted") {
+		t.Fatalf("a moving scorer must not be busted, got %+v", got)
+	}
+	// A non-scorer with no cursor is NOT busted (that's the arming AFK pass's job, not this).
+	if got := e.checkBusted(map[string]bool{}, none); len(got) != 0 {
+		t.Fatalf("busted must only judge scorers, got %+v", got)
+	}
+	// Blocked scorers are skipped.
+	if got := e.checkBusted(scored, map[string]bool{"bot": true}); hasCheck(got, "bot", "busted") {
+		t.Fatalf("a blocked player must not be busted, got %+v", got)
 	}
 }
 
