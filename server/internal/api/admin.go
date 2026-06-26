@@ -327,6 +327,12 @@ func (h *handler) adminPlayer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	gNum, gOff := pageOffset(r, "gp")
+	games, gTotal, err := h.store.PlayerGames(ctx, id, win, adminPageSize, gOff)
+	if err != nil {
+		h.adminError(w, "load player games", err)
+		return
+	}
 	cNum, cOff := pageOffset(r, "cp")
 	checks, cTotal, err := h.store.PlayerChecks(ctx, id, win, adminPageSize, cOff)
 	if err != nil {
@@ -365,6 +371,8 @@ func (h *handler) adminPlayer(w http.ResponseWriter, r *http.Request) {
 		FilterLabel:  filterLabel,
 		Sanction:     sanction,
 		Shadowbanned: banned,
+		Games:        games,
+		GamesPage:    mk("gp", gNum, gTotal),
 		Checks:       checks,
 		ChecksPage: mk("cp", cNum, cTotal),
 		Tests:      tests,
@@ -648,6 +656,9 @@ type playerData struct {
 
 	Sanction     store.PlayerSanction // live ladder state for the active bounty (editable)
 	Shadowbanned bool                 // on the silent-ban list
+
+	Games     []store.PlayerGame
+	GamesPage Page
 
 	Checks     []store.AdminCheck
 	ChecksPage Page
@@ -1187,6 +1198,25 @@ var playerTmpl = template.Must(template.New("player").Funcs(adminFuncs).Parse(`<
   <button type="submit">shadowban</button>
 </form>
 {{end}}
+
+<h2>Recent games <span class="muted">· games this player scored in, newest first</span></h2>
+<table>
+  <tr><th>game</th><th>ended (local)</th><th class="num">rounds</th><th class="num">placement</th><th class="num">points</th><th class="num">scorers</th><th>winner</th></tr>
+  {{range .Games}}
+  <tr>
+    <td><a class="mono" href="/admin/game?id={{.ID}}">{{short .ID}}</a></td>
+    <td>{{lt .EndedAt}}</td>
+    <td class="num">{{.Rounds}}</td>
+    <td class="num">{{if eq .Placement 1}}<span class="ok">1st</span>{{else}}{{.Placement}}{{end}}</td>
+    <td class="num">{{.Points}}</td>
+    <td class="num">{{.Scorers}}</td>
+    <td>{{if .WinnerID}}{{plink .WinnerID .WinnerName}}{{else}}<span class="muted">—</span>{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="7" class="muted">no games in this view</td></tr>
+  {{end}}
+</table>
+{{template "pager" .GamesPage}}
 
 <h2>Anticheat checks</h2>
 <table>

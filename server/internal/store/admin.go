@@ -453,6 +453,70 @@ func (s *Store) PlayerProfile(ctx context.Context, steamID string, w Window) (Pl
 	return p, true, nil
 }
 
+// PlayerGame is one game a player scored in, from their point of view: the game
+// identity plus their placement/points and the game's overall winner.
+type PlayerGame struct {
+	ID         string
+	EndedAt    time.Time
+	Rounds     int
+	Placement  int // the player's finishing rank (1 = won)
+	Points     int // the player's points in this game
+	Scorers    int // distinct players who scored this game
+	WinnerName string
+	WinnerID   string
+}
+
+// PlayerGames returns one page of the games steamID scored in, newest first,
+// scoped to w, each with the player's placement/points and the game's winner.
+// The total row count (within the window) is returned for pagination. A player
+// appears here only for games they took a scoring slot in (game_standings is
+// derived from round_scores).
+func (s *Store) PlayerGames(ctx context.Context, steamID string, w Window, limit, offset int) ([]PlayerGame, int, error) {
+	start, end := w.bounds()
+	rows, err := s.pool.Query(ctx, `
+		SELECT g.id, g.ended_at, g.rounds,
+		       me.placement, me.points,
+		       COALESCE(c.scorers, 0),
+		       win.steam_id, win.username, win.display_name,
+		       COUNT(*) OVER()
+		FROM games g
+		JOIN game_standings me ON me.game_id = g.id AND me.steam_id = $1
+		LEFT JOIN LATERAL (
+			SELECT COUNT(DISTINCT rs.steam_id) AS scorers
+			FROM game_rounds r JOIN round_scores rs ON rs.round_id = r.id
+			WHERE r.game_id = g.id
+		) c ON true
+		LEFT JOIN LATERAL (
+			SELECT gs.steam_id, p.username, p.display_name
+			FROM game_standings gs LEFT JOIN players p ON p.steam_id = gs.steam_id
+			WHERE gs.game_id = g.id AND gs.placement = 1
+			ORDER BY gs.steam_id LIMIT 1
+		) win ON true
+		WHERE g.ended_at > $2 AND g.ended_at <= $3
+		ORDER BY g.ended_at DESC
+		LIMIT $4 OFFSET $5
+	`, steamID, start, end, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := []PlayerGame{}
+	total := 0
+	for rows.Next() {
+		var g PlayerGame
+		var wid, name, disp *string
+		if err := rows.Scan(&g.ID, &g.EndedAt, &g.Rounds, &g.Placement, &g.Points,
+			&g.Scorers, &wid, &name, &disp, &total); err != nil {
+			return nil, 0, err
+		}
+		g.WinnerID = deref(wid)
+		g.WinnerName = pickName(name, disp)
+		out = append(out, g)
+	}
+	return out, total, rows.Err()
+}
+
 // PlayerSanction is a player's live anticheat ladder state for the ACTIVE bounty:
 // the persisted flag count and the derived status ("live" / "cooldown" / "ignored"
 // — the engine's own terms) with the timestamp the non-live state lifts. Active is
