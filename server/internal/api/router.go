@@ -112,6 +112,14 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	mux.HandleFunc("GET /admin/game/replay", rl.wrap(h.adminGameReplay))
 	mux.HandleFunc("GET /admin/game/replay/data", rl.wrap(h.adminGameReplayData))
 	mux.HandleFunc("GET /admin/media", h.adminMedia)
+	// Public, UNAUTHENTICATED replay viewer + data, keyed by the game's unguessable UUID
+	// ("unlisted": anyone with the id can watch). Deliberately NOT under /api/{ver} — it's a
+	// browser page, not a client protocol surface. Reuses the replay template/data without
+	// the admin chrome. The replay blob excludes shadowbanned accounts (see ws.Hub) and
+	// holds only tags + display names + cursor paths, so nothing sensitive leaks.
+	mux.HandleFunc("GET /replay/{id}", h.publicReplay)
+	mux.HandleFunc("GET /replay/{id}/data", h.publicReplayData)
+
 	mux.HandleFunc("POST /admin/bounties", h.adminBountyCreate)
 	mux.HandleFunc("POST /admin/bounties/edit", h.adminBountyEdit)
 	mux.HandleFunc("POST /admin/bounties/delete", h.adminBountyDelete)
@@ -281,19 +289,20 @@ func boardLimit(r *http.Request) int {
 }
 
 // liveVersionDefault is the live API version assumed when config.json doesn't set
-// live_version. v5 is the floor (the multi-button board + opponent cursors, on top of
-// the live-window tick); v6 (the park / Pause protocol) is the current build, tested at
-// the v5 floor before it's promoted. A client below the floor is treated as outdated
-// (troll boards + the out-of-date note).
+// live_version. v6 is the floor (the park / Pause protocol, on top of the multi-button
+// board + opponent cursors); v7 (arming-phase cursors + the arming AFK pass + `touch` +
+// park-deferral) is the current build, tested at the v6 floor before it's promoted. A
+// client below the floor is treated as outdated (troll boards + the out-of-date note).
 //
 // VERSION CLEANUP: keep only version-specific code for the live version and the one
 // below it (N and N-1); when a PR bumps the client version, prune everything two or more
-// behind in the SAME PR. The v6 bump did this: the v4 (single legacy-nonce button) path
-// was dropped from the engine/hub, tickCapable collapsed to !Legacy, and the armed-frame
-// `nonce` field removed. The only remaining version gate is ws.minParkVersion (v6); it
-// collapses the same way once v7 lands. Audit on every bump: this default,
-// ws.minParkVersion, the parseVer/troll fallbacks here, and the bare-/ws legacy handling.
-const liveVersionDefault = 5
+// behind in the SAME PR. The v7 bump did this: ws.minParkVersion collapsed (with the floor
+// at v6 every non-legacy conn is park-capable, so parkCapable reduced to !Legacy, like
+// tickCapable/TestCapable before it). The only remaining version gate is ws.minArmingVersion
+// (v7), which exempts v6 from the arming AFK pass + touch; it collapses the same way once v8
+// lands. Audit on every bump: this default, ws.minArmingVersion, the parseVer/troll
+// fallbacks here, and the bare-/ws legacy handling.
+const liveVersionDefault = 6
 
 // liveVersion is the configured "live" client API version (config.json's
 // live_version), re-read per request so it can be toggled without a restart.

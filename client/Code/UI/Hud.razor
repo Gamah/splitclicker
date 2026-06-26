@@ -99,7 +99,7 @@
 	     automatically when the server auto-parks an idle player. Hidden until connected. ── *@
 	@if ( C != null && C.Phase != GamePhase.Connecting && C.Phase != GamePhase.Disconnected )
 	{
-		<div class="pause-fab @(C.Parked ? "paused" : "")" onclick="@TogglePause">@(C.Parked ? "PAUSED" : "PAUSE")</div>
+		<div class="pause-fab @PauseFabClass()" onclick="@TogglePause">@PauseFabLabel()</div>
 	}
 
 	<div class="info-fab" onclick="@ToggleHowTo">GAME INFO</div>
@@ -138,12 +138,6 @@
 				</div>
 			}
 
-			@* "+ PENALTY" popups: one per bad click, floating up from where it was hit. *@
-			@foreach ( var p in _pops )
-			{
-				<div class="penalty-pop" style="left: @(p.Left)%; top: @(p.Top)%;">+ PENALTY</div>
-			}
-
 			@* Opponent click pips: each a half-size button that fades quickly (CSS
 			   keyframe) at the clicker's normalized position with their name over it.
 			   Positioned in the same box-% space as the global button, so a pip lands
@@ -177,16 +171,8 @@
 				{
 					<div class="arm">@($"arms in {c.ArmMinSec}–{c.ArmMaxSec}s")</div>
 				}
-				@* throttle is shown while actively in a round (it counts up live as the
-				   player idle-clicks); hidden before we've joined one (connecting / mid-
-				   round stand-by) and while disconnected. *@
-				@if ( c != null && c.Phase != GamePhase.Connecting && c.Phase != GamePhase.Disconnected && c.Phase != GamePhase.Waiting )
-				{
-					<div class="penalty">@($"throttled +{c.PenaltyMs}ms")</div>
-				}
-				@* dev note: a host-pushed broadcast message, orange, directly under the
-				   throttle line. Independent of round phase; shows until the server
-				   sends an empty note. *@
+				@* dev note: a host-pushed broadcast message, orange. Independent of round
+				   phase; shows until the server sends an empty note. *@
 				@if ( c != null && !string.IsNullOrEmpty( c.DevNote ) )
 				{
 					<div class="dev-note">@c.DevNote</div>
@@ -460,7 +446,7 @@
 				<div class="state-row"><span class="tag go">CLICK!</span><span class="desc">Button is live! One point per click.</span></div>
 				<div class="state-row"><span class="tag over">ROUND OVER</span><span class="desc">All clicks used up, current score shown.</span></div>
 				<div class="state-row"><span class="tag over">GAME OVER</span><span class="desc">Session winner picked, new game next!</span></div>
-				<div class="line penalty-note">Clicking while not live is allowed but delays your button becoming live behind other players.</div>
+				<div class="line penalty-note">Clicking before the button is live is allowed but scores nothing — just wait for it to go green.</div>
 
 				<div class="divider"></div>
 				<div class="howto-subtitle">STEPPING AWAY</div>
@@ -469,13 +455,13 @@
 
 				<div class="divider"></div>
 				<div class="howto-subtitle">ANTI-CHEAT</div>
-				<div class="line">Every round, the server inspects the scoring clicks for tell-tale bot behaviour. The first flags just bench you behind a quick math question before the button arms again.</div>
+				<div class="line">Every round, the server watches for tell-tale bot behaviour. The first flags just bench you behind a quick math question before the button arms again.</div>
 				<div class="state-row"><span class="tag over">TOO FAST</span><span class="desc">Two of your scoring clicks landed closer together than any human hand can manage.</span></div>
 				<div class="state-row"><span class="tag over">TOO MANY</span><span class="desc">In a busy round you took far more than your fair share of the clicks (solo rounds are exempt — there's no one to share with).</span></div>
 				<div class="state-row"><span class="tag over">SOLO FARM</span><span class="desc">You're miles ahead on the bounty with nobody around to race. Nothing's wrong, just check back when it's busier, or bring some friends so it counts.</span></div>
 				<div class="state-row"><span class="tag over">RUNAWAY</span><span class="desc">You out-clicked a runner-up who was genuinely competing by an impossible margin (beating an idle player is fine).</span></div>
-				<div class="state-row"><span class="tag over">AFK</span><span class="desc">This is not an AFK game.</span></div>
-				<div class="state-row"><span class="tag over">BUSTED</span><span class="desc">You know what you did, knock it off.</span></div>
+				<div class="state-row"><span class="tag over">AFK</span><span class="desc">Don't sit still during the wait — move your cursor while the button is arming.</span></div>
+				<div class="state-row"><span class="tag over">BUSTED</span><span class="desc">You scored without ever moving your cursor.</span></div>
 				<div class="line penalty-note">Keep getting flagged in one bounty and it escalates: too many flags puts you on a timed cooldown, and a few more after that sidelines you until the bounty is won. Play fair and none of this ever fires — these only catch automation.</div>
 
 				<div class="divider"></div>
@@ -501,11 +487,21 @@
 			<div class="park-card">
 				<div class="park-title">PAUSED — AWAY</div>
 				<div class="park-sub">You've stepped away, so you're out of the round and off the leaderboard race — no AFK flags while you're paused.</div>
-				<div class="park-hint">Press RESUME to rejoin — you'll be back in on the next button.</div>
-				@* RESUME is a child of the overlay card (painted above the backdrop), so it's
-				   reliably clickable — unlike the bottom-left PAUSE bar, which s&box hit-tests
-				   under this full-screen overlay regardless of z-index. ── *@
-				<div class="park-resume" onclick="@TogglePause">RESUME</div>
+				@* While a RESUME is in flight the server defers the rejoin to the next arming
+				   boundary, so we stay on this surface showing "rejoining next round" until the
+				   next round_pending drops us to STAND BY. Otherwise show the RESUME button —
+				   a child of the overlay card (painted above the backdrop) so it's reliably
+				   clickable, unlike the bottom-left PAUSE bar, which s&box hit-tests under this
+				   full-screen overlay regardless of z-index. ── *@
+				@if ( C.Resuming )
+				{
+					<div class="park-hint">Rejoining — you'll be back on the next button…</div>
+				}
+				else
+				{
+					<div class="park-hint">Press RESUME to rejoin — you'll be back in on the next button.</div>
+					<div class="park-resume" onclick="@TogglePause">RESUME</div>
+				}
 			</div>
 		</div>
 	}
@@ -649,6 +645,16 @@
 	}
 
 	.pause-fab.paused:hover { background-color: rgba(214, 40, 40, 1); }
+
+	/* "PAUSING…": a manual PAUSE pressed mid-armed, waiting for the next arming boundary
+	   to take effect (amber, between the green rest and red paused states). */
+	.pause-fab.pending {
+		color: #04130b;
+		background-color: rgba(255, 209, 102, 0.92);
+		border-color: rgba(255, 209, 102, 0.6);
+	}
+
+	.pause-fab.pending:hover { background-color: rgba(255, 209, 102, 1); }
 
 	/* ── parked / away overlay: a dim full-screen backdrop (captures input so nothing
 	   underneath registers) with a centred card. Sits above the how-to popup, below the
@@ -1164,29 +1170,6 @@
 		z-index: 100;
 	}
 
-	/* "+ PENALTY" popup: red text with a white outline, positioned absolutely in the
-	   box (left/top % set inline, same space as the button) and animated up + faded
-	   over 1s, then held gone (forwards) until OnUpdate prunes it. pointer-events:none
-	   so it never eats a click; high z so it reads over the button and HUD. */
-	.penalty-pop {
-		position: absolute;
-		font-size: 30px;
-		font-weight: bold;
-		color: #e63946;
-		text-stroke: 2px #ffffff;
-		pointer-events: none;
-		z-index: 120;
-		animation-name: penalty-rise;
-		animation-duration: 1s;
-		animation-timing-function: ease-out;
-		animation-fill-mode: forwards;
-	}
-
-	@@keyframes penalty-rise {
-		0%   { opacity: 1; transform: translateY(0px); }
-		100% { opacity: 0; transform: translateY(-90px); }
-	}
-
 	/* Opponent click pip: a half-size (70px vs the button's 140px) green circle that
 	   pops in and fades over ~0.45s (matched to PipLifetime so it's gone before
 	   ClickController prunes it). Positioned in the box's % space (left/top set inline),
@@ -1229,17 +1212,21 @@
 		white-space: nowrap;
 	}
 
-	/* v5 board button: one clickable green circle per live slot. Positioned by its
+	/* v5 board button: one clickable green SQUARE per live slot. Positioned by its
 	   server-placed centre (inline left/top %, same box-% space as the pips), centred via
-	   −half margins. Smaller than the legacy single button since up to X share the box.
-	   No teleport — positions are server-authoritative, so left/top can transition-free. */
+	   −half margins. Square (not a circle) so the visual matches the actual click hitbox
+	   AND the `touch` hitbox — s&box hit-tests the panel's box, so a circle would leave the
+	   corners clickable-but-untouched and false-trip the no_hover check; it also matches the
+	   server's square non-overlap spacing model (board.go posMinDist). Smaller than the
+	   legacy single button since up to X share the box. No teleport — positions are
+	   server-authoritative, so left/top can transition-free. */
 	.board-btn {
 		position: absolute;
 		width: 96px;
 		height: 96px;
 		margin-left: -48px;
 		margin-top: -48px;
-		border-radius: 50%;
+		border-radius: 12px;
 		background-color: #06d6a0; /* live green — the board only exists while armed */
 		border: 4px solid rgba(255, 255, 255, 0.9);
 		transition: transform 0.08s ease-out;
@@ -1334,14 +1321,7 @@
 		letter-spacing: 1px;
 	}
 
-	.penalty {
-		font-size: 32px;
-		font-weight: bold;
-		color: #ffffff;
-	}
-
-	/* Host-pushed broadcast note: same size as the throttle line, orange, sits
-	   directly underneath it. */
+	/* Host-pushed broadcast note: a large orange message centred in the status HUD. */
 	.dev-note {
 		font-size: 32px;
 		font-weight: bold;
@@ -1579,6 +1559,19 @@
 	const int DisplayLimit = 10;
 	const float RefreshInterval = 20f;
 
+	// Touch-hitbox geometry (reference px, the 1080-tall ScreenPanel space). CenterRefH is
+	// the .center box's reference height (1080 − top:24 − bottom:24); BoardBtnRefHalf is the
+	// .board-btn half-extent (96px square ⇒ 48). TouchPadRef DELIBERATELY enlarges the touch
+	// hitbox beyond the visual/click box so the `touch` zone is a strict SUPERSET of the
+	// clickable area: a click can land in the 4px border ring or a frame where the per-frame
+	// sampler just missed the edge, and no_hover only targets EGREGIOUS cases (cursor nowhere
+	// near the button), so erring bigger trades a hair of sensitivity for zero edge-click
+	// false positives. Used to size the square hitbox in actual px when detecting a `touch`
+	// enter (see OnUpdate).
+	const float CenterRefH = 1080f - 24f - 24f;
+	const float BoardBtnRefHalf = 48f;
+	const float TouchPadRef = 32f;
+
 	ClickController C => ClickController.Instance;
 
 	// ── session: live standings pushed inside round_result/game_over (never fetched) ──
@@ -1750,27 +1743,51 @@
 		bool panelOpen = _howtoOpen || MusicOpen;
 		if ( panelOpen )
 		{
-			if ( !C.Parked )
+			// Request a park once. Don't re-issue while one is already parked OR pending: a
+			// PAUSE pressed mid-armed is deferred to the next arming boundary (Parked stays
+			// false, ParkPending true until then), and re-calling TogglePark would read that
+			// as a RESUME and toggle it straight back off.
+			if ( !C.Parked && !C.ParkPending )
 			{
 				C.TogglePark();
-				if ( C.Parked ) _panelParked = true; // our park, and the socket accepted it
+				if ( C.Parked || C.ParkPending ) _panelParked = true; // our park took (now or deferred)
 				StateHasChanged();
 			}
 		}
 		else if ( _panelParked )
 		{
-			if ( C.Parked ) C.TogglePark(); // rejoin: back in on the next arm
+			// Panels closed: rejoin if we're parked or a park is still in flight.
+			if ( C.Parked || C.ParkPending ) C.TogglePark();
 			_panelParked = false;
 			StateHasChanged();
 		}
 	}
 
-	// Toggle the away/parked state from the PAUSE bar. Delegates to the controller (which
-	// flips Parked + tells the server) and re-renders so the bar + overlay update at once.
+	// Toggle the away/parked state from the PAUSE bar / parked-overlay RESUME. Delegates to
+	// the controller (which parks immediately, defers a mid-armed park to the next arming
+	// boundary, or requests a deferred rejoin) and re-renders so the bar + overlay update.
 	void TogglePause()
 	{
 		ClickController.Instance?.TogglePark();
 		StateHasChanged();
+	}
+
+	// PAUSE-bar label/class. "PAUSING…" (amber) while a mid-armed park waits for the next
+	// arming boundary; "PAUSED" (red) once parked; "PAUSE" (green) at rest.
+	string PauseFabLabel()
+	{
+		var c = C;
+		if ( c == null ) return "PAUSE";
+		if ( c.ParkPending ) return "PAUSING…";
+		return c.Parked ? "PAUSED" : "PAUSE";
+	}
+
+	string PauseFabClass()
+	{
+		var c = C;
+		if ( c == null ) return "";
+		if ( c.ParkPending ) return "pending";
+		return c.Parked ? "paused" : "";
 	}
 
 	// ── "copied profile link" toast: shown for ToastDuration after a name click ──
@@ -1876,14 +1893,6 @@
 
 	protected override void OnUpdate()
 	{
-		// Drop finished "+ PENALTY" popups (the CSS animation runs for PopLife). While
-		// any are live, re-render every frame so removals take effect on time.
-		if ( _pops.Count > 0 )
-		{
-			_pops.RemoveAll( p => p.Since >= PopLife );
-			StateHasChanged();
-		}
-
 		// The bounty rolled over (or we just (re)connected): re-fetch the active skin
 		// and the previous winner so neither goes stale. Driven by the server push /
 		// hello via ClickController.BountyRefreshSeq — no polling.
@@ -1903,12 +1912,17 @@
 
 		var phase = C?.Phase ?? GamePhase.Connecting;
 
-		// While armed, report our pointer to the server (throttled in SendCursor) so other
-		// players see our roaming cursor. Mouse.Position and Box.Rect share the same
-		// screen-pixel space, so the pointer normalizes to the box exactly like the
-		// buttons/pips (−1..1, 0 = centre). Re-render is driven by BoardHash in BuildHash
-		// (board claims + cursor moves), so no per-frame StateHasChanged needed here.
-		if ( phase == GamePhase.Armed && C != null )
+		// Report our pointer to the server (throttled in SendCursor) so other players see our
+		// roaming cursor AND so the server's AFK pass can tell a present player from an away
+		// one. As of v7 this runs during BOTH the arming wait (Pending) and the live window
+		// (Armed) — the server now watches arming-phase movement, not just armed. The .center
+		// box (_box) is laid out throughout (it's a fixed absolutely-positioned container that
+		// exists in every phase, with or without buttons), so its rect is valid during Pending
+		// too. Mouse.Position and Box.Rect share the same screen-pixel space, so the pointer
+		// normalizes to the box exactly like the buttons/pips (−1..1, 0 = centre). Re-render is
+		// driven by BoardHash in BuildHash (board claims + cursor moves), so no per-frame
+		// StateHasChanged needed here.
+		if ( ( phase == GamePhase.Armed || phase == GamePhase.Pending ) && C != null )
 		{
 			var r = _box?.Box.Rect ?? default;
 			if ( r.Width > 0f && r.Height > 0f )
@@ -1925,6 +1939,27 @@
 				// half), and on-board movement is measured cleanly with no edge artefact.
 				if ( nx >= -1f && nx <= 1f && ny >= -1f && ny <= 1f )
 					C.SendCursor( nx, ny );
+
+				// Armed-only: fire a one-shot `touch` the instant the pointer enters a live
+				// button's hitbox (ClickController de-dupes per window). The button is a 96px
+				// CSS SQUARE; the touch hitbox is an axis-aligned box of half-extent
+				// (BoardBtnRefHalf + TouchPadRef), deliberately a bit BIGGER than the visual/
+				// click box so an edge click (the 4px border ring, or a frame the sampler just
+				// missed) always counts as touched — no_hover only targets egregious "cursor
+				// nowhere near" cases. ScreenPanel scales uniformly, so the half-extent is the
+				// same on both axes in actual px. .center spans top:24/bottom:24 of the 1080
+				// ref, so its reference height is CenterRefH; scale = actual box height ÷ that.
+				if ( phase == GamePhase.Armed )
+				{
+					float half = ( BoardBtnRefHalf + TouchPadRef ) * ( r.Height / CenterRefH );
+					foreach ( var btn in C.LiveButtons )
+					{
+						float cx = r.Center.x + btn.X * ( r.Width / 2f );
+						float cy = r.Center.y + btn.Y * ( r.Height / 2f );
+						if ( MathF.Abs( m.x - cx ) <= half && MathF.Abs( m.y - cy ) <= half )
+							C.SendTouch( btn.Slot );
+					}
+				}
 			}
 		}
 
@@ -2161,20 +2196,13 @@
 	// Slots are never reused within a round, so a stale render-closure firing an old slot
 	// simply resolves to null and no-ops here — it can never send a consumed nonce at a
 	// button that's already been claimed/replaced. No teleport; the board is server-placed.
-	// SendButtonClick returns true only if it fell through to a penalised idle click (e.g.
-	// the window just closed), in which case pop "+ PENALTY" at the spot.
 	void OnPressSlot( ushort slot )
 	{
 		var btn = ClickController.Instance?.FindButton( slot );
 		if ( btn == null )
 			return; // already claimed/replaced (or a stale closure) — clean miss, nothing sent
 
-		bool bad = ClickController.Instance?.SendButtonClick( btn ) ?? false;
-		if ( bad )
-		{
-			_pops.Add( new PenaltyPop { Left = PipPct( btn.X ), Top = PipPct( btn.Y ), Since = 0f } );
-			_popSeq++;
-		}
+		ClickController.Instance?.SendButtonClick( btn );
 		StateHasChanged();
 	}
 
@@ -2211,15 +2239,6 @@
 
 	// The live clicks-remaining counter, floored at 0 (a late tick can't show negative).
 	static int RemainingShown( ClickController c ) => Math.Max( 0, c.RemainingThisRound );
-
-	// ── "+ PENALTY" popups: one per bad click, each floats up and fades over PopLife
-	//    seconds (CSS keyframe), then is pruned. Several can be live at once. Left/Top
-	//    are the box-relative % the button sat at when clicked (same space as the
-	//    button), so the text rises from where the player hit it. ──
-	class PenaltyPop { public int Left; public int Top; public RealTimeSince Since; }
-	readonly List<PenaltyPop> _pops = new();
-	int _popSeq; // bumps on every spawn so BuildHash rebuilds and the new popup renders
-	const float PopLife = 1f;
 
 	// ── music panel toggle ──
 	// The settings board is the Skafinity library's own SkafinityMusicPanel (the green
@@ -2260,18 +2279,20 @@
 	// ToastVisible so the copied-link toast appears and clears itself on time.
 	protected override int BuildHash() => HashCode.Combine(
 		HashCode.Combine( C?.Phase ?? GamePhase.Connecting, C?.Round ?? 0, C?.Of ?? 0,
-			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.PenaltyMs ?? 0, C?.ClicksSent ?? 0 ),
+			C?.Players ?? 0, C?.ClicksToWin ?? 0, C?.ClicksSent ?? 0 ),
 		HashCode.Combine( SessionEntries.Count, _hourly.Count, _hourlyLoaded, _hoursWon.Count, _hoursWonLoaded,
 			C?.ArmMaxSec ?? 0, C?.Tag, (int)(DateTime.UtcNow - DateTime.UtcNow.Date).TotalSeconds ),
 		HashCode.Combine( _sessionsWon.Count, _sessionsWonLoaded, ToastVisible, SkinLeaderName(), MusicOpen,
 			_skinUrl, _winnerLockMs, HashCode.Combine( WinnerLockPassed(), _hasBounty ) ),
-		HashCode.Combine( _popSeq, _pops.Count, _allTime.Count, _allTimeLoaded,
+		HashCode.Combine( _allTime.Count, _allTimeLoaded,
 			C?.HasTest ?? false, C?.TestPrompt ),
 		_howtoOpen,
 		// sanction overlay state (the per-second countdown tick is already covered by
-		// the seconds term in the second combine above); plus the parked/away state so
-		// the PAUSE bar + parked overlay repaint the instant it flips.
-		HashCode.Combine( C?.TestMessage, C?.SanctionState, C?.SanctionUntilMs, C?.Parked ?? false ),
+		// the seconds term in the second combine above); plus the parked/away state — and
+		// the deferred park-pending / resuming flags — so the PAUSE bar + parked overlay
+		// repaint the instant any of them flips.
+		HashCode.Combine( C?.TestMessage, C?.SanctionState, C?.SanctionUntilMs,
+			C?.Parked ?? false, C?.ParkPending ?? false, C?.Resuming ?? false ),
 		// round-scores flash: FlashVisible flips the panel off on time; round + count
 		// rebuild it when a new round's scores come up.
 		HashCode.Combine( FlashVisible, _flashRound, _flashWinners.Count ),

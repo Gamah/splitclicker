@@ -7,10 +7,13 @@ package game
 // single transaction (a replay that fails to write rolls the whole game back — see
 // store.RecordGame), so "no replay ⇒ no round" holds.
 //
-// Cursor data exists only for the armed window: the client reports its pointer just
-// while it is on the board, so a replay shows bursts of motion during each window
-// with gaps over the (silent) arm delays in between. That is inherent to the live
-// data and accepted — no continuous-capture client change was made.
+// As of issue #43 the timeline origin is the START OF ARMING (not the arm): the client
+// reports its pointer during the arming wait too, so a replay shows movement before the
+// button arms. Everything is keyed to ms from the window origin — cursors are recorded
+// arming-origin by the hub; button/claim offsets (which the board measures from the arm)
+// are shifted by +ArmMs onto that one timeline. Signals marks the phase transitions
+// (arming → armed → result) so the viewer can show the current phase and a coloured
+// scrubber band.
 
 // CursorSample is one recorded pointer position: ms offset from the round's arm and
 // the normalized position (int16, 0 = centre, matching the click/button coordinate
@@ -62,11 +65,24 @@ type ReplayCursor struct {
 	Samples []CursorSample `json:"s"`
 }
 
-// RoundReplay is one round's full visualization payload.
+// SignalEvent is one phase transition on the round's timeline: State is "pending" (the
+// window origin, always TMs 0), "armed" (the button arms, TMs = ArmMs), or "result" (the
+// race closed, TMs = ArmMs + race duration). The viewer reads these for the ARMING/ARMED/
+// RESULT phase readout and the coloured scrubber band.
+type SignalEvent struct {
+	State string `json:"state"`
+	TMs   int    `json:"t"`
+}
+
+// RoundReplay is one round's full visualization payload. The timeline origin is the start
+// of arming (issue #43): ArmMs is when the button armed (where the buttons/claims begin);
+// DurMs is the armed-window (race) duration. Cursors span arming + armed.
 type RoundReplay struct {
 	No      int            `json:"no"`
 	N       int            `json:"n"`
+	ArmMs   int            `json:"arm_ms"`
 	DurMs   int            `json:"dur_ms"`
+	Signals []SignalEvent  `json:"signals"`
 	Players []ReplayPlayer `json:"players"`
 	Buttons []ReplayButton `json:"buttons"`
 	Claims  []ReplayClaim  `json:"claims"`
@@ -86,7 +102,7 @@ type GameReplay struct {
 // wire-bot that claimed without ever moving onto the board still gets a labelled entry
 // (name falls back to its tag). Called at the end of race, before the next arming
 // stage clears the hub's per-window capture.
-func (e *Engine) buildRoundReplay(round, n, durMs int, initial []Button, b *board) RoundReplay {
+func (e *Engine) buildRoundReplay(round, n, armMs, durMs int, initial []Button, b *board) RoundReplay {
 	tracks := e.cursorTracks()
 
 	// tag → display name, preferring the cursor track's name (it's the live roster).
@@ -113,15 +129,17 @@ func (e *Engine) buildRoundReplay(round, n, durMs int, initial []Button, b *boar
 		players = append(players, ReplayPlayer{Tag: tag, Name: name})
 	}
 
+	// Buttons and claims are measured by the board from the ARM; shift them by +armMs onto
+	// the arming-origin timeline (cursors are already arming-origin from the hub).
 	buttons := make([]ReplayButton, 0, len(initial)+len(b.log))
 	for _, btn := range initial {
-		buttons = append(buttons, ReplayButton{ID: btn.SlotID, X: btn.X, Y: btn.Y, TMs: 0})
+		buttons = append(buttons, ReplayButton{ID: btn.SlotID, X: btn.X, Y: btn.Y, TMs: armMs})
 	}
 	claims := make([]ReplayClaim, 0, len(b.log))
 	for _, cl := range b.log {
-		claims = append(claims, ReplayClaim{Slot: cl.SlotID, By: cl.ClaimerTag, TMs: int(cl.TArmMs)})
+		claims = append(claims, ReplayClaim{Slot: cl.SlotID, By: cl.ClaimerTag, TMs: armMs + int(cl.TArmMs)})
 		if cl.Spawn != nil {
-			buttons = append(buttons, ReplayButton{ID: cl.Spawn.SlotID, X: cl.Spawn.X, Y: cl.Spawn.Y, TMs: int(cl.TArmMs)})
+			buttons = append(buttons, ReplayButton{ID: cl.Spawn.SlotID, X: cl.Spawn.X, Y: cl.Spawn.Y, TMs: armMs + int(cl.TArmMs)})
 		}
 	}
 
@@ -133,8 +151,14 @@ func (e *Engine) buildRoundReplay(round, n, durMs int, initial []Button, b *boar
 		cursors = append(cursors, ReplayCursor{Tag: t.Tag, Samples: t.Samples})
 	}
 
+	signals := []SignalEvent{
+		{State: "pending", TMs: 0},
+		{State: "armed", TMs: armMs},
+		{State: "result", TMs: armMs + durMs},
+	}
+
 	return RoundReplay{
-		No: round, N: n, DurMs: durMs,
+		No: round, N: n, ArmMs: armMs, DurMs: durMs, Signals: signals,
 		Players: players, Buttons: buttons, Claims: claims, Cursors: cursors,
 	}
 }

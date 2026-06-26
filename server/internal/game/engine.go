@@ -15,6 +15,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"strings"
@@ -97,19 +98,16 @@ type PendingFrame struct {
 	Clicks  int
 }
 
-// ArmedFrame goes live: the race is open. Penalties is keyed by SteamID — the
-// hub holds back that connection's copy of the armed frame by the given delay
-// (the spam deterrent) and echoes that same delay back so the player can see
-// they're being throttled. A scoring click must echo one of Buttons' nonces.
+// ArmedFrame goes live: the race is open. A scoring click must echo one of Buttons'
+// nonces. The old per-connection delayed-arm spam penalty was gutted in v7 (see race).
 type ArmedFrame struct {
 	Round int
 	Seq   int
 	// Buttons is the initial board of live buttons (each {SlotID, Nonce, X, Y}) sent to
 	// every non-legacy client; a scoring click echoes a button's Nonce. See board.
-	Buttons   []Button
-	Players   int
-	Clicks    int
-	Penalties map[string]time.Duration
+	Buttons []Button
+	Players int
+	Clicks  int
 	// Blocked is the set of SteamIDs withheld from this arm: players under an
 	// anticheat test who haven't passed yet. The hub does not send them the armed
 	// frame (no nonce ⇒ they cannot score) until they clear their test.
@@ -189,10 +187,11 @@ type Broadcaster interface {
 	// non-test rung — it still can't score, it just doesn't get a frame it can't
 	// render. False if not connected.
 	SanctionCapable(steamID string) bool
-	// Park marks a player as away off an afk_idle verdict: the hub withholds further
-	// frames from them and drops them from the crowd count / round N until they unpark
-	// (the Pause control). A no-op for clients too old to understand parking, who keep
-	// the plain afk ladder. Safe to call for any SteamID (no-op if not connected).
+	// Park marks a player as away off an afk verdict (now raised at the end of arming, so
+	// they drop out BEFORE the button arms): the hub withholds further frames from them and
+	// drops them from the crowd count / round N until they unpark (the Pause control). A
+	// no-op for legacy clients, who keep the plain afk ladder. Safe to call for any SteamID
+	// (no-op if not connected).
 	Park(steamID string)
 }
 
@@ -206,40 +205,46 @@ type HourlyDelta struct {
 
 // ScoredClick is one click that took a scoring slot in a round. SlotNo is the
 // "click N" (0-based arrival order); OffsetMs is its wire-arrival latency
-// measured from the arm (the click's At minus the round's armed_at).
+// measured from the arm (the click's At minus the round's armed_at). Button is the
+// board slot id this click CLAIMED (in-memory only, for the touch dwell checks — not
+// persisted); 0 if unknown.
 type ScoredClick struct {
 	SteamID  string
 	SlotNo   int
 	OffsetMs int
+	Button   uint16
 }
 
-// CursorActivity is a connected player's mouse activity during the round just played,
-// supplied by the ws hub. The afk pass (checkAfk) judges every entry the hub returns;
-// legacy clients send no cursors and the hub omits them, so Tracked is true for everyone
-// present (kept for clarity / a future "absent" sentinel).
+// CursorActivity is a connected player's mouse activity during a window, supplied by the
+// ws hub. The arming AFK pass (checkAfk) reads the ARMING-phase snapshot (ArmingCursor
+// activityFn, v7+ only); the round-end checks (checkBusted etc.) read the whole-round
+// snapshot (allCursorActivityFn, all non-legacy). Legacy clients send no cursors and the
+// hub omits them, so Tracked is true for everyone present.
 type CursorActivity struct {
 	// Tracked is whether this player can be judged at all (a connected non-legacy
-	// client). SawCursor is whether any cursor message arrived this window. Moved is
+	// client). SawCursor is whether any cursor message arrived in the window. Moved is
 	// whether the cursor changed position after its anchor (the window's second sample;
 	// the first is dropped as a pre-layout transient). AFK == !SawCursor || !Moved.
 	Tracked   bool
 	SawCursor bool
 	Moved     bool
 
-	// Eligible is true when the player was connected for the WHOLE armed window (present
-	// at its arm). A mid-window join, or a connection that hasn't seen a window yet, is
-	// not eligible: it never had a fair chance to play, so the idle nudge (afk_idle)
-	// skips it. The scoring "gotcha" (afk_score) ignores this: a player who SCORED
-	// necessarily had a live window to score in.
+	// Eligible is true when the player was present at the START of the window (the arming
+	// stage). A mid-window join, or a connection that hasn't seen a window yet, is not
+	// eligible: it never had a fair chance to play, so the AFK nudge skips it.
 	Eligible bool
 }
 
-// CheckResult is one anticheat check a round flagged against a player. Type is
-// the rule that fired ('fast_clicks' | 'too_many_clicks' | 'solo_round' |
-// 'dominant_winner' | 'afk_score' | 'afk_idle'); Detail is a short note ('delta=84ms'
-// / 'clicks=37' / 'clicks=12 vs 5' / 'scored no_cursor' / 'idle still') for the audit
-// record; Message is the player-facing line shown in the anticheat popup explaining
-// which rule benched them.
+// CheckResult is one anticheat check a round flagged against a player. Type is the rule
+// that fired:
+//   - movement (whole roster):  'afk' (still during arming → parked before the arm).
+//   - score-aware (round end):  'busted' (scored with no cursor all round), 'fast_clicks',
+//     'too_many_clicks', 'dominant_winner', 'fast_reaction' (#1), 'impossible_latency' (#2),
+//     'metronome' (#3), 'no_hover' / 'fast_hover' (touch, #5), 'straight_path' (#6).
+//   - session level:            'solo_round'.
+// Detail is a short audit note ('delta=84ms' / 'clicks=37' / 'no_cursor' / 'dwell=12ms');
+// Message is the player-facing line shown in the anticheat popup. Score NEVER enters the
+// 'afk' verdict — the wire-bot "scored without moving" signature is the separate 'busted'.
 type CheckResult struct {
 	SteamID string
 	Type    string
@@ -389,8 +394,8 @@ type Engine struct {
 	// badClicks counts non-scoring ("idle") clicks per SteamID accumulated since the
 	// last arm, across EVERY phase — arming, the live window, result display, game
 	// over and intermission. Touched only from the Run goroutine (pending/race/drain),
-	// so it needs no lock. It is read and reset at each arm to delay that connection's
-	// armed frame (the spam deterrent); see idlePenalty.
+	// so it needs no lock. Logged and reset at each arm as TELEMETRY only (the delayed-arm
+	// penalty it once drove was gutted in v7); see recordBad.
 	badClicks map[string]int
 
 	// underTest is the set of SteamIDs benched by a failed anticheat check: they
@@ -427,13 +432,25 @@ type Engine struct {
 	// countdown). Read from the in-memory leaderboard cache, so it's cheap to call.
 	bountyInfoFn func() BountyInfo
 
-	// allCursorActivityFn, if set, returns the cursor activity of every connected
-	// non-legacy player during the round just played (whether each sent any cursor
-	// messages, and how far the cursor roamed). Used by the per-round afk pass
-	// (checkAfk), which judges movement for the WHOLE roster, not just scorers.
-	// Supplied by the ws hub, which tracks a per-window cursor bounding box per
-	// connection. Optional: nil disables the afk pass.
+	// allCursorActivityFn, if set, returns the WHOLE-ROUND cursor activity (arming +
+	// armed) of every connected non-legacy player, read at round END by the score-aware
+	// checks (busted: scored with no cursor all round). Supplied by the ws hub. Optional.
 	allCursorActivityFn func() map[string]CursorActivity
+
+	// armingCursorActivityFn, if set, returns the ARMING-phase cursor activity of every
+	// connected v7+ player (v6 sends cursors armed-only and is exempt). Read after
+	// pending() returns, before the arm, by the movement-only afk pass (checkAfk), which
+	// parks a still player BEFORE the button arms. Optional: nil disables the afk pass.
+	armingCursorActivityFn func() map[string]CursorActivity
+
+	// touchDataFn, if set, returns each connected v7+ player's first-touch offsets (button
+	// id → ms since the window origin) for the round just played, for the no_hover /
+	// fast_hover dwell checks. Supplied by the ws hub. Optional: nil disables them.
+	touchDataFn func() map[string]map[uint16]int
+
+	// minRTTFn, if set, returns each connected player's minimum observed ping RTT (ms),
+	// for impossible_latency. Supplied by the ws hub. Optional: nil disables that check.
+	minRTTFn func() map[string]int
 
 	// cursorTracksFn, if set, returns the full recorded cursor path of every connected
 	// non-legacy player during the window just played, for the durable game replay.
@@ -473,11 +490,34 @@ func (e *Engine) SetDevNoteFn(fn func() string) { e.devNoteFn = fn }
 // solo_round check and the sanction ladder). Call before Run; nil disables both.
 func (e *Engine) SetBountyInfoFn(fn func() BountyInfo) { e.bountyInfoFn = fn }
 
-// SetAllCursorActivityFn registers the source of whole-roster cursor activity (used
-// by the per-round afk pass). Call before Run; nil disables the afk pass. See
-// CursorActivity and checkAfk.
+// SetAllCursorActivityFn registers the source of whole-round (arming + armed) cursor
+// activity, read at round end by the score-aware checks (busted). Call before Run.
 func (e *Engine) SetAllCursorActivityFn(fn func() map[string]CursorActivity) {
 	e.allCursorActivityFn = fn
+}
+
+// SetArmingCursorActivityFn registers the source of arming-phase cursor activity (v7+),
+// read by the movement-only afk pass between pending() and the arm. Call before Run; nil
+// disables the afk pass. See checkAfk.
+func (e *Engine) SetArmingCursorActivityFn(fn func() map[string]CursorActivity) {
+	e.armingCursorActivityFn = fn
+}
+
+// SetTouchDataFn registers the source of per-window touch data (used by no_hover /
+// fast_hover). Call before Run; nil disables the touch checks.
+func (e *Engine) SetTouchDataFn(fn func() map[string]map[uint16]int) { e.touchDataFn = fn }
+
+// SetMinRTTFn registers the source of per-connection min ping RTT (used by
+// impossible_latency). Call before Run; nil disables that check.
+func (e *Engine) SetMinRTTFn(fn func() map[string]int) { e.minRTTFn = fn }
+
+// Phase returns the engine's current round phase. Safe from any goroutine (lock-read);
+// the hub reads it to decide whether a park/unpark request is deferred (Armed) or applied
+// immediately (everything else).
+func (e *Engine) Phase() Phase {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.phase
 }
 
 // SetCursorTracksFn registers the source of whole-roster cursor paths (used to build
@@ -588,10 +628,6 @@ type Snapshot struct {
 	Clicks    int
 	ArmMinSec int // arming-window bounds (the per-round delay itself stays secret)
 	ArmMaxSec int
-	// Bad-click penalty escalation, sent on connect so the client mirrors the live
-	// throttle estimate without hardcoding the formula (see idlePenalty).
-	PenaltyBaseMs int
-	PenaltyStepMs int
 	// DevNote is the current host-editable broadcast note (empty = none); carried
 	// in hello so a mid-game joiner sees it without waiting for the next game.
 	DevNote string
@@ -613,7 +649,6 @@ func (e *Engine) Snapshot() Snapshot {
 		Phase: phase, Round: round, Of: e.cfg.RoundsPerGame,
 		Players: players, Clicks: e.clicksFor(players),
 		ArmMinSec: int(e.cfg.ArmMin / time.Second), ArmMaxSec: int(e.cfg.ArmMax / time.Second),
-		PenaltyBaseMs: e.cfg.PenaltyBaseMs, PenaltyStepMs: e.cfg.PenaltyStepMs,
 		DevNote: devNote,
 		TickMs:  int(e.tickInterval / time.Millisecond),
 	}
@@ -737,64 +772,68 @@ func (e *Engine) playGame(ctx context.Context) {
 	// solo_round check (after the loop) keys off this: uncontested == the leader is
 	// the only entry here.
 	sessionScorers := map[string]bool{}
-	// AFK fires at most ONCE per game per player (afk_score or afk_idle). This breaks
-	// the answer-a-test-mid-round re-flag loop within a game, while a player who is AFK
-	// across multiple games still ladders out (the set resets each game). Reset here.
+	// AFK fires at most ONCE per game per player. This breaks the answer-a-test-mid-round
+	// re-flag loop within a game, while a player who is AFK across multiple games still
+	// ladders out (the set resets each game). Reset here.
 	afkFired := map[string]bool{}
 	for round := 1; round <= x && ctx.Err() == nil; round++ {
 		// players is the full connected crowd (shown to clients + recorded); N is sized
 		// to the players who can actually race — benched/cooled-down/ignored players are
 		// excluded so they don't inflate the scoring slots.
 		players := e.bc.PlayerCount()
-		active := e.bc.ActivePlayerCount(e.blockedMap())
-		n := e.clicksFor(active)
+		n := e.clicksFor(e.bc.ActivePlayerCount(e.blockedMap()))
+		armingStart := time.Now() // the window origin (the replay's arming-origin timeline)
 		e.pending(ctx, round, x, players, n, info)
 		if ctx.Err() != nil {
 			return
 		}
-		final := round == x
-		deltas, roundID, clicks, armedAt, replay := e.race(ctx, round, x, players, n, scores, info, reached, final)
-		if ctx.Err() != nil {
-			return
-		}
-		// Run the end-of-round anticheat checks: the scoring-click rules (runChecks)
-		// plus the whole-roster cursor afk pass (checkAfk, judged against who scored
-		// this round). Every flagged check is logged; applySanction then escalates the
-		// ladder for test-capable players (test → cooldown → ignored) and pushes them a
-		// frame. checkAfk reads the per-window cursor boxes here, before the next round's
-		// pending() clears them.
-		scoredThisRound := map[string]bool{}
-		for _, c := range clicks {
-			scoredThisRound[c.SteamID] = true
-			sessionScorers[c.SteamID] = true
-		}
-		// blocked = players already benched on a math test / cooled down / ignored this
-		// bounty. They are skipped from ALL checks: a player working through their
-		// outstanding test must not pile up fresh flags (and so escalate) before they
-		// have answered it. checkAfk uses this to log-but-not-flag; runChecks doesn't
-		// know about it, so its results are filtered in the apply loop below.
+
+		// ARMING-PHASE AFK pass (issue #43): AFK is now a purely movement signal evaluated
+		// at the END of arming, before the button arms — a still player is parked so they
+		// never take a scoring slot. Score NEVER enters this (the wire-bot "scored without
+		// moving" signature is the round-end `busted` check). blocked is re-snapshotted
+		// after pending()'s notifySanctions (a player may have cleared their test there).
 		blocked := e.blockedMap()
-		checks := e.runChecks(clicks, checkCtx{n: n})
-		checks = append(checks, e.checkAfk(round, scoredThisRound, blocked, afkFired)...)
-		for _, ch := range checks {
+		afkChecks := e.checkAfk(round, blocked, afkFired)
+		for _, ch := range afkChecks {
 			if blocked[ch.SteamID] {
 				continue
 			}
 			if e.bc != nil && e.bc.TestCapable(ch.SteamID) {
 				e.applySanction(ch, bi)
-				// afk_idle is the legitimately-away verdict: in addition to bumping the
-				// ladder rung (above), park the player so they drop cleanly off the board
-				// and out of the round's N until they hit Pause to rejoin. Park is a no-op
-				// on builds too old to understand it (they keep just the ladder), and the
-				// gotcha (afk_score) is never parked — it stays purely punitive.
-				if ch.Type == "afk_idle" {
-					e.bc.Park(ch.SteamID)
-				}
+				e.bc.Park(ch.SteamID) // afk always parks now — drop them off the board before the arm
 			}
 		}
+		// Parking changed the active roster — re-snapshot the crowd and re-size N for the
+		// armed frame so parked players don't inflate the scoring slots.
+		players = e.bc.PlayerCount()
+		n = e.clicksFor(e.bc.ActivePlayerCount(e.blockedMap()))
+
+		final := round == x
+		deltas, roundID, clicks, armedAt, replay := e.race(ctx, round, x, players, n, armingStart, scores, info, reached, final)
+		if ctx.Err() != nil {
+			return
+		}
+		scoredThisRound := map[string]bool{}
+		for _, c := range clicks {
+			scoredThisRound[c.SteamID] = true
+			sessionScorers[c.SteamID] = true
+		}
+		// Round-end, SCORE-AWARE checks (the only ones that read scoring). blocked =
+		// players already benched / cooled / ignored this bounty; they are skipped from
+		// flagging (a player working through a test must not pile up fresh flags). The afk
+		// verdicts (raised above) are folded into the round's audit log alongside these.
+		blocked = e.blockedMap()
+		checks := e.runChecks(clicks, checkCtx{n: n})
+		checks = append(checks, e.checkBusted(scoredThisRound, blocked)...)
+		checks = append(checks, e.checkLatency(clicks, blocked)...)
+		checks = append(checks, e.checkTouch(clicks, blocked)...)
+		checks = append(checks, e.checkStraightPath(scoredThisRound, blocked)...)
+		e.applyRoundChecks(checks, blocked, bi)
+		allChecks := append(afkChecks, checks...)
 		roundLogs = append(roundLogs, RoundLog{
 			RoundID: roundID, RoundNo: round, N: n, Players: players,
-			ArmedAt: armedAt, Clicks: clicks, Checks: checks, Replay: replay,
+			ArmedAt: armedAt, Clicks: clicks, Checks: allChecks, Replay: replay,
 		})
 		if final {
 			finalDeltas, finalRoundID = deltas, roundID
@@ -875,10 +914,10 @@ func (e *Engine) afterGame(final []Standing, log GameLog) {
 	}
 }
 
-// pending is the IDLE/arming phase: announce the round, then wait the secret
-// delay. Idle clicks during it score nothing but accrue this connection's
-// cross-phase bad-click tally (e.badClicks), applied as an arm-delay penalty at
-// the next arm.
+// pending is the IDLE/arming phase: announce the round, then wait the secret delay.
+// Cursors sent during it are now captured (the window origin), so the arming-phase AFK
+// pass (in playGame, after this returns) has a movement signal before the arm. Idle clicks
+// during it score nothing but accrue this connection's bad-click telemetry (e.badClicks).
 func (e *Engine) pending(ctx context.Context, round, of, players, n int, info map[string]playerInfo) {
 	e.setPhase(PhasePending, round)
 	e.bc.Pending(PendingFrame{Round: round, Of: of, Players: players, Clicks: n})
@@ -917,8 +956,7 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 // nothing — playGame folds straight into game_over (which carries the returned
 // deltas/roundID), so the last round shows the final standings once instead of a
 // redundant ROUND OVER → GAME OVER pair.
-func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, reached map[string]time.Time, final bool) (map[string]int, string, []ScoredClick, time.Time, RoundReplay) {
-	penalties := e.penaltiesFrom(e.badClicks)
+func (e *Engine) race(ctx context.Context, round, of, players, n int, armingStart time.Time, scores map[string]int, info map[string]playerInfo, reached map[string]time.Time, final bool) (map[string]int, string, []ScoredClick, time.Time, RoundReplay) {
 	blocked := e.blockedMap()
 	e.setPhase(PhaseArmed, round)
 	armedAt := time.Now()
@@ -936,9 +974,18 @@ func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map
 		buttons = append(buttons, b.mint())
 	}
 
-	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Buttons: buttons, Players: players, Clicks: n, Penalties: penalties, Blocked: blocked})
-	// Each arm forgives the bad clicks accrued since the previous arm: the penalty
-	// above already reflects them, and the tally now restarts for the next arm.
+	e.bc.Armed(ArmedFrame{Round: round, Seq: round, Buttons: buttons, Players: players, Clicks: n, Blocked: blocked})
+	// The delayed-arm spam penalty was gutted in v7 (see the type doc) — the arm is now a
+	// single broadcast. The bad-click tally is kept as TELEMETRY only: log this arm's
+	// dormant-click counts before resetting, so the signal is still visible (and available
+	// for a future high-threshold flag) without holding back anyone's window.
+	if len(e.badClicks) > 0 {
+		total := 0
+		for _, c := range e.badClicks {
+			total += c
+		}
+		e.log.Info("idle_clicks", zap.Int("round", round), zap.Int("connections", len(e.badClicks)), zap.Int("total", total))
+	}
 	e.badClicks = map[string]int{}
 
 	timer := time.NewTimer(e.cfg.RaceMax)
@@ -987,7 +1034,13 @@ raceLoop:
 	// Assemble the round's replay while the hub still holds this window's cursor capture
 	// (the next round's pending() clears it). The board's never-drained claim log + the
 	// initial buttons give the full button timeline; the hub supplies the cursor paths.
-	replay := e.buildRoundReplay(round, n, int(time.Since(armedAt).Milliseconds()), buttons, b)
+	// armMs = the arming duration (window origin → arm); cursors are arming-origin, so the
+	// button/claim offsets are shifted onto the same timeline (see buildRoundReplay).
+	armMs := int(armedAt.Sub(armingStart).Milliseconds())
+	if armMs < 0 {
+		armMs = 0
+	}
+	replay := e.buildRoundReplay(round, n, armMs, int(time.Since(armedAt).Milliseconds()), buttons, b)
 
 	deltas := map[string]int{}
 	clicks := make([]ScoredClick, len(b.scored))
@@ -996,9 +1049,11 @@ raceLoop:
 		scores[ev.SteamID]++
 		// Record the arrival time of each scoring click; the last one wins, so
 		// reached[sid] ends up as when this player reached their current total —
-		// the tie-break standingsOf uses ("who got there first").
+		// the tie-break standingsOf uses ("who got there first"). b.log[i] is the claim
+		// this click made (same arrival order as b.scored), giving the button it claimed
+		// for the touch dwell checks.
 		reached[ev.SteamID] = ev.At
-		clicks[i] = ScoredClick{SteamID: ev.SteamID, SlotNo: i, OffsetMs: int(ev.At.Sub(armedAt).Milliseconds())}
+		clicks[i] = ScoredClick{SteamID: ev.SteamID, SlotNo: i, OffsetMs: int(ev.At.Sub(armedAt).Milliseconds()), Button: b.log[i].SlotID}
 	}
 	if len(deltas) > 0 && e.store != nil {
 		e.persist(deltas)
@@ -1099,34 +1154,12 @@ func (e *Engine) randArmDelay() time.Duration {
 
 // --- pure helpers (unit-tested directly) ---
 
-// idlePenalty is the accumulated arm-delay penalty after n bad clicks accrued
-// since the last arm: sum_{k=1..n}(base + step·(k−1)) = base·n + step·n(n−1)/2,
-// where base/step are the configured PenaltyBaseMs/PenaltyStepMs (default
-// 500/100 → totals 500,1100,1800,2600… ms).
-func (e *Engine) idlePenalty(n int) time.Duration {
-	if n <= 0 {
-		return 0
-	}
-	ms := e.cfg.PenaltyBaseMs*n + e.cfg.PenaltyStepMs*n*(n-1)/2
-	return time.Duration(ms) * time.Millisecond
-}
-
-// penaltiesFrom turns the accrued bad-click tally into per-connection arm-delay
-// penalties for the hub to hold back. nil when nobody's earned one (the common case).
-func (e *Engine) penaltiesFrom(bad map[string]int) map[string]time.Duration {
-	if len(bad) == 0 {
-		return nil
-	}
-	out := make(map[string]time.Duration, len(bad))
-	for sid, n := range bad {
-		out[sid] = e.idlePenalty(n)
-	}
-	return out
-}
-
-// recordBad bumps a connection's cross-phase bad-click tally for an idle (zero-
-// nonce) click — one that can never score in any phase. Non-zero-nonce clicks are
-// race attempts (handled by the race), never penalised even when they lose.
+// recordBad bumps a connection's cross-phase bad-click ("idle", zero-nonce) tally. The
+// delayed-arm penalty this once fed was gutted in v7; the tally is kept as TELEMETRY only
+// (logged per arm in race, see CLAUDE.md / issue #43), never an auto-sanction — dormant
+// mashing is human (eager players mash before the arm) and the nonce + rate limiter + the
+// anticheat checks already cover blind flooding. Non-zero-nonce clicks are race attempts,
+// never counted even when they lose.
 func (e *Engine) recordBad(ev ClickEvent) {
 	if ev.Nonce == 0 {
 		e.badClicks[ev.SteamID]++
@@ -1202,6 +1235,24 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 				}
 			}
 		}
+		// fast_reaction (#1): the player's FIRST scoring click landed sooner after the arm
+		// than any human could react. offs is in arrival order, so offs[0] is their earliest
+		// arm→click latency. Catches a one-shot bot that fast_clicks (needs ≥2 clicks) can't.
+		if e.cfg.ReactionMinMs > 0 && len(offs) > 0 && offs[0] < e.cfg.ReactionMinMs {
+			out = append(out, CheckResult{SteamID: sid, Type: "fast_reaction",
+				Detail:  fmt.Sprintf("offset=%dms", offs[0]),
+				Message: "You reacted to the button faster than humanly possible."})
+		}
+		// metronome (#3): a machine-flat cadence (very low jitter) across ≥ MinClicks scoring
+		// clicks is an autoclicker signature a human mash never produces. Off by default
+		// (MetronomeMinClicks 0). Coefficient of variation = stddev/mean of the gaps.
+		if e.cfg.MetronomeMinClicks > 0 && len(offs) >= e.cfg.MetronomeMinClicks {
+			if cv, ok := coeffVar(offs); ok && cv < e.cfg.MetronomeMaxCV {
+				out = append(out, CheckResult{SteamID: sid, Type: "metronome",
+					Detail:  fmt.Sprintf("cv=%.3f n=%d", cv, len(offs)),
+					Message: "Your clicks came at a machine-perfect cadence."})
+			}
+		}
 		// too_many_clicks: an implausible share of this round's slots.
 		if limit > 0 && len(offs) > limit {
 			out = append(out, CheckResult{SteamID: sid, Type: "too_many_clicks",
@@ -1231,60 +1282,35 @@ func (e *Engine) runChecks(clicks []ScoredClick, c checkCtx) []CheckResult {
 	return out
 }
 
-// afkByCursor is the AFK predicate: a player is AFK this round if no cursor messages
-// arrived at all, or the cursor never moved (no sample after the anchor differed from
-// it). It is decoupled from scoring on purpose; checkAfk decides what an AFK verdict
-// means.
+// afkByCursor is the AFK predicate: a player is AFK if no cursor messages arrived at all,
+// or the cursor never moved (no sample after the anchor differed from it). It is a pure
+// MOVEMENT signal — score never enters it. checkAfk decides what an AFK verdict means.
 func afkByCursor(act CursorActivity) bool {
 	return !act.SawCursor || !act.Moved
 }
 
-// checkAfk is the per-round AFK pass. Unlike runChecks (which only sees scoring
-// clicks), it judges movement for the WHOLE connected roster every round, because a
-// still player who scores NOTHING is exactly the one to flag, and that player leaves
-// no scoring click to be inspected. The hub supplies every non-legacy player's cursor
-// activity for the window just played (allCursorActivityFn); legacy clients send no
-// cursors and are omitted, so they are never flagged. AfkCheck>0 gates the whole pass.
+// checkAfk is the ARMING-PHASE AFK pass (issue #43). It is run after pending() returns and
+// BEFORE the button arms, against the ARMING-window cursor movement of the whole judgeable
+// roster (armingCursorActivityFn — v7+ only; v6 sends cursors armed-only and is exempt). A
+// player who didn't move their cursor during the arming wait is AFK and is parked by the
+// caller BEFORE the arm, so they never take a scoring slot. AFK is purely a movement signal:
+// score NEVER enters it (the wire-bot "scored without moving" signature is the round-end
+// `busted` check). AfkCheck>0 gates the whole pass.
 //
-// Every connected player is LOGGED every round (even still / no-score ones) for
-// visibility. An AFK verdict splits two ways by whether the player took a scoring slot
-// this round (scored, derived from the round's clicks in playGame):
+// Only an ELIGIBLE player is flagged (CursorActivity.Eligible: present at the start of this
+// arming window). A mid-window join, or a connection that hasn't had a window yet, had no
+// fair chance to put its cursor down, so it is skipped. blocked players (already benched /
+// cooled / ignored) are logged but never re-flagged. afkFired caps AFK at once per game per
+// player (caller-owned, reset each game): a genuinely-AFK player still ladders out across
+// games. Results are returned in SteamID order so they are deterministic.
 //
-//   - afk_score: AFK AND scored = the "gotcha". Buttons spawn at server-RNG'd spots
-//     and move, so a human cannot claim one without the cursor travelling. Scoring
-//     while still is the bot signature (a wire-bot echoing the nonce). The serious flag.
-//   - afk_idle:  AFK AND did not score = an idle player. The soft nudge. Only raised
-//     for an ELIGIBLE player (CursorActivity.Eligible: present for the whole armed
-//     window). A mid-window join, or a fresh connection that hasn't had a window yet,
-//     has an empty cursor box it never had a chance to fill, so it is skipped here.
-//     The gotcha ignores eligibility: scoring proves there was a live window.
-//
-// Both ride the same per-bounty sanction ladder (applySanction keys per player, not
-// per rule). The player message is deliberately vague for both: it must NOT reveal
-// that cursor movement is what's measured. Detail records the AFK signal for the audit
-// trail. Results are returned in SteamID order so they are deterministic.
-//
-// blocked is the set of players already benched/cooled/ignored this bounty. They are
-// LOGGED (the visibility requirement covers everyone) but never flagged: they can't
-// score (so there is no gotcha to catch) and an idle benched player must not pile up
-// fresh idle flags while stuck on a test.
-//
-// afkFired is the per-GAME set of players who have already taken an AFK flag this game
-// (caller-owned, reset each game). AFK fires at most once per game per player: this
-// breaks the loop where a player who answers their math test mid-round (clearing the
-// block) is immediately re-flagged for the round they spent answering. A genuinely-AFK
-// player still ladders out across games (the set resets each game), so escalation to
-// cooldown/ignored is only slowed, not prevented. checkAfk marks a player here the
-// moment it flags them.
-//
-// round is logged for correlation. A per-player "afk_eval" line and a single
-// "afk_round" summary print every round, even when nobody is AFK, so stillness and the
-// blocked-skip are visible in the logs rather than inferred from a missing line.
-func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) []CheckResult {
-	if e.cfg.AfkCheck <= 0 || e.allCursorActivityFn == nil {
+// Every judgeable player is LOGGED every round (afk_eval) plus an afk_round summary, so
+// stillness and the skips are visible in the logs rather than inferred from a missing line.
+func (e *Engine) checkAfk(round int, blocked, afkFired map[string]bool) []CheckResult {
+	if e.cfg.AfkCheck <= 0 || e.armingCursorActivityFn == nil {
 		return nil
 	}
-	acts := e.allCursorActivityFn()
+	acts := e.armingCursorActivityFn()
 	ids := make([]string, 0, len(acts))
 	for sid := range acts {
 		ids = append(ids, sid)
@@ -1292,19 +1318,15 @@ func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) 
 	sort.Strings(ids)
 
 	var out []CheckResult
-	var afkN, gotcha, idle, blockedAfk, ineligible, alreadyFired int
+	var afkN, flagged, blockedAfk, ineligible, alreadyFired int
 	for _, sid := range ids {
 		act := acts[sid]
-		didScore := scored[sid]
 		afk := act.Tracked && afkByCursor(act)
-		// Log EVERY connected player every round, including moving / benched ones, so
-		// stillness is visible in the logs and not only inferred from a missing line.
 		e.log.Info("afk_eval",
 			zap.Int("round", round),
 			zap.String("sid", sid),
 			zap.Bool("saw_cursor", act.SawCursor),
 			zap.Bool("moved", act.Moved),
-			zap.Bool("scored", didScore),
 			zap.Bool("blocked", blocked[sid]),
 			zap.Bool("eligible", act.Eligible),
 			zap.Bool("afk", afk))
@@ -1313,55 +1335,253 @@ func (e *Engine) checkAfk(round int, scored, blocked, afkFired map[string]bool) 
 		}
 		afkN++
 		if blocked[sid] {
-			// Already benched/cooled/ignored: judged AFK but deliberately not re-flagged.
 			blockedAfk++
 			continue
 		}
 		if afkFired[sid] {
-			// Already took this game's one AFK flag: don't re-fire (breaks the
-			// answer-a-test-mid-round re-flag loop). They re-arm next game.
 			alreadyFired++
+			continue
+		}
+		if !act.Eligible {
+			ineligible++
 			continue
 		}
 		reason := "no_cursor"
 		if act.SawCursor {
 			reason = "still"
 		}
-		if didScore {
-			// The gotcha (BUSTED): scored a slot while still = automation. Judged even if
-			// not "eligible": anyone who scored necessarily had a live window to do it in.
-			gotcha++
-			afkFired[sid] = true
-			out = append(out, CheckResult{SteamID: sid, Type: "afk_score",
-				Detail:  "scored " + reason,
-				Message: "You know what you did, knock it off."})
-		} else {
-			// The idle nudge (AFK): still and didn't score. Skip players who weren't here
-			// for the whole window (mid-window join / no window yet): they never had a
-			// fair chance to play.
-			if !act.Eligible {
-				ineligible++
-				continue
-			}
-			idle++
-			afkFired[sid] = true
-			out = append(out, CheckResult{SteamID: sid, Type: "afk_idle",
-				Detail:  "idle " + reason,
-				Message: "This is not an AFK game."})
-		}
+		flagged++
+		afkFired[sid] = true
+		out = append(out, CheckResult{SteamID: sid, Type: "afk",
+			Detail:  "arming " + reason,
+			Message: "This is not an AFK game."})
 	}
-	// One summary line per round so the AFK pass is visible even when nobody is flagged.
 	e.log.Info("afk_round",
 		zap.Int("round", round),
 		zap.Int("evaluated", len(ids)),
-		zap.Int("scored", len(scored)),
 		zap.Int("afk", afkN),
-		zap.Int("flagged_gotcha", gotcha),
-		zap.Int("flagged_idle", idle),
+		zap.Int("flagged", flagged),
 		zap.Int("afk_but_blocked", blockedAfk),
 		zap.Int("afk_but_ineligible", ineligible),
 		zap.Int("afk_but_already_fired", alreadyFired))
 	return out
+}
+
+// checkBusted is the round-end wire-bot check — the ONLY movement check that reads scoring.
+// A player who claimed a scoring slot without EVER sending a cursor the whole round (arming
+// and armed) is automation: a human cannot claim a server-RNG'd button without the pointer
+// travelling onto it. It reads the WHOLE-ROUND cursor activity (allCursorActivityFn, which
+// includes v6 — v6 sends armed cursors, so a real v6 player has SawCursor and won't false-
+// fire). blocked players are skipped; independent of afkFired. Never parks (purely punitive).
+// Returns results in SteamID order.
+func (e *Engine) checkBusted(scored, blocked map[string]bool) []CheckResult {
+	if e.allCursorActivityFn == nil {
+		return nil
+	}
+	acts := e.allCursorActivityFn()
+	ids := make([]string, 0, len(scored))
+	for sid := range scored {
+		ids = append(ids, sid)
+	}
+	sort.Strings(ids)
+	var out []CheckResult
+	for _, sid := range ids {
+		if blocked[sid] {
+			continue
+		}
+		act, ok := acts[sid]
+		if !ok || !act.Tracked {
+			continue // not judgeable (e.g. legacy) — never busted
+		}
+		if !act.SawCursor {
+			out = append(out, CheckResult{SteamID: sid, Type: "busted",
+				Detail:  "scored no_cursor",
+				Message: "You know what you did, knock it off."})
+		}
+	}
+	return out
+}
+
+// checkLatency is impossible_latency (#2): a scoring click whose arm→click latency is below
+// that connection's OWN minimum observed ping RTT is physically impossible (the armed frame
+// couldn't have reached the client and a click returned in the time). Per-connection and
+// self-calibrating — no global threshold. Gated by ImpossibleLatency>0 and minRTTFn. A
+// player with no measured RTT yet (absent from the map) is skipped. blocked players skipped.
+func (e *Engine) checkLatency(clicks []ScoredClick, blocked map[string]bool) []CheckResult {
+	if e.cfg.ImpossibleLatency <= 0 || e.minRTTFn == nil || len(clicks) == 0 {
+		return nil
+	}
+	rtt := e.minRTTFn()
+	// Earliest scoring offset per player (arrival order ⇒ first seen is earliest).
+	first := map[string]int{}
+	order := []string{}
+	for _, c := range clicks {
+		if _, seen := first[c.SteamID]; !seen {
+			first[c.SteamID] = c.OffsetMs
+			order = append(order, c.SteamID)
+		}
+	}
+	var out []CheckResult
+	for _, sid := range order {
+		if blocked[sid] {
+			continue
+		}
+		minRTT, ok := rtt[sid]
+		if !ok || minRTT <= 0 {
+			continue
+		}
+		if first[sid] < minRTT {
+			out = append(out, CheckResult{SteamID: sid, Type: "impossible_latency",
+				Detail:  fmt.Sprintf("offset=%dms rtt=%dms", first[sid], minRTT),
+				Message: "Your click arrived faster than your connection allows."})
+		}
+	}
+	return out
+}
+
+// checkTouch is the touch-derived dwell pass (#stretch/#5), gated by TouchCheck>0 and
+// touchDataFn. For each scoring click it correlates the claimed button against the player's
+// `touch` stamps for this window:
+//   - no_hover:   the button was claimed with NO prior touch over it → the pointer never
+//                 hovered, near-certain automation (sharper than `busted`, which only sees
+//                 "no cursor at all").
+//   - fast_hover: touch→click dwell below the human reaction floor (ReactionMinMs) → the
+//                 "click" didn't follow a real hover-and-press.
+// Only touch-capable players (v7+) are judged — they are the ones PRESENT in touchData (a
+// v6/legacy player is absent and exempt). Each type fires at most once per player per round.
+// blocked players skipped. Returns results in SteamID order.
+func (e *Engine) checkTouch(clicks []ScoredClick, blocked map[string]bool) []CheckResult {
+	if e.cfg.TouchCheck <= 0 || e.touchDataFn == nil || len(clicks) == 0 {
+		return nil
+	}
+	touches := e.touchDataFn()
+	noHover := map[string]bool{}
+	fastHover := map[string]int{} // sid → dwell ms (for the Detail)
+	order := []string{}
+	seen := map[string]bool{}
+	for _, c := range clicks {
+		sid := c.SteamID
+		if blocked[sid] {
+			continue
+		}
+		bt, judgeable := touches[sid]
+		if !judgeable {
+			continue // not touch-capable (v6/legacy) — exempt
+		}
+		if !seen[sid] {
+			seen[sid] = true
+			order = append(order, sid)
+		}
+		touchMs, hovered := bt[c.Button]
+		if !hovered {
+			noHover[sid] = true
+			continue
+		}
+		if e.cfg.ReactionMinMs > 0 {
+			if dwell := c.OffsetMs - touchMs; dwell >= 0 && dwell < e.cfg.ReactionMinMs {
+				if _, have := fastHover[sid]; !have {
+					fastHover[sid] = dwell
+				}
+			}
+		}
+	}
+	var out []CheckResult
+	for _, sid := range order {
+		if noHover[sid] {
+			out = append(out, CheckResult{SteamID: sid, Type: "no_hover",
+				Detail:  "claimed untouched button",
+				Message: "You claimed a button your cursor never touched."})
+		}
+		if d, ok := fastHover[sid]; ok {
+			out = append(out, CheckResult{SteamID: sid, Type: "fast_hover",
+				Detail:  fmt.Sprintf("dwell=%dms", d),
+				Message: "You clicked a button the instant your cursor reached it — too fast to be real."})
+		}
+	}
+	return out
+}
+
+// checkStraightPath is straight_path (#6, signal-only, false-positive-prone so OFF unless
+// StraightPathRatio>0). It flags a SCORER whose captured cursor path for the window is
+// implausibly straight: net displacement / total path length above the ratio across ≥
+// StraightPathMin samples. A bot that snaps dead-straight to each button produces a ratio
+// near 1; a human hand wavers, lowering it. Reads the same per-window cursor tracks as the
+// replay (cursorTracks, still held at round end). blocked players skipped.
+func (e *Engine) checkStraightPath(scored, blocked map[string]bool) []CheckResult {
+	if e.cfg.StraightPathRatio <= 0 || e.cursorTracksFn == nil {
+		return nil
+	}
+	tracks := e.cursorTracks()
+	// tag → steamID is not available here; tracks are keyed by SteamID (hub supplies them
+	// keyed by SteamID), so judge scorers directly.
+	ids := make([]string, 0, len(scored))
+	for sid := range scored {
+		ids = append(ids, sid)
+	}
+	sort.Strings(ids)
+	var out []CheckResult
+	for _, sid := range ids {
+		if blocked[sid] {
+			continue
+		}
+		t, ok := tracks[sid]
+		if !ok || len(t.Samples) < e.cfg.StraightPathMin {
+			continue
+		}
+		if ratio, ok := pathStraightness(t.Samples); ok && ratio > e.cfg.StraightPathRatio {
+			out = append(out, CheckResult{SteamID: sid, Type: "straight_path",
+				Detail:  fmt.Sprintf("ratio=%.3f n=%d", ratio, len(t.Samples)),
+				Message: "Your cursor moved in machine-perfect straight lines."})
+		}
+	}
+	return out
+}
+
+// coeffVar is the coefficient of variation (stddev/mean) of the gaps between consecutive
+// values in offs (offs is in arrival order). Used by the metronome check. Returns false if
+// there are too few gaps or the mean is ~0 (no meaningful cadence to judge).
+func coeffVar(offs []int) (float64, bool) {
+	if len(offs) < 3 {
+		return 0, false // need ≥2 gaps for a variance
+	}
+	gaps := make([]float64, 0, len(offs)-1)
+	var sum float64
+	for i := 1; i < len(offs); i++ {
+		g := float64(offs[i] - offs[i-1])
+		gaps = append(gaps, g)
+		sum += g
+	}
+	mean := sum / float64(len(gaps))
+	if mean < 1 {
+		return 0, false
+	}
+	var sq float64
+	for _, g := range gaps {
+		d := g - mean
+		sq += d * d
+	}
+	return math.Sqrt(sq/float64(len(gaps))) / mean, true
+}
+
+// pathStraightness is net displacement (start→end) divided by total path length for a
+// cursor track. ~1 ⇒ a dead-straight constant-velocity move (a bot snap); a human hand
+// wavers, lowering it. Returns false if the total length is ~0 (no real motion to judge).
+func pathStraightness(samples []CursorSample) (float64, bool) {
+	if len(samples) < 2 {
+		return 0, false
+	}
+	var total float64
+	for i := 1; i < len(samples); i++ {
+		dx := float64(samples[i].X - samples[i-1].X)
+		dy := float64(samples[i].Y - samples[i-1].Y)
+		total += math.Hypot(dx, dy)
+	}
+	if total < 1 {
+		return 0, false
+	}
+	ndx := float64(samples[len(samples)-1].X - samples[0].X)
+	ndy := float64(samples[len(samples)-1].Y - samples[0].Y)
+	return math.Hypot(ndx, ndy) / total, true
 }
 
 // checkSoloSession is the session-level solo_round verdict, evaluated once at the
@@ -1462,17 +1682,62 @@ func (e *Engine) syncBounty(ctx context.Context, bi BountyInfo) {
 	e.publishSanctions()
 }
 
-// applySanction escalates a flagged player's ladder for one check: bump the
-// per-bounty count, then place them on the right rung — test (math), a timed
-// cooldown, or ignored-until-the-bounty-resolves — and persist the state. The
-// client is (re)notified from notifySanctions at the next pending phase.
-func (e *Engine) applySanction(ch CheckResult, bi BountyInfo) {
-	s := e.sanctions[ch.SteamID]
-	if s == nil {
-		s = &Sanction{SteamID: ch.SteamID}
-		e.sanctions[ch.SteamID] = s
+// applyRoundChecks applies the round-end (score-aware) checks with the multi-flag ladder
+// boost (#4): a player who trips ≥2 DISTINCT check types in one round is near-certain
+// automation, so their ladder is bumped by the number of distinct types that round, not
+// just 1. Results are grouped per player; blocked / non-test-capable players are skipped
+// from sanctioning (still logged in the round's audit by the caller). The representative
+// popup message is the first distinct type's. Deterministic: players processed in SteamID
+// order, the message taken from the first check seen for that player.
+func (e *Engine) applyRoundChecks(checks []CheckResult, blocked map[string]bool, bi BountyInfo) {
+	type agg struct {
+		types map[string]bool
+		msg   string
 	}
-	s.Checks++
+	byPlayer := map[string]*agg{}
+	order := []string{}
+	for _, ch := range checks {
+		if blocked[ch.SteamID] {
+			continue
+		}
+		if e.bc == nil || !e.bc.TestCapable(ch.SteamID) {
+			continue
+		}
+		a := byPlayer[ch.SteamID]
+		if a == nil {
+			a = &agg{types: map[string]bool{}, msg: ch.Message}
+			byPlayer[ch.SteamID] = a
+			order = append(order, ch.SteamID)
+		}
+		a.types[ch.Type] = true
+	}
+	sort.Strings(order)
+	for _, sid := range order {
+		a := byPlayer[sid]
+		e.applySanctionN(sid, len(a.types), a.msg, bi)
+	}
+}
+
+// applySanction escalates a flagged player's ladder for ONE check (bump 1). Used by the
+// arming AFK pass and the session-level solo_round, which raise a single verdict at a time.
+func (e *Engine) applySanction(ch CheckResult, bi BountyInfo) {
+	e.applySanctionN(ch.SteamID, 1, ch.Message, bi)
+}
+
+// applySanctionN escalates a player's ladder by bump (≥1): add to the per-bounty count,
+// then place them on the right rung — test (math), a timed cooldown, or ignored-until-the-
+// bounty-resolves — and persist the state. The client is (re)notified from notifySanctions
+// at the next pending phase. bump>1 is the multi-flag boost (#4).
+func (e *Engine) applySanctionN(steamID string, bump int, message string, bi BountyInfo) {
+	if bump < 1 {
+		bump = 1
+	}
+	s := e.sanctions[steamID]
+	if s == nil {
+		s = &Sanction{SteamID: steamID}
+		e.sanctions[steamID] = s
+	}
+	s.Checks += bump
 
 	x := e.cfg.CheckCooldownThreshold
 	ignoreAt := x + e.cfg.CheckIgnoreAfter
@@ -1481,21 +1746,21 @@ func (e *Engine) applySanction(ch CheckResult, bi BountyInfo) {
 	case x > 0 && s.Checks >= ignoreAt:
 		// Past the cooldown plus the grace checks → sidelined for the bounty.
 		s.Ignored = true
-		e.clearTestRung(ch.SteamID)
+		e.clearTestRung(steamID)
 	case x > 0 && s.CooldownUntil == nil && s.Checks >= x:
 		// First time across the threshold → start the timed cooldown.
 		until := now.Add(time.Duration(e.cfg.CheckCooldownMins) * time.Minute)
 		s.CooldownUntil = &until
-		e.clearTestRung(ch.SteamID)
+		e.clearTestRung(steamID)
 	case x > 0 && s.CooldownUntil != nil && now.Before(*s.CooldownUntil):
 		// A check landed during an active cooldown (defensive — they're blocked, so
 		// this is rare); keep them cooling rather than issuing a test.
-		e.clearTestRung(ch.SteamID)
+		e.clearTestRung(steamID)
 	default:
 		// Test rung: below the threshold, or post-cooldown grace checks. Bench them
 		// behind a math test, remembering which rule fired for the popup.
-		e.underTest[ch.SteamID] = true
-		e.benchMsg[ch.SteamID] = ch.Message
+		e.underTest[steamID] = true
+		e.benchMsg[steamID] = message
 	}
 	e.persistSanction(bi.ID, *s)
 	e.publishSanctions()

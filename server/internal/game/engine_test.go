@@ -106,18 +106,6 @@ func TestBoard(t *testing.T) {
 	})
 }
 
-func TestIdlePenalty(t *testing.T) {
-	// The kth bad click since the last arm adds 500+100·(k−1) ms, so totals run
-	// 0,500,1100,1800,2600,3500,4500… ms.
-	e := New(Config{PenaltyBaseMs: 500, PenaltyStepMs: 100}, nil, nil, nil)
-	want := []time.Duration{0, 500, 1100, 1800, 2600, 3500, 4500}
-	for n, w := range want {
-		if got := e.idlePenalty(n); got != w*time.Millisecond {
-			t.Fatalf("idlePenalty(%d) = %v, want %v", n, got, w*time.Millisecond)
-		}
-	}
-}
-
 func TestStandingsOrder(t *testing.T) {
 	scores := map[string]int{"a": 1, "b": 3, "c": 3}
 	info := map[string]playerInfo{"a": {}, "b": {}, "c": {}}

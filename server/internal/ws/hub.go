@@ -40,14 +40,14 @@ const (
 	// the realistic ceiling; 512 is generous headroom that still caps a stuck window.
 	trackCap = 512
 
-	// minParkVersion is the oldest client API version that understands the park
-	// protocol — the server→client `park` frame (auto-park off an afk_idle verdict)
-	// and the client→server `park {on}` toggle (the Pause control). Below it, a client
-	// can't be parked (it would silently stop receiving frames with no way to rejoin),
-	// so an afk_idle on an older build keeps the plain sanction ladder with no parking.
-	// New capability ⇒ a new version: this is the only v6 wire, with the live floor
-	// still v5 (so v6 is testable and v5 stays the supported N-1).
-	minParkVersion = 6
+	// minArmingVersion is the oldest client API version that sends cursors during the
+	// ARMING phase (and the `touch {id}` first-entry signal). It gates the arming-phase
+	// AFK pass and the touch checks: a v6 (N-1) client sends cursors armed-only, so it
+	// CANNOT be arming-AFK-judged and never sends `touch` — judging it on the arming
+	// window would flag every v6 player as still. v6 still gets every other check (it
+	// sends armed cursors, so the round-end `busted` !SawCursor check won't false-fire).
+	// This is the new N-1 special-case the v8 bump will prune (api-bump-cleans-N-2 rule).
+	minArmingVersion = 7
 
 	// outdatedNote replaces the dev note for outdated (below-live) clients, telling
 	// them to update — shown alongside the troll leaderboards.
@@ -65,17 +65,20 @@ type Hub struct {
 	engine  *game.Engine
 	log     *zap.Logger
 
-	// armGen counts armed windows. Bumped in Armed; each connected client's armSeen is
-	// stamped to it so the afk check can tell who was present for the WHOLE window (and
-	// is fairly judgeable) from who joined mid-window or hasn't had a window yet. Touched
-	// only from the engine Run goroutine (Armed + AllCursorActivity), so it needs no lock.
-	armGen int
+	// pendGen counts ARMING windows. Bumped in Pending (the round/window origin now that
+	// cursors are captured during arming); each connected, non-parked client's pendSeen is
+	// stamped to it so the afk pass can tell who was present for the WHOLE window (present
+	// at the start of arming) from who joined mid-window or hasn't had a window yet. Touched
+	// only from the engine Run goroutine (Pending + the cursor-activity snapshots), so it
+	// needs no lock.
+	pendGen int
 
-	// armAtNs is the current armed window's wall-clock arm time (unix nanos), stamped in
-	// Armed. The cursor-capture path reads it to offset each recorded sample from the arm
-	// (the durable game replay's timeline). Atomic: written from the engine Run goroutine,
-	// read from connection readPump goroutines.
-	armAtNs atomic.Int64
+	// windowAtNs is the current window's wall-clock ORIGIN (unix nanos): the start of the
+	// arming phase, stamped in Pending. The cursor-capture path reads it to offset each
+	// recorded sample from the window origin (the durable game replay's arming-origin
+	// timeline) — cursors are now captured during arming, not just the armed window.
+	// Atomic: written from the engine Run goroutine, read from connection readPump goroutines.
+	windowAtNs atomic.Int64
 }
 
 func NewHub(log *zap.Logger) *Hub {
@@ -126,9 +129,9 @@ type Client struct {
 	Legacy bool
 
 	// Version is the client's API version (from the /ws/{ver} path; bare /ws ⇒ 1).
-	// Drives parkCapable (≥ minParkVersion gets the park protocol); the tick wire is
-	// now gated only by !Legacy (see tickCapable), since the live floor is the version
-	// that introduced it.
+	// Drives touchCapable (≥ minArmingVersion gets arming cursors + the touch signal);
+	// the tick/park wires are gated only by !Legacy (see tickCapable/parkCapable), since
+	// the live floor is at/above the version that introduced them.
 	Version int
 
 	// Shadowbanned marks a silently-banned account. Set once at connect from the DB
@@ -148,14 +151,33 @@ type Client struct {
 	sendClosed bool
 
 	// parked is set when this connection has stepped away: either auto-parked by the
-	// engine off an afk_idle verdict (Hub.Park) or by the player hitting Pause (a
+	// engine off an afk verdict (Hub.Park) or by the player hitting Pause (a
 	// client→server park{on:true}). While parked the hub withholds EVERY frame from it
 	// except the forced park notification, and the connection counts toward neither the
 	// crowd (PlayerCount) nor the round's N (ActivePlayerCount), nor is it judged by the
-	// afk pass (AllCursorActivity omits it) — it's cleanly "not here" until it unparks
-	// (park{on:false}). Atomic: written from Hub.Park (engine goroutine) and readPump
-	// (this conn), read from the send path + the count/roster/cursor methods.
+	// afk pass (cursor-activity snapshots omit it) — it's cleanly "not here" until it
+	// unparks. Atomic: written from Hub.Park / Hub.applyDeferredPark (engine goroutine)
+	// and readPump (this conn), read from the send path + the count/roster/cursor methods.
 	parked atomic.Bool
+
+	// parkWant/resumeWant defer a park/unpark request to the next arming (Pending)
+	// boundary while the button is armed: the armed-window roster is FROZEN at arm, so a
+	// scorer can't park mid-window to dodge the round-end `busted` check, and a mid-window
+	// unpark can't inject an ineligible-but-playing roster member. Set from the readPump
+	// `park` handler when Phase==Armed; applied (and cleared) in Hub.Pending before the
+	// pendSeen stamp. Outside Armed the handler applies the toggle immediately and never
+	// sets these. Atomics: written from readPump, read+cleared from the engine goroutine.
+	parkWant   atomic.Bool
+	resumeWant atomic.Bool
+
+	// lastPingAt is the unix-nanos send time of the most recent server keepalive ping;
+	// the pong handler reads it to compute this connection's round-trip time and fold the
+	// minimum into minRTTms (the self-calibrating floor for the impossible_latency check).
+	// 0 until the first ping. minRTTms is the smallest RTT seen (ms), or 0 if none yet.
+	// Atomics: lastPingAt written in writePump, read in the pong handler; minRTTms written
+	// in the pong handler, read by Hub.MinRTTms (engine goroutine).
+	lastPingAt atomic.Int64
+	minRTTms   atomic.Int64
 
 	// Cursor is this connection's last reported pointer position (normalized int16,
 	// 0 = centre), sampled into tick frames so others can render the roaming cursor.
@@ -183,16 +205,26 @@ type Client struct {
 	movAnchorY int16
 
 	// track accumulates this connection's cursor samples for the durable game replay:
-	// every sample (ms offset from arm + position) reported during the armed window. It's
-	// the full path, distinct from the movement summary above. Reset at the arming stage
-	// (clearCursor) and snapshotted at round end (Hub.AllCursorTracks). Guarded by curMu;
-	// bounded by trackCap so a stuck-armed window can't grow it without limit.
+	// every sample (ms offset from the window origin + position) reported during the window
+	// (arming and armed, now that cursors are captured during arming). The full path,
+	// distinct from the movement summary above. Reset at the arming stage (clearCursor) and
+	// snapshotted at round end (Hub.AllCursorTracks). Guarded by curMu; bounded by trackCap
+	// so a stuck window can't grow it without limit.
 	track []game.CursorSample
 
-	// armSeen is the hub's armGen at the last arm this client was present for. Compared
-	// to the current armGen in AllCursorActivity to decide afk eligibility (present for
-	// the whole window). Touched only from the engine Run goroutine (Hub.Armed).
-	armSeen int
+	// touch records, per live button id, the ms-offset-from-window-origin at which this
+	// connection's cursor FIRST entered that button's hitbox this window (the `touch {id}`
+	// signal — sent once on the enter transition). The engine's no_hover / fast_hover dwell
+	// checks read it: a scoring click that claims a button never touched is automation; a
+	// touch→click gap below the human floor isn't a real hover-and-press. Only v7+ clients
+	// send touch. Reset at the arming stage (clearCursor); guarded by curMu.
+	touch map[uint16]int
+
+	// pendSeen is the hub's pendGen at the last arming stage this client was present and
+	// unparked for. Compared to the current pendGen in the cursor-activity snapshots to
+	// decide afk eligibility (present at the start of the window). Touched only from the
+	// engine Run goroutine (Hub.Pending).
+	pendSeen int
 }
 
 // setCursor records this connection's latest pointer position (from readPump) and
@@ -216,7 +248,7 @@ func (c *Client) setCursor(x, y int16) {
 }
 
 // recordTrack appends one cursor sample to the per-window replay path (offset ms from
-// the window's arm + position), capped at trackCap. Called from readPump after setCursor.
+// the window origin + position), capped at trackCap. Called from readPump after setCursor.
 func (c *Client) recordTrack(offsetMs int, x, y int16) {
 	if offsetMs < 0 {
 		offsetMs = 0
@@ -226,6 +258,37 @@ func (c *Client) recordTrack(offsetMs int, x, y int16) {
 		c.track = append(c.track, game.CursorSample{TMs: offsetMs, X: x, Y: y})
 	}
 	c.curMu.Unlock()
+}
+
+// recordTouch stamps the first-entry time (ms offset from the window origin) for one
+// button id, ignoring repeats (only the first touch of a button this window matters).
+// Called from readPump for a `touch {id}` frame.
+func (c *Client) recordTouch(id uint16, offsetMs int) {
+	if offsetMs < 0 {
+		offsetMs = 0
+	}
+	c.curMu.Lock()
+	if c.touch == nil {
+		c.touch = map[uint16]int{}
+	}
+	if _, seen := c.touch[id]; !seen {
+		c.touch[id] = offsetMs
+	}
+	c.curMu.Unlock()
+}
+
+// snapshotTouch returns a copy of this window's first-touch offsets (button id → ms).
+func (c *Client) snapshotTouch() map[uint16]int {
+	c.curMu.Lock()
+	defer c.curMu.Unlock()
+	if len(c.touch) == 0 {
+		return nil
+	}
+	out := make(map[uint16]int, len(c.touch))
+	for id, ms := range c.touch {
+		out[id] = ms
+	}
+	return out
 }
 
 // snapshotTrack returns a copy of this window's recorded cursor path (for the replay).
@@ -266,6 +329,7 @@ func (c *Client) clearCursor() {
 	c.movSeen = false
 	c.moved = false
 	c.track = nil // drop the finished window's replay path
+	c.touch = nil // drop the finished window's touch stamps
 	c.curMu.Unlock()
 }
 
@@ -415,22 +479,64 @@ func (h *Hub) ActivePlayerCount(benched map[string]bool) int {
 // --- game.Broadcaster ---
 
 func (h *Hub) Pending(p game.PendingFrame) {
-	// Tick-capable (v5+) clients get the full roster ride-along so they can resolve
-	// every pip's tag → username before the window opens; everyone else gets the
-	// lean frame (older clients ignore the field anyway, but skipping it saves the
-	// O(M²) roster bytes on connections that can't use them).
+	clients := h.clientList()
+
+	// The arming stage is the round/window boundary. Apply any park/unpark requests that
+	// were deferred while the previous window was armed (the frozen-roster rule), THEN
+	// stamp eligibility — a player re-admitted here is stamped eligible and must put their
+	// cursor on the board during this arming or they're AFK ("RESUME then sit idle" is
+	// genuinely AFK).
+	for _, c := range clients {
+		c.applyDeferredPark()
+	}
+
+	// New window origin: cursors are now captured from the start of arming, so the replay
+	// timeline and the per-window movement state both anchor here.
+	h.windowAtNs.Store(time.Now().UnixNano())
+	h.pendGen++
+	for _, c := range clients {
+		// Drop any cursor/touch held from the last window so this window's movement and
+		// dwell state start clean.
+		c.clearCursor()
+		// Stamp present-at-arming on every connected, non-parked client (mirror the
+		// parked-skip Hub.Armed used to do): a parked client gets no frames this window,
+		// so leaving its pendSeen behind keeps it ineligible until it actually returns.
+		if !c.parked.Load() {
+			c.pendSeen = h.pendGen
+		}
+	}
+
+	// Tick-capable clients get the full roster ride-along so they can resolve every pip's
+	// tag → username before the window opens; everyone else gets the lean frame (older
+	// clients ignore the field anyway, but skipping it saves the O(M²) roster bytes).
 	base := pendingWire{T: "round_pending", Round: p.Round, Of: p.Of, Players: p.Players, Clicks: p.Clicks}
 	lean := mustJSON(base)
 	base.Roster = h.roster()
 	full := mustJSON(base)
-	for _, c := range h.clientList() {
-		// New window: drop any cursor held from the last round so the first ticks of
-		// this window only carry cursors players actually moved after arming.
-		c.clearCursor()
+	for _, c := range clients {
 		if tickCapable(c) {
 			c.trySend(full)
 		} else {
 			c.trySend(lean)
+		}
+	}
+}
+
+// applyDeferredPark applies a park/unpark request that was deferred while the button was
+// armed (see the parkWant/resumeWant fields). Called from Hub.Pending at the arming
+// boundary. A resume that lands here re-admits the player to this window; a park drops
+// them. Both flags are cleared. resume takes precedence if (pathologically) both are set.
+func (c *Client) applyDeferredPark() {
+	if c.resumeWant.Swap(false) {
+		c.parkWant.Store(false)
+		if c.parked.Swap(false) && c.hub.engine != nil {
+			c.hub.engine.Wake()
+		}
+		return
+	}
+	if c.parkWant.Swap(false) {
+		if !c.parked.Swap(true) {
+			c.enqueue(outMsg{data: mustJSON(parkWire{T: "park", On: true}), force: true})
 		}
 	}
 }
@@ -522,7 +628,70 @@ func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
 			Tracked:   true,
 			SawCursor: seen,
 			Moved:     moved,
-			Eligible:  c.armSeen == h.armGen,
+			Eligible:  c.pendSeen == h.pendGen,
+		}
+	}
+	return out
+}
+
+// ArmingCursorActivity snapshots cursor movement for the arming-phase AFK pass, which the
+// engine runs after pending() returns and before the button arms. It is the SAME movement
+// state as AllCursorActivity, but restricted to clients new enough to send cursors during
+// arming (>= minArmingVersion): a v6 (N-1) client sends cursors armed-only, so judging it
+// on the arming window would flag it AFK every round — it is omitted here and exempt from
+// the arming AFK pass (it still gets every round-end check). Parked/shadowbanned clients
+// are omitted as in AllCursorActivity. Called from the engine Run goroutine.
+func (h *Hub) ArmingCursorActivity() map[string]game.CursorActivity {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[string]game.CursorActivity, len(h.clients))
+	for c := range h.clients {
+		if c.Legacy || c.Version < minArmingVersion || c.parked.Load() || c.Shadowbanned {
+			continue
+		}
+		seen, moved := c.movement()
+		out[c.SteamID] = game.CursorActivity{
+			Tracked:   true,
+			SawCursor: seen,
+			Moved:     moved,
+			Eligible:  c.pendSeen == h.pendGen,
+		}
+	}
+	return out
+}
+
+// AllTouchData snapshots every connected, touch-capable (v7+) player's first-touch offsets
+// (button id → ms since the window origin) for the round just played, for the engine's
+// no_hover / fast_hover dwell checks. Parked/shadowbanned/legacy/v6 clients are omitted
+// (v6 sends no touch). Called from the engine Run goroutine at round end, before the next
+// arming stage clears the per-window capture.
+func (h *Hub) AllTouchData() map[string]map[uint16]int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[string]map[uint16]int, len(h.clients))
+	for c := range h.clients {
+		if c.Legacy || c.Version < minArmingVersion || c.parked.Load() || c.Shadowbanned {
+			continue
+		}
+		// Every touch-capable player gets an entry even with no touches: PRESENCE in the
+		// map means "judgeable for no_hover" (a v7 client that scored but never touched is a
+		// bot). Absence means non-touch-capable (v6/legacy), which the touch check exempts.
+		out[c.SteamID] = c.snapshotTouch()
+	}
+	return out
+}
+
+// MinRTTms snapshots every connected player's minimum observed ping round-trip (ms), for
+// the impossible_latency check (a scoring click faster than the player's own RTT is
+// impossible). A player with no measured RTT yet is omitted (0 ⇒ "unknown", never used as
+// a floor). Called from the engine Run goroutine.
+func (h *Hub) MinRTTms() map[string]int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[string]int, len(h.clients))
+	for c := range h.clients {
+		if rtt := c.minRTTms.Load(); rtt > 0 {
+			out[c.SteamID] = int(rtt)
 		}
 	}
 	return out
@@ -552,50 +721,23 @@ func (h *Hub) AllCursorTracks() map[string]game.CursorTrack {
 	return out
 }
 
-// Armed fans out the armed frame. The unpenalised majority share one precomputed
-// frame; penalised connections get theirs after a delay (the spam deterrent)
-// with their own penalty_ms echoed in, so they can see they're being throttled.
+// Armed fans out the armed frame: a single precomputed broadcast to every non-blocked
+// connection. The old per-connection delayed-arm spam penalty was gutted in v7 (the nonce
+// + rate limiter + the anticheat checks cover blind flooding, and a delayed arm desynced a
+// penalised player's window in a game whose whole premise is wire-arrival fairness), so
+// this collapses to one frame. The eligibility stamp moved to Pending (cursors are now
+// captured from the start of arming, so the window origin is the arming stage).
 func (h *Hub) Armed(a game.ArmedFrame) {
-	// One payload shape: the initial board of buttons. The unpenalised majority share one
-	// precomputed clean copy; a penalised connection gets its own copy (its delay echoed
-	// in) after the hold. A legacy client receives it too — its clicks are ignored anyway,
-	// and an old build simply doesn't render the board.
-	base := armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Buttons: buttonsToWire(a.Buttons), Players: a.Players, Clicks: a.Clicks}
-	clean := mustJSON(base)
-	// New armed window: stamp every currently-connected client as present for it, so the
-	// afk check can skip players who weren't here for the whole window (mid-window joins,
-	// or a fresh connection that hasn't had a window yet) instead of flagging an empty
-	// cursor box they never had a chance to fill.
-	h.armGen++
-	h.armAtNs.Store(time.Now().UnixNano()) // replay timeline origin for this window's cursor capture
-	clients := h.clientList()
-	for _, c := range clients {
-		// Don't stamp a parked client: it's withheld this window's armed frame (below) and
-		// can send no cursor, so it never had a fair chance to play this arm. Stamping it
-		// would make armSeen==armGen, and a player who hits RESUME mid-window would then look
-		// Eligible to the round-end afk pass — with no cursor for a window they were parked
-		// for — and get afk_idle'd (and re-parked) the instant they came back. Leaving armSeen
-		// behind keeps an unparked player ineligible until the NEXT arm (like a mid-window join).
-		if c.parked.Load() {
-			continue
-		}
-		c.armSeen = h.armGen
-	}
-	for _, c := range clients {
+	// One payload shape: the initial board of buttons. A legacy client receives it too —
+	// its clicks are ignored anyway, and an old build simply doesn't render the board.
+	clean := mustJSON(armedWire{T: "armed", Round: a.Round, Seq: a.Seq, Buttons: buttonsToWire(a.Buttons), Players: a.Players, Clicks: a.Clicks})
+	for _, c := range h.clientList() {
 		if a.Blocked[c.SteamID] {
 			continue // benched by anticheat: withhold the buttons until they pass their test
 		}
 		// banVisible: `armed` is the one in-game frame a shadowbanned client receives,
 		// so it sees the world arm (and clicks into the void).
-		if d := a.Penalties[c.SteamID]; d > 0 {
-			w := base
-			w.PenaltyMs = int(d.Milliseconds())
-			msg := mustJSON(w)
-			cc := c
-			time.AfterFunc(d, func() { cc.enqueue(outMsg{banVisible: true, data: msg}) })
-		} else {
-			c.enqueue(outMsg{banVisible: true, data: clean})
-		}
+		c.enqueue(outMsg{banVisible: true, data: clean})
 	}
 }
 
@@ -682,22 +824,32 @@ func tickCapable(c *Client) bool {
 	return c != nil && !c.Legacy
 }
 
-// parkCapable reports whether c understands the park protocol (v6+): the server→client
-// `park` frame and the client→server `park {on}` toggle. Only such a client may be
-// parked — parking one that can't render/clear it would silently strand it (frames
-// withheld, no Pause control to rejoin).
+// parkCapable reports whether c understands the park protocol (the server→client `park`
+// frame and the client→server `park {on}` toggle). With the live floor at v6 — the version
+// that introduced parking — every non-legacy connection is on it, so this collapses to
+// "connected and not legacy" (mirroring how tickCapable/TestCapable already reduced when
+// the floor reached v5). Only such a client may be parked — parking one that can't
+// render/clear it would silently strand it.
 func parkCapable(c *Client) bool {
-	return c != nil && !c.Legacy && c.Version >= minParkVersion
+	return c != nil && !c.Legacy
 }
 
-// Park marks steamID's connection as away (auto-parked off an afk_idle verdict): the
-// hub withholds every subsequent frame from it until the client unparks, and it drops
-// out of the crowd count, the round's N, and the afk pass. Only park-capable (v6+)
-// clients are parked — on an older build this is a no-op, so afk_idle there keeps the
-// plain sanction ladder. Implements game.Broadcaster; called from the engine Run
-// goroutine. The client is told via a forced park frame (it bypasses the withhold gate
-// set just before), then engages its Pause control and waits for the next arm to
-// rejoin. A second Park on an already-parked connection is a no-op.
+// touchCapable reports whether c sends arming-phase cursors and the `touch {id}` signal
+// (>= minArmingVersion, i.e. v7+). Gates the arming AFK pass and the touch checks; a v6
+// (N-1) client is not touch-capable and is exempt from both.
+func touchCapable(c *Client) bool {
+	return c != nil && !c.Legacy && c.Version >= minArmingVersion
+}
+
+// Park marks steamID's connection as away (auto-parked off an afk verdict, now raised at
+// the END of arming so the player drops out BEFORE the button arms): the hub withholds
+// every subsequent frame from it until the client unparks, and it drops out of the crowd
+// count, the round's N, and the afk pass. Only park-capable (non-legacy) clients are
+// parked — on a legacy build this is a no-op, so an afk verdict there keeps the plain
+// sanction ladder. Implements game.Broadcaster; called from the engine Run goroutine. The
+// client is told via a forced park frame (it bypasses the withhold gate set just before),
+// then engages its Pause control and waits for the next arm to rejoin. A second Park on an
+// already-parked connection is a no-op.
 func (h *Hub) Park(steamID string) {
 	h.mu.RLock()
 	c := h.bySteam[steamID]
@@ -798,7 +950,6 @@ func (h *Hub) hello(c *Client) {
 			Round: snap.Round, Of: snap.Of, Phase: snap.Phase.String(),
 			Players: snap.Players, Clicks: snap.Clicks,
 			ArmMin: snap.ArmMinSec, ArmMax: snap.ArmMaxSec,
-			PenaltyBase: snap.PenaltyBaseMs, PenaltyStep: snap.PenaltyStepMs,
 			DevNote: devNote,
 			TickMs:  snap.TickMs,
 		},
@@ -864,9 +1015,13 @@ type inbound struct {
 	// ⇒ the click scores but carries no position.
 	X *int `json:"x"`
 	Y *int `json:"y"`
-	// On is the park toggle (v6 `park` frame): true = the player hit Pause / stepped
+	// On is the park toggle (`park` frame): true = the player hit Pause / stepped
 	// away, false = they're back. Drives the parked withhold gate.
 	On bool `json:"on"`
+	// Bid is the button id of a `touch` frame (v7+): the live button the cursor just
+	// entered. A pointer so absent is distinct from button 0; carried under "b" rather
+	// than "id" because test_answer already claims "id" as a string token.
+	Bid *int `json:"b"`
 }
 
 func (c *Client) readPump() {
@@ -878,6 +1033,18 @@ func (c *Client) readPump() {
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		// Fold this round-trip into the connection's min observed RTT (the
+		// impossible_latency floor). lastPingAt is the send time of the ping this pong
+		// answers; 0 before the first ping. A pong arriving before the next ping is the
+		// pairing, so the gap is a clean RTT sample.
+		if sentNs := c.lastPingAt.Swap(0); sentNs > 0 {
+			rtt := time.Since(time.Unix(0, sentNs)).Milliseconds()
+			if rtt > 0 {
+				if cur := c.minRTTms.Load(); cur == 0 || rtt < cur {
+					c.minRTTms.Store(rtt)
+				}
+			}
+		}
 		return nil
 	})
 	for {
@@ -937,23 +1104,48 @@ func (c *Client) readPump() {
 			c.lastCur = now
 			cx, cy := clampI16(*in.X), clampI16(*in.Y)
 			c.setCursor(cx, cy)
-			// Record the sample for the durable replay too, offset from this window's arm.
-			// armAtNs is 0 outside an armed window (no arm yet this process) — skip then.
-			if armNs := c.hub.armAtNs.Load(); armNs > 0 {
-				c.recordTrack(int(now.Sub(time.Unix(0, armNs)).Milliseconds()), cx, cy)
+			// Record the sample for the durable replay too, offset from this window's origin
+			// (the start of arming). windowAtNs is 0 before the first window this process —
+			// skip then.
+			if winNs := c.hub.windowAtNs.Load(); winNs > 0 {
+				c.recordTrack(int(now.Sub(time.Unix(0, winNs)).Milliseconds()), cx, cy)
+			}
+		case "touch":
+			// First-entry over a live button (v7+): stamp the arrival for the dwell checks.
+			// Tick-agnostic like click — sent immediately, so the server gets wire-arrival
+			// truth. Ignored from clients that don't send it (v6/legacy) or with no button id.
+			if !touchCapable(c) || in.Bid == nil {
+				continue
+			}
+			if winNs := c.hub.windowAtNs.Load(); winNs > 0 {
+				c.recordTouch(uint16(*in.Bid), int(now.Sub(time.Unix(0, winNs)).Milliseconds()))
 			}
 		case "park":
-			// The Pause control (v6+): on=true steps away (withhold all frames, drop out
-			// of the crowd/N/afk pass), on=false rejoins. Ignored from older builds, which
-			// have no park protocol. Setting parked here also covers a player who hits
-			// Pause BEFORE the server ever auto-parks them.
+			// The Pause control: on=true steps away (withhold all frames, drop out of the
+			// crowd/N/afk pass), on=false rejoins. Ignored from legacy builds. While the
+			// button is ARMED both directions are DEFERRED to the next arming boundary (the
+			// frozen-roster rule — a scorer mustn't park mid-window to dodge `busted`, and a
+			// mid-window unpark mustn't inject an ineligible-but-playing roster member);
+			// outside Armed they apply immediately. Setting parked here also covers a player
+			// who hits Pause BEFORE the server ever auto-parks them.
 			if !parkCapable(c) {
 				continue
 			}
+			armed := c.hub.engine != nil && c.hub.engine.Phase() == game.PhaseArmed
 			if in.On {
-				c.parked.Store(true)
-			} else if c.parked.Swap(false) && c.hub.engine != nil {
-				c.hub.engine.Wake() // back from away: re-check the player count / restart a paused engine
+				if armed {
+					c.resumeWant.Store(false)
+					c.parkWant.Store(true) // applied at the next Pending
+				} else {
+					c.parked.Store(true)
+				}
+			} else {
+				if armed {
+					c.parkWant.Store(false)
+					c.resumeWant.Store(true) // applied at the next Pending
+				} else if c.parked.Swap(false) && c.hub.engine != nil {
+					c.hub.engine.Wake() // back from away: restart a paused engine
+				}
 			}
 		case "test_answer":
 			if c.Legacy {
@@ -991,6 +1183,8 @@ func (c *Client) writePump() {
 			}
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			// Stamp the send time so the matching pong yields an RTT sample (impossible_latency).
+			c.lastPingAt.Store(time.Now().UnixNano())
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}

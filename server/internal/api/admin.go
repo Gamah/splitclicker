@@ -507,7 +507,60 @@ func (h *handler) adminGameReplay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
-	h.renderAdmin(w, replayTmpl, struct{ ID string }{ID: id})
+	h.renderAdmin(w, replayTmpl, replayView{
+		ID:      id,
+		DataURL: "/admin/game/replay/data?id=" + url.QueryEscape(id),
+		Back:    "/admin/game?id=" + url.QueryEscape(id),
+	})
+}
+
+// replayView is the data the shared replay viewer template needs: the game id, the URL to
+// fetch the replay JSON from, and an optional back link (admin only — the public viewer has
+// no admin game page to return to).
+type replayView struct {
+	ID      string
+	DataURL string
+	Back    string
+}
+
+// GET /replay/{id} — the PUBLIC (unauthenticated) replay viewer page, keyed by the game's
+// unguessable UUID. Same self-contained viewer as the admin one, rendered without the admin
+// chrome (no admin nav, no back-to-game link) and fetching from the public data route.
+func (h *handler) publicReplay(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := replayTmpl.Execute(w, replayView{
+		ID:      id,
+		DataURL: "/replay/" + url.PathEscape(id) + "/data",
+	}); err != nil {
+		h.log.Error("public replay render", zap.Error(err))
+	}
+}
+
+// GET /replay/{id}/data — the PUBLIC replay JSON (decompressed from the stored gzip blob).
+// Unauthenticated; 404 on an unknown id, exactly as the admin data route. The blob holds
+// only tags, display names, and cursor paths and already excludes shadowbanned accounts.
+func (h *handler) publicReplayData(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	raw, ok, err := h.store.GameReplayJSON(r.Context(), id)
+	if err != nil {
+		h.adminError(w, "load replay", err)
+		return
+	}
+	if !ok {
+		http.Error(w, "no replay for this game", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Write(raw)
 }
 
 // GET /admin/game/replay/data?id=… — the game's replay as JSON (decompressed from
@@ -892,6 +945,15 @@ const replayCSS = `
 .legend{display:flex;flex-wrap:wrap;gap:.5rem 1rem;margin:.7rem 0}
 .legend .lg{display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem}
 .legend .lg i{width:.8rem;height:.8rem;border-radius:50%;display:inline-block}
+.phase{font:600 .8rem/1 system-ui,sans-serif;letter-spacing:.05em;padding:.25rem .5rem;
+  border-radius:6px;background:var(--panel2);color:var(--muted);min-width:4.5rem;text-align:center}
+.phase.arming{background:#3a2c12;color:#f0b35b}
+.phase.armed{background:#10331a;color:#4fd07a}
+.band{display:flex;width:100%;max-width:1100px;height:.5rem;border-radius:4px;overflow:hidden;margin:.1rem 0 .6rem}
+.band .bz{height:100%}
+.band .bz.arming{background:#f0b35b}
+.band .bz.armed{background:#4fd07a}
+.band .bz.result{background:var(--line)}
 `
 
 // adminJS is shared by every admin view that shows timestamps. It rewrites the
@@ -1315,7 +1377,7 @@ var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doc
 <a class="backlink" href="/admin">&larr; back</a>
 <h1>game <span class="mono">{{.ID}}</span></h1>
 <p class="muted">started {{lt .StartedAt}} · ended {{lt .EndedAt}} · {{.Rounds}} rounds · {{dur .StartedAt .EndedAt}}</p>
-{{if .HasReplay}}<p><a class="btn" href="/admin/game/replay?id={{.ID}}">&#9658; Watch replay</a></p>{{end}}
+{{if .HasReplay}}<p><a class="btn" href="/replay/{{.ID}}">&#9658; Watch replay</a></p>{{end}}
 {{range .RoundList}}
 <h2>round {{.RoundNo}} <span class="muted">· N={{.N}} · {{.Players}} players · armed {{lt .ArmedAt}}</span>
   {{if .Checks}}<span class="flag">· {{len .Checks}} check(s) flagged</span>{{end}}</h2>
@@ -1346,17 +1408,19 @@ var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doc
 var replayTmpl = template.Must(template.New("replay").Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>replay</title><style>` + adminCSS + replayCSS + `</style></head><body><div class="wrap">
-<a class="backlink" href="/admin/game?id={{.ID}}">&larr; back to game</a>
+{{if .Back}}<a class="backlink" href="{{.Back}}">&larr; back to game</a>{{end}}
 <h1>replay <span class="mono">{{.ID}}</span></h1>
 <div class="rcontrols">
   <button id="play" class="btn">&#9658; play</button>
   <label>round <select id="round"></select></label>
+  <span id="phase" class="phase">&mdash;</span>
   <input id="seek" type="range" min="0" max="1000" value="0" step="1">
   <span id="clock" class="mono muted">0.0s</span>
   <label class="muted">speed
     <select id="speed"><option value="0.25">0.25&times;</option><option value="0.5">0.5&times;</option>
       <option value="1" selected>1&times;</option><option value="2">2&times;</option></select></label>
 </div>
+<div id="band" class="band"><span class="bz arming"></span><span class="bz armed"></span><span class="bz result"></span></div>
 <div id="stage" class="stage"><canvas id="cv"></canvas></div>
 <div id="legend" class="legend"></div>
 <p id="status" class="muted">loading&hellip;</p>
@@ -1364,6 +1428,7 @@ var replayTmpl = template.Must(template.New("replay").Parse(`<!doctype html>
 <script>
 (function () {
   var gid = "{{.ID}}";
+  var dataURL = "{{.DataURL}}";
   // Distinct, roughly evenly-spaced colours. The first ~20 are a hand-picked palette;
   // beyond that we fall back to golden-angle HSL so it never runs out. NOTE: name
   // labels over the dots get crowded past a couple dozen simultaneous players — fine
@@ -1379,6 +1444,13 @@ var replayTmpl = template.Must(template.New("replay").Parse(`<!doctype html>
   var seek = document.getElementById('seek'), clock = document.getElementById('clock');
   var speedSel = document.getElementById('speed'), legendEl = document.getElementById('legend');
   var statusEl = document.getElementById('status');
+  var phaseEl = document.getElementById('phase'), bandEl = document.getElementById('band');
+
+  // total round length on the arming-origin timeline = arming wait + armed (race). The
+  // signals mark the phase boundaries (pending@0, armed@arm_ms, result@arm_ms+dur_ms).
+  function armMs(rd) { return rd.arm_ms || 0; }
+  function totalMs(rd) { return (rd.arm_ms || 0) + (rd.dur_ms || 0); }
+  function phaseAt(rd, tt) { return tt < armMs(rd) ? 'ARMING' : 'ARMED'; }
 
   var rounds = null, ri = 0, t = 0, playing = false, lastTs = 0, speed = 1;
   var W = 0, H = 0, dpr = 1;
@@ -1407,8 +1479,13 @@ var replayTmpl = template.Must(template.New("replay").Parse(`<!doctype html>
     (rd.claims || []).forEach(function (c) { var b = rd._btn[c.slot]; if (b) { b.claimT = c.t; b.by = c.by; } });
     // pre-resolve a name for any tag (cursor + claim) for the legend / labels.
     (rd.players || []).forEach(function (p) { nameByTag[p.tag] = p.name; colorForTag(p.tag); });
-    seek.max = Math.max(1, rd.dur_ms || 1);
+    seek.max = Math.max(1, totalMs(rd));
     t = 0; seek.value = 0;
+    // Size the phase band: arming wait vs armed window as a proportion of the round.
+    var tot = Math.max(1, totalMs(rd)), aw = (armMs(rd) / tot * 100).toFixed(2);
+    bandEl.children[0].style.width = aw + '%';
+    bandEl.children[1].style.width = (100 - aw) + '%';
+    bandEl.children[2].style.width = '0%';
     renderLegend();
     updateClock();
   }
@@ -1473,16 +1550,21 @@ var replayTmpl = template.Must(template.New("replay").Parse(`<!doctype html>
     });
   }
 
-  function updateClock() { clock.textContent = (t / 1000).toFixed(1) + 's / ' + ((rounds[ri].dur_ms || 0) / 1000).toFixed(1) + 's'; }
+  function updateClock() {
+    var rd = rounds[ri];
+    clock.textContent = (t / 1000).toFixed(1) + 's / ' + (totalMs(rd) / 1000).toFixed(1) + 's';
+    var ph = phaseAt(rd, t);
+    phaseEl.textContent = ph; phaseEl.className = 'phase ' + ph.toLowerCase();
+  }
   function setPlaying(p) { playing = p; playBtn.innerHTML = p ? '&#10073;&#10073; pause' : '&#9658; play'; if (p) lastTs = 0; }
 
-  function atEnd() { return ri >= rounds.length - 1 && t >= (rounds[ri].dur_ms || 1); }
+  function atEnd() { return ri >= rounds.length - 1 && t >= totalMs(rounds[ri]); }
 
   function frame(ts) {
     if (playing && rounds) {
       if (!lastTs) lastTs = ts;
       t += (ts - lastTs) * speed; lastTs = ts;
-      var dur = rounds[ri].dur_ms || 1;
+      var dur = Math.max(1, totalMs(rounds[ri]));
       if (t >= dur) {
         if (ri < rounds.length - 1) { ri++; roundSel.value = ri; prep(); lastTs = ts; } // roll into the next round and keep playing
         else { t = dur; setPlaying(false); } // end of the last round — stop
@@ -1499,17 +1581,17 @@ var replayTmpl = template.Must(template.New("replay").Parse(`<!doctype html>
   speedSel.onchange = function () { speed = +speedSel.value; };
   window.addEventListener('resize', resize);
 
-  fetch('/admin/game/replay/data?id=' + encodeURIComponent(gid))
+  fetch(dataURL)
     .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function (data) {
       rounds = data.rounds || [];
       if (!rounds.length) { statusEl.textContent = 'this game has no replay rounds.'; return; }
       rounds.forEach(function (rd, i) {
         var o = document.createElement('option');
-        o.value = i; o.textContent = 'round ' + (rd.no || (i + 1)) + ' (' + ((rd.dur_ms || 0) / 1000).toFixed(1) + 's, N=' + (rd.n || 0) + ')';
+        o.value = i; o.textContent = 'round ' + (rd.no || (i + 1)) + ' (' + (totalMs(rd) / 1000).toFixed(1) + 's, N=' + (rd.n || 0) + ')';
         roundSel.appendChild(o);
       });
-      statusEl.textContent = 'Cursor data is captured only during the armed window (when a player is over the board), so dots appear once a player moves onto the board after the button arms.';
+      statusEl.textContent = 'The timeline starts at the arming phase: cursor dots move during the secret arming wait too, then the buttons appear when the window arms (ARMED).';
       ri = 0; prep(); resize();
       requestAnimationFrame(frame);
     })
