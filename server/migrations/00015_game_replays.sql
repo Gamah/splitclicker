@@ -18,7 +18,7 @@
 -- -----------------------------------------------------------------------
 
 CREATE TABLE game_replays (
-    game_id TEXT  PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+    game_id UUID  PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
     data    BYTEA NOT NULL
 );
 
