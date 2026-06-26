@@ -570,6 +570,15 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 	h.armAtNs.Store(time.Now().UnixNano()) // replay timeline origin for this window's cursor capture
 	clients := h.clientList()
 	for _, c := range clients {
+		// Don't stamp a parked client: it's withheld this window's armed frame (below) and
+		// can send no cursor, so it never had a fair chance to play this arm. Stamping it
+		// would make armSeen==armGen, and a player who hits RESUME mid-window would then look
+		// Eligible to the round-end afk pass — with no cursor for a window they were parked
+		// for — and get afk_idle'd (and re-parked) the instant they came back. Leaving armSeen
+		// behind keeps an unparked player ineligible until the NEXT arm (like a mid-window join).
+		if c.parked.Load() {
+			continue
+		}
 		c.armSeen = h.armGen
 	}
 	for _, c := range clients {
