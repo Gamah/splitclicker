@@ -1212,17 +1212,21 @@
 		white-space: nowrap;
 	}
 
-	/* v5 board button: one clickable green circle per live slot. Positioned by its
+	/* v5 board button: one clickable green SQUARE per live slot. Positioned by its
 	   server-placed centre (inline left/top %, same box-% space as the pips), centred via
-	   −half margins. Smaller than the legacy single button since up to X share the box.
-	   No teleport — positions are server-authoritative, so left/top can transition-free. */
+	   −half margins. Square (not a circle) so the visual matches the actual click hitbox
+	   AND the `touch` hitbox — s&box hit-tests the panel's box, so a circle would leave the
+	   corners clickable-but-untouched and false-trip the no_hover check; it also matches the
+	   server's square non-overlap spacing model (board.go posMinDist). Smaller than the
+	   legacy single button since up to X share the box. No teleport — positions are
+	   server-authoritative, so left/top can transition-free. */
 	.board-btn {
 		position: absolute;
 		width: 96px;
 		height: 96px;
 		margin-left: -48px;
 		margin-top: -48px;
-		border-radius: 50%;
+		border-radius: 12px;
 		background-color: #06d6a0; /* live green — the board only exists while armed */
 		border: 4px solid rgba(255, 255, 255, 0.9);
 		transition: transform 0.08s ease-out;
@@ -1556,11 +1560,11 @@
 	const float RefreshInterval = 20f;
 
 	// Touch-hitbox geometry (reference px, the 1080-tall ScreenPanel space). CenterRefH is
-	// the .center box's reference height (1080 − top:24 − bottom:24); BoardBtnRefRadius is
-	// the .board-btn radius (96px circle ⇒ 48). Used to size the button hitbox in actual px
-	// when detecting a `touch` enter (see OnUpdate). Keep in step with the matching .scss.
+	// the .center box's reference height (1080 − top:24 − bottom:24); BoardBtnRefHalf is the
+	// .board-btn half-extent (96px square ⇒ 48). Used to size the square button hitbox in
+	// actual px when detecting a `touch` enter (see OnUpdate). Keep in step with .board-btn.
 	const float CenterRefH = 1080f - 24f - 24f;
-	const float BoardBtnRefRadius = 48f;
+	const float BoardBtnRefHalf = 48f;
 
 	ClickController C => ClickController.Instance;
 
@@ -1932,21 +1936,20 @@
 
 				// Armed-only: fire a one-shot `touch` the instant the pointer enters a live
 				// button's hitbox (ClickController de-dupes per window). The button is a 96px
-				// CSS circle (radius 48 at the 1080-tall reference); ScreenPanel scales the
-				// screen uniformly, so the circle stays round in actual px and a px-space
-				// distance check is exact. .center spans top:24/bottom:24 of the 1080 ref, so
-				// its reference height is CenterRefH; scale = actual box height ÷ that.
+				// CSS SQUARE (half-extent 48 at the 1080-tall reference), so the touch hitbox is
+				// an axis-aligned box matching the actual click area exactly (s&box hit-tests the
+				// panel box, not the rounded visual) — no clickable-but-untouched corners.
+				// ScreenPanel scales the screen uniformly, so 48·scale is the half-extent on
+				// BOTH axes in actual px. .center spans top:24/bottom:24 of the 1080 ref, so its
+				// reference height is CenterRefH; scale = actual box height ÷ that.
 				if ( phase == GamePhase.Armed )
 				{
-					float scale = r.Height / CenterRefH;
-					float rad = BoardBtnRefRadius * scale;
-					float rad2 = rad * rad;
+					float half = BoardBtnRefHalf * ( r.Height / CenterRefH );
 					foreach ( var btn in C.LiveButtons )
 					{
 						float cx = r.Center.x + btn.X * ( r.Width / 2f );
 						float cy = r.Center.y + btn.Y * ( r.Height / 2f );
-						float ddx = m.x - cx, ddy = m.y - cy;
-						if ( ddx * ddx + ddy * ddy <= rad2 )
+						if ( MathF.Abs( m.x - cx ) <= half && MathF.Abs( m.y - cy ) <= half )
 							C.SendTouch( btn.Slot );
 					}
 				}
