@@ -1561,10 +1561,16 @@
 
 	// Touch-hitbox geometry (reference px, the 1080-tall ScreenPanel space). CenterRefH is
 	// the .center box's reference height (1080 − top:24 − bottom:24); BoardBtnRefHalf is the
-	// .board-btn half-extent (96px square ⇒ 48). Used to size the square button hitbox in
-	// actual px when detecting a `touch` enter (see OnUpdate). Keep in step with .board-btn.
+	// .board-btn half-extent (96px square ⇒ 48). TouchPadRef DELIBERATELY enlarges the touch
+	// hitbox beyond the visual/click box so the `touch` zone is a strict SUPERSET of the
+	// clickable area: a click can land in the 4px border ring or a frame where the per-frame
+	// sampler just missed the edge, and no_hover only targets EGREGIOUS cases (cursor nowhere
+	// near the button), so erring bigger trades a hair of sensitivity for zero edge-click
+	// false positives. Used to size the square hitbox in actual px when detecting a `touch`
+	// enter (see OnUpdate).
 	const float CenterRefH = 1080f - 24f - 24f;
 	const float BoardBtnRefHalf = 48f;
+	const float TouchPadRef = 32f;
 
 	ClickController C => ClickController.Instance;
 
@@ -1936,15 +1942,16 @@
 
 				// Armed-only: fire a one-shot `touch` the instant the pointer enters a live
 				// button's hitbox (ClickController de-dupes per window). The button is a 96px
-				// CSS SQUARE (half-extent 48 at the 1080-tall reference), so the touch hitbox is
-				// an axis-aligned box matching the actual click area exactly (s&box hit-tests the
-				// panel box, not the rounded visual) — no clickable-but-untouched corners.
-				// ScreenPanel scales the screen uniformly, so 48·scale is the half-extent on
-				// BOTH axes in actual px. .center spans top:24/bottom:24 of the 1080 ref, so its
-				// reference height is CenterRefH; scale = actual box height ÷ that.
+				// CSS SQUARE; the touch hitbox is an axis-aligned box of half-extent
+				// (BoardBtnRefHalf + TouchPadRef), deliberately a bit BIGGER than the visual/
+				// click box so an edge click (the 4px border ring, or a frame the sampler just
+				// missed) always counts as touched — no_hover only targets egregious "cursor
+				// nowhere near" cases. ScreenPanel scales uniformly, so the half-extent is the
+				// same on both axes in actual px. .center spans top:24/bottom:24 of the 1080
+				// ref, so its reference height is CenterRefH; scale = actual box height ÷ that.
 				if ( phase == GamePhase.Armed )
 				{
-					float half = BoardBtnRefHalf * ( r.Height / CenterRefH );
+					float half = ( BoardBtnRefHalf + TouchPadRef ) * ( r.Height / CenterRefH );
 					foreach ( var btn in C.LiveButtons )
 					{
 						float cx = r.Center.x + btn.X * ( r.Width / 2f );
