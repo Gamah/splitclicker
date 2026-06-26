@@ -35,6 +35,11 @@ const (
 	// client sends ~15/s). Bounds cursor traffic without a shared rate bucket.
 	cursorMinGap = 40 * time.Millisecond
 
+	// trackCap bounds one connection's per-window replay cursor path. A window is at
+	// most RaceMax (~5s) and inbound cursors are throttled to ~25/s, so ~125 samples is
+	// the realistic ceiling; 512 is generous headroom that still caps a stuck window.
+	trackCap = 512
+
 	// minParkVersion is the oldest client API version that understands the park
 	// protocol — the server→client `park` frame (auto-park off an afk_idle verdict)
 	// and the client→server `park {on}` toggle (the Pause control). Below it, a client
@@ -65,6 +70,12 @@ type Hub struct {
 	// is fairly judgeable) from who joined mid-window or hasn't had a window yet. Touched
 	// only from the engine Run goroutine (Armed + AllCursorActivity), so it needs no lock.
 	armGen int
+
+	// armAtNs is the current armed window's wall-clock arm time (unix nanos), stamped in
+	// Armed. The cursor-capture path reads it to offset each recorded sample from the arm
+	// (the durable game replay's timeline). Atomic: written from the engine Run goroutine,
+	// read from connection readPump goroutines.
+	armAtNs atomic.Int64
 }
 
 func NewHub(log *zap.Logger) *Hub {
@@ -171,6 +182,13 @@ type Client struct {
 	movAnchorX int16
 	movAnchorY int16
 
+	// track accumulates this connection's cursor samples for the durable game replay:
+	// every sample (ms offset from arm + position) reported during the armed window. It's
+	// the full path, distinct from the movement summary above. Reset at the arming stage
+	// (clearCursor) and snapshotted at round end (Hub.AllCursorTracks). Guarded by curMu;
+	// bounded by trackCap so a stuck-armed window can't grow it without limit.
+	track []game.CursorSample
+
 	// armSeen is the hub's armGen at the last arm this client was present for. Compared
 	// to the current armGen in AllCursorActivity to decide afk eligibility (present for
 	// the whole window). Touched only from the engine Run goroutine (Hub.Armed).
@@ -195,6 +213,31 @@ func (c *Client) setCursor(x, y int16) {
 		c.moved = true
 	}
 	c.curMu.Unlock()
+}
+
+// recordTrack appends one cursor sample to the per-window replay path (offset ms from
+// the window's arm + position), capped at trackCap. Called from readPump after setCursor.
+func (c *Client) recordTrack(offsetMs int, x, y int16) {
+	if offsetMs < 0 {
+		offsetMs = 0
+	}
+	c.curMu.Lock()
+	if len(c.track) < trackCap {
+		c.track = append(c.track, game.CursorSample{TMs: offsetMs, X: x, Y: y})
+	}
+	c.curMu.Unlock()
+}
+
+// snapshotTrack returns a copy of this window's recorded cursor path (for the replay).
+func (c *Client) snapshotTrack() []game.CursorSample {
+	c.curMu.Lock()
+	defer c.curMu.Unlock()
+	if len(c.track) == 0 {
+		return nil
+	}
+	out := make([]game.CursorSample, len(c.track))
+	copy(out, c.track)
+	return out
 }
 
 // cursor returns the last reported position and whether one is set (from Hub.Tick).
@@ -222,6 +265,7 @@ func (c *Client) clearCursor() {
 	c.movN = 0
 	c.movSeen = false
 	c.moved = false
+	c.track = nil // drop the finished window's replay path
 	c.curMu.Unlock()
 }
 
@@ -484,6 +528,30 @@ func (h *Hub) AllCursorActivity() map[string]game.CursorActivity {
 	return out
 }
 
+// AllCursorTracks snapshots the full recorded cursor path of every connected
+// non-legacy player during the window just played, for the durable game replay. Keyed
+// by SteamID; players with no samples are omitted. Shadowbanned accounts are excluded
+// (their cursors are dropped from the live sample too, and a silent ban must never
+// surface in a replay); parked players send no cursors, so they naturally drop out.
+// Called from the engine Run goroutine at round end, before the next arming stage
+// clears the per-window capture.
+func (h *Hub) AllCursorTracks() map[string]game.CursorTrack {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[string]game.CursorTrack, len(h.clients))
+	for c := range h.clients {
+		if c.Legacy || c.Shadowbanned {
+			continue
+		}
+		samples := c.snapshotTrack()
+		if len(samples) == 0 {
+			continue
+		}
+		out[c.SteamID] = game.CursorTrack{Tag: c.Tag, Username: c.Username, Samples: samples}
+	}
+	return out
+}
+
 // Armed fans out the armed frame. The unpenalised majority share one precomputed
 // frame; penalised connections get theirs after a delay (the spam deterrent)
 // with their own penalty_ms echoed in, so they can see they're being throttled.
@@ -499,6 +567,7 @@ func (h *Hub) Armed(a game.ArmedFrame) {
 	// or a fresh connection that hasn't had a window yet) instead of flagging an empty
 	// cursor box they never had a chance to fill.
 	h.armGen++
+	h.armAtNs.Store(time.Now().UnixNano()) // replay timeline origin for this window's cursor capture
 	clients := h.clientList()
 	for _, c := range clients {
 		c.armSeen = h.armGen
@@ -857,7 +926,13 @@ func (c *Client) readPump() {
 				continue
 			}
 			c.lastCur = now
-			c.setCursor(clampI16(*in.X), clampI16(*in.Y))
+			cx, cy := clampI16(*in.X), clampI16(*in.Y)
+			c.setCursor(cx, cy)
+			// Record the sample for the durable replay too, offset from this window's arm.
+			// armAtNs is 0 outside an armed window (no arm yet this process) — skip then.
+			if armNs := c.hub.armAtNs.Load(); armNs > 0 {
+				c.recordTrack(int(now.Sub(time.Unix(0, armNs)).Milliseconds()), cx, cy)
+			}
 		case "park":
 			// The Pause control (v6+): on=true steps away (withhold all frames, drop out
 			// of the crowd/N/afk pass), on=false rejoins. Ignored from older builds, which

@@ -143,6 +143,7 @@ type AdminGameDetail struct {
 	EndedAt   time.Time
 	Rounds    int
 	RoundList []AdminRound
+	HasReplay bool // a replay blob exists for this game (older games predate the feature)
 }
 
 // AdminRound is one round in the detail view, with its scoring clicks in slot
@@ -247,6 +248,12 @@ func (s *Store) GameDetail(ctx context.Context, gameID string) (d AdminGameDetai
 	}
 	for i := range d.RoundList {
 		d.RoundList[i].Checks = byRound[d.RoundList[i].RoundNo]
+	}
+
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM game_replays WHERE game_id = $1)`, gameID,
+	).Scan(&d.HasReplay); err != nil {
+		return AdminGameDetail{}, false, err
 	}
 	return d, true, nil
 }

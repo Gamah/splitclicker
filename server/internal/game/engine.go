@@ -280,6 +280,10 @@ type RoundLog struct {
 	ArmedAt time.Time
 	Clicks  []ScoredClick
 	Checks  []CheckResult
+	// Replay is the round's visualization payload (buttons, claims, cursor paths),
+	// accumulated in memory and flushed with the game history for the admin replay
+	// viewer. Not mapped to any game_rounds column — it rides the game's replay blob.
+	Replay RoundReplay
 }
 
 // TestRecord is one anticheat test the engine issued to a flagged player, handed
@@ -431,6 +435,13 @@ type Engine struct {
 	// connection. Optional: nil disables the afk pass.
 	allCursorActivityFn func() map[string]CursorActivity
 
+	// cursorTracksFn, if set, returns the full recorded cursor path of every connected
+	// non-legacy player during the window just played, for the durable game replay.
+	// Supplied by the ws hub (the same per-window capture the afk pass reads, but the
+	// whole sample list rather than a movement summary). Optional: nil means replays
+	// carry no cursor dots.
+	cursorTracksFn func() map[string]CursorTrack
+
 	// Anticheat sanction ladder, scoped to the current bounty. curBountyID is the
 	// bounty the in-memory sanctions belong to; when bountyInfoFn reports a different
 	// id the ladder resets (reloaded from the store for the new bounty). sanctions
@@ -467,6 +478,20 @@ func (e *Engine) SetBountyInfoFn(fn func() BountyInfo) { e.bountyInfoFn = fn }
 // CursorActivity and checkAfk.
 func (e *Engine) SetAllCursorActivityFn(fn func() map[string]CursorActivity) {
 	e.allCursorActivityFn = fn
+}
+
+// SetCursorTracksFn registers the source of whole-roster cursor paths (used to build
+// the durable game replay). Call before Run; nil means replays carry no cursor dots.
+func (e *Engine) SetCursorTracksFn(fn func() map[string]CursorTrack) {
+	e.cursorTracksFn = fn
+}
+
+// cursorTracks returns the per-window cursor paths from the hub (nil if unset).
+func (e *Engine) cursorTracks() map[string]CursorTrack {
+	if e.cursorTracksFn == nil {
+		return nil
+	}
+	return e.cursorTracksFn()
 }
 
 // New builds an Engine. store may be nil (scoring still works, just not
@@ -728,7 +753,7 @@ func (e *Engine) playGame(ctx context.Context) {
 			return
 		}
 		final := round == x
-		deltas, roundID, clicks, armedAt := e.race(ctx, round, x, players, n, scores, info, reached, final)
+		deltas, roundID, clicks, armedAt, replay := e.race(ctx, round, x, players, n, scores, info, reached, final)
 		if ctx.Err() != nil {
 			return
 		}
@@ -769,7 +794,7 @@ func (e *Engine) playGame(ctx context.Context) {
 		}
 		roundLogs = append(roundLogs, RoundLog{
 			RoundID: roundID, RoundNo: round, N: n, Players: players,
-			ArmedAt: armedAt, Clicks: clicks, Checks: checks,
+			ArmedAt: armedAt, Clicks: clicks, Checks: checks, Replay: replay,
 		})
 		if final {
 			finalDeltas, finalRoundID = deltas, roundID
@@ -892,7 +917,7 @@ func (e *Engine) pending(ctx context.Context, round, of, players, n int, info ma
 // nothing — playGame folds straight into game_over (which carries the returned
 // deltas/roundID), so the last round shows the final standings once instead of a
 // redundant ROUND OVER → GAME OVER pair.
-func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, reached map[string]time.Time, final bool) (map[string]int, string, []ScoredClick, time.Time) {
+func (e *Engine) race(ctx context.Context, round, of, players, n int, scores map[string]int, info map[string]playerInfo, reached map[string]time.Time, final bool) (map[string]int, string, []ScoredClick, time.Time, RoundReplay) {
 	penalties := e.penaltiesFrom(e.badClicks)
 	blocked := e.blockedMap()
 	e.setPhase(PhaseArmed, round)
@@ -937,7 +962,7 @@ raceLoop:
 	for !b.full() {
 		select {
 		case <-ctx.Done():
-			return nil, "", nil, armedAt
+			return nil, "", nil, armedAt, RoundReplay{}
 		case ev := <-e.clicks:
 			recordInfo(info, ev)
 			if !b.offer(ev) {
@@ -959,6 +984,11 @@ raceLoop:
 		emitTick()
 	}
 
+	// Assemble the round's replay while the hub still holds this window's cursor capture
+	// (the next round's pending() clears it). The board's never-drained claim log + the
+	// initial buttons give the full button timeline; the hub supplies the cursor paths.
+	replay := e.buildRoundReplay(round, n, int(time.Since(armedAt).Milliseconds()), buttons, b)
+
 	deltas := map[string]int{}
 	clicks := make([]ScoredClick, len(b.scored))
 	for i, ev := range b.scored {
@@ -978,7 +1008,7 @@ raceLoop:
 	// Final round: no separate round_result or result-display pause — playGame
 	// emits game_over next, carrying these deltas/roundID.
 	if final {
-		return deltas, roundID, clicks, armedAt
+		return deltas, roundID, clicks, armedAt, replay
 	}
 
 	e.setPhase(PhaseResult, round)
@@ -1011,7 +1041,7 @@ raceLoop:
 	})
 
 	e.drain(ctx, e.cfg.ResultDisplay)
-	return deltas, roundID, clicks, armedAt
+	return deltas, roundID, clicks, armedAt, replay
 }
 
 // persist writes the round's points to the hourly board off the hot path, so DB

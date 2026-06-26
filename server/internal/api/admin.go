@@ -496,6 +496,44 @@ func (h *handler) adminGame(w http.ResponseWriter, r *http.Request) {
 	h.renderAdmin(w, gameTmpl, detail)
 }
 
+// GET /admin/game/replay?id=… — the replay viewer page (a self-contained canvas
+// player that fetches the round data from /admin/game/replay/data).
+func (h *handler) adminGameReplay(w http.ResponseWriter, r *http.Request) {
+	if !h.adminAuth(w, r) {
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	h.renderAdmin(w, replayTmpl, struct{ ID string }{ID: id})
+}
+
+// GET /admin/game/replay/data?id=… — the game's replay as JSON (decompressed from
+// the stored gzip blob), fetched by the viewer page.
+func (h *handler) adminGameReplayData(w http.ResponseWriter, r *http.Request) {
+	if !h.adminAuth(w, r) {
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	raw, ok, err := h.store.GameReplayJSON(r.Context(), id)
+	if err != nil {
+		h.adminError(w, "load replay", err)
+		return
+	}
+	if !ok {
+		http.Error(w, "no replay for this game", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Write(raw)
+}
+
 func (h *handler) adminError(w http.ResponseWriter, what string, err error) {
 	h.log.Error("admin: "+what, zap.Error(err))
 	http.Error(w, "internal error", http.StatusInternalServerError)
@@ -835,6 +873,25 @@ td button{cursor:pointer}
   color:#06122b;font-weight:600;padding:.45rem .9rem}
 .actions{display:flex;gap:.4rem}
 .backlink{display:inline-block;margin-bottom:.5rem;color:var(--muted)}
+.btn{display:inline-block;padding:.4rem .9rem;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel);color:var(--accent);font-weight:600;cursor:pointer}
+.btn:hover{text-decoration:none;background:var(--panel2)}
+`
+
+// replayCSS styles the replay viewer chrome (the responsive 16:9 stage, the transport
+// controls, and the colour legend). Appended to adminCSS for that page only.
+const replayCSS = `
+.rcontrols{display:flex;align-items:center;gap:.9rem;flex-wrap:wrap;margin:.75rem 0}
+.rcontrols label{color:var(--muted);font-size:.85rem;display:flex;align-items:center;gap:.35rem}
+.rcontrols select{background:var(--panel2);color:var(--text);border:1px solid var(--line);
+  border-radius:8px;padding:.3rem .5rem}
+.rcontrols #seek{flex:1;min-width:12rem;accent-color:var(--accent)}
+.stage{width:100%;max-width:1100px;aspect-ratio:16/9;position:relative;
+  border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+.stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:.5rem 1rem;margin:.7rem 0}
+.legend .lg{display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem}
+.legend .lg i{width:.8rem;height:.8rem;border-radius:50%;display:inline-block}
 `
 
 // adminJS is shared by every admin view that shows timestamps. It rewrites the
@@ -1258,6 +1315,7 @@ var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doc
 <a class="backlink" href="/admin">&larr; back</a>
 <h1>game <span class="mono">{{.ID}}</span></h1>
 <p class="muted">started {{lt .StartedAt}} · ended {{lt .EndedAt}} · {{.Rounds}} rounds · {{dur .StartedAt .EndedAt}}</p>
+{{if .HasReplay}}<p><a class="btn" href="/admin/game/replay?id={{.ID}}">&#9658; Watch replay</a></p>{{end}}
 {{range .RoundList}}
 <h2>round {{.RoundNo}} <span class="muted">· N={{.N}} · {{.Players}} players · armed {{lt .ArmedAt}}</span>
   {{if .Checks}}<span class="flag">· {{len .Checks}} check(s) flagged</span>{{end}}</h2>
@@ -1280,3 +1338,177 @@ var gameTmpl = template.Must(template.New("game").Funcs(adminFuncs).Parse(`<!doc
 {{end}}
 {{end}}
 </div>` + adminJS + `</body></html>`))
+
+// replayTmpl is the self-contained replay viewer: a 16:9 responsive canvas that
+// fetches the game's replay JSON and plays each round's buttons, claims, and player
+// cursor dots back on one ms-from-arm timeline. Vanilla JS, no backticks (Go raw
+// string), no {{ except the {{.ID}} injection.
+var replayTmpl = template.Must(template.New("replay").Parse(`<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>replay</title><style>` + adminCSS + replayCSS + `</style></head><body><div class="wrap">
+<a class="backlink" href="/admin/game?id={{.ID}}">&larr; back to game</a>
+<h1>replay <span class="mono">{{.ID}}</span></h1>
+<div class="rcontrols">
+  <button id="play" class="btn">&#9658; play</button>
+  <label>round <select id="round"></select></label>
+  <input id="seek" type="range" min="0" max="1000" value="0" step="1">
+  <span id="clock" class="mono muted">0.0s</span>
+  <label class="muted">speed
+    <select id="speed"><option value="0.25">0.25&times;</option><option value="0.5">0.5&times;</option>
+      <option value="1" selected>1&times;</option><option value="2">2&times;</option></select></label>
+</div>
+<div id="stage" class="stage"><canvas id="cv"></canvas></div>
+<div id="legend" class="legend"></div>
+<p id="status" class="muted">loading&hellip;</p>
+</div>
+<script>
+(function () {
+  var gid = "{{.ID}}";
+  // Distinct, roughly evenly-spaced colours. The first ~20 are a hand-picked palette;
+  // beyond that we fall back to golden-angle HSL so it never runs out. NOTE: name
+  // labels over the dots get crowded past a couple dozen simultaneous players — fine
+  // for the handful this game has today, revisit (cluster/hide labels) if crowds grow.
+  var PALETTE = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0',
+    '#f032e6','#bcf60c','#fa8072','#008080','#e6beff','#9a6324','#fffac8','#aaffc3',
+    '#808000','#ffd8b1','#4682b4','#a9a9a9','#ff80ab'];
+  function colorAt(i) { if (i < PALETTE.length) return PALETTE[i]; var h = (i * 137.508) % 360; return 'hsl(' + h + ',70%,62%)'; }
+
+  var cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+  var stage = document.getElementById('stage');
+  var playBtn = document.getElementById('play'), roundSel = document.getElementById('round');
+  var seek = document.getElementById('seek'), clock = document.getElementById('clock');
+  var speedSel = document.getElementById('speed'), legendEl = document.getElementById('legend');
+  var statusEl = document.getElementById('status');
+
+  var rounds = null, ri = 0, t = 0, playing = false, lastTs = 0, speed = 1;
+  var W = 0, H = 0, dpr = 1;
+  var colorByTag = {}, nameByTag = {}, nextColor = 0;
+  function colorForTag(tag) { if (!(tag in colorByTag)) colorByTag[tag] = colorAt(nextColor++); return colorByTag[tag]; }
+
+  // Normalized int16 (-32767..32767, 0 = centre) to canvas pixels. The same coordinate
+  // space the game uses for clicks and buttons; +y is down (screen coords).
+  function sx(x) { return (x / 32767 * 0.5 + 0.5) * W; }
+  function sy(y) { return (y / 32767 * 0.5 + 0.5) * H; }
+
+  function resize() {
+    var r = stage.getBoundingClientRect();
+    dpr = window.devicePixelRatio || 1;
+    W = Math.max(1, Math.round(r.width * dpr));
+    H = Math.max(1, Math.round(r.height * dpr));
+    cv.width = W; cv.height = H;
+    draw();
+  }
+
+  function prep() {
+    var rd = rounds[ri];
+    // id -> {x,y,spawnT,claimT,by}; a button is on screen from its spawn until claimed.
+    rd._btn = {};
+    (rd.buttons || []).forEach(function (b) { rd._btn[b.id] = { x: b.x, y: b.y, spawnT: b.t, claimT: Infinity, by: null }; });
+    (rd.claims || []).forEach(function (c) { var b = rd._btn[c.slot]; if (b) { b.claimT = c.t; b.by = c.by; } });
+    // pre-resolve a name for any tag (cursor + claim) for the legend / labels.
+    (rd.players || []).forEach(function (p) { nameByTag[p.tag] = p.name; colorForTag(p.tag); });
+    seek.max = Math.max(1, rd.dur_ms || 1);
+    t = 0; seek.value = 0;
+    renderLegend();
+    updateClock();
+  }
+
+  function renderLegend() {
+    var rd = rounds[ri], html = '';
+    (rd.players || []).forEach(function (p) {
+      html += '<span class="lg"><i style="background:' + colorForTag(p.tag) + '"></i>' + esc(p.name) + '</span>';
+    });
+    legendEl.innerHTML = html || '<span class="muted">no players this round</span>';
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  // Interpolated cursor position at time t: null before the first sample, held at the
+  // last sample after the end, linear between bracketing samples otherwise.
+  function posAt(s, tt) {
+    if (!s || !s.length || tt < s[0].t) return null;
+    var prev = s[0];
+    for (var i = 1; i < s.length; i++) {
+      if (s[i].t > tt) { var a = prev, b = s[i], f = (tt - a.t) / Math.max(1, b.t - a.t); return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f }; }
+      prev = s[i];
+    }
+    return { x: prev.x, y: prev.y };
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0b0d12'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(255,255,255,.06)'; ctx.lineWidth = 1; ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+    if (!rounds) return;
+    var rd = rounds[ri], bh = H * 0.05, rdot = Math.max(4, H * 0.014), font = Math.max(11, Math.round(H * 0.026));
+
+    // live buttons
+    var id;
+    for (id in rd._btn) {
+      var b = rd._btn[id];
+      if (b.spawnT <= t && t < b.claimT) {
+        ctx.fillStyle = 'rgba(91,157,255,.18)'; ctx.strokeStyle = 'rgba(91,157,255,.8)'; ctx.lineWidth = 2;
+        var x = sx(b.x) - bh, y = sy(b.y) - bh;
+        ctx.beginPath(); ctx.rect(x, y, bh * 2, bh * 2); ctx.fill(); ctx.stroke();
+      }
+    }
+    // claim flashes (a short expanding ring + claimer name at the claimed button)
+    (rd.claims || []).forEach(function (c) {
+      var dt = t - c.t; if (dt < 0 || dt > 450) return;
+      var b = rd._btn[c.slot]; if (!b) return;
+      var k = dt / 450, col = colorForTag(c.by);
+      ctx.strokeStyle = col; ctx.globalAlpha = 1 - k; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(sx(b.x), sy(b.y), bh * (1 + k * 1.5), 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+    });
+    // player cursor dots
+    (rd.cursors || []).forEach(function (cu) {
+      var p = posAt(cu.s, t); if (!p) return;
+      var col = colorForTag(cu.tag), px = sx(p.x), py = sy(p.y);
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(px, py, rdot, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 1.5; ctx.stroke();
+      var nm = nameByTag[cu.tag] || cu.tag;
+      ctx.font = '600 ' + font + 'px system-ui,sans-serif'; ctx.textAlign = 'center';
+      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.strokeText(nm, px, py - rdot - 4);
+      ctx.fillStyle = '#fff'; ctx.fillText(nm, px, py - rdot - 4);
+    });
+  }
+
+  function updateClock() { clock.textContent = (t / 1000).toFixed(1) + 's / ' + ((rounds[ri].dur_ms || 0) / 1000).toFixed(1) + 's'; }
+  function setPlaying(p) { playing = p; playBtn.innerHTML = p ? '&#10073;&#10073; pause' : '&#9658; play'; if (p) lastTs = 0; }
+
+  function frame(ts) {
+    if (playing && rounds) {
+      if (!lastTs) lastTs = ts;
+      t += (ts - lastTs) * speed; lastTs = ts;
+      var dur = rounds[ri].dur_ms || 1;
+      if (t >= dur) { t = dur; setPlaying(false); }
+      seek.value = Math.round(t); updateClock();
+    }
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  playBtn.onclick = function () { if (!rounds) return; if (!playing && t >= (rounds[ri].dur_ms || 1)) t = 0; setPlaying(!playing); };
+  roundSel.onchange = function () { ri = +roundSel.value; setPlaying(false); prep(); draw(); };
+  seek.oninput = function () { t = +seek.value; setPlaying(false); updateClock(); draw(); };
+  speedSel.onchange = function () { speed = +speedSel.value; };
+  window.addEventListener('resize', resize);
+
+  fetch('/admin/game/replay/data?id=' + encodeURIComponent(gid))
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (data) {
+      rounds = data.rounds || [];
+      if (!rounds.length) { statusEl.textContent = 'this game has no replay rounds.'; return; }
+      rounds.forEach(function (rd, i) {
+        var o = document.createElement('option');
+        o.value = i; o.textContent = 'round ' + (rd.no || (i + 1)) + ' (' + ((rd.dur_ms || 0) / 1000).toFixed(1) + 's, N=' + (rd.n || 0) + ')';
+        roundSel.appendChild(o);
+      });
+      statusEl.textContent = 'Cursor data is captured only during the armed window (when a player is over the board), so dots appear once a player moves onto the board after the button arms.';
+      ri = 0; prep(); resize();
+      requestAnimationFrame(frame);
+    })
+    .catch(function (e) { statusEl.textContent = 'failed to load replay: ' + e.message; });
+})();
+</script>
+</body></html>`))

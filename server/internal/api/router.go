@@ -109,6 +109,8 @@ func NewRouter(st *store.Store, cache *store.LeaderboardCache, hub *ws.Hub, engi
 	mux.HandleFunc("POST /admin/shadowban", h.adminShadowban)
 	mux.HandleFunc("POST /admin/connections/drop", h.adminDropConnection)
 	mux.HandleFunc("GET /admin/game", rl.wrap(h.adminGame))
+	mux.HandleFunc("GET /admin/game/replay", rl.wrap(h.adminGameReplay))
+	mux.HandleFunc("GET /admin/game/replay/data", rl.wrap(h.adminGameReplayData))
 	mux.HandleFunc("GET /admin/media", h.adminMedia)
 	mux.HandleFunc("POST /admin/bounties", h.adminBountyCreate)
 	mux.HandleFunc("POST /admin/bounties/edit", h.adminBountyEdit)
