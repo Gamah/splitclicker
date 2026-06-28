@@ -214,10 +214,9 @@ type Client struct {
 
 	// touch records, per live button id, the ms-offset-from-window-origin at which this
 	// connection's cursor FIRST entered that button's hitbox this window (the `touch {id}`
-	// signal — sent once on the enter transition). The engine's no_hover / fast_hover dwell
-	// checks read it: a scoring click that claims a button never touched is automation; a
-	// touch→click gap below the human floor isn't a real hover-and-press. Only v7+ clients
-	// send touch. Reset at the arming stage (clearCursor); guarded by curMu.
+	// signal — sent once on the enter transition). The engine's fast_hover dwell check reads
+	// it: a touch→click gap below the human floor isn't a real hover-and-press. Only v7+
+	// clients send touch. Reset at the arming stage (clearCursor); guarded by curMu.
 	touch map[uint16]int
 
 	// pendSeen is the hub's pendGen at the last arming stage this client was present and
@@ -662,9 +661,9 @@ func (h *Hub) ArmingCursorActivity() map[string]game.CursorActivity {
 
 // AllTouchData snapshots every connected, touch-capable (v7+) player's first-touch offsets
 // (button id → ms since the window origin) for the round just played, for the engine's
-// no_hover / fast_hover dwell checks. Parked/shadowbanned/legacy/v6 clients are omitted
-// (v6 sends no touch). Called from the engine Run goroutine at round end, before the next
-// arming stage clears the per-window capture.
+// fast_hover dwell check. Parked/shadowbanned/legacy/v6 clients are omitted (v6 sends no
+// touch). Called from the engine Run goroutine at round end, before the next arming stage
+// clears the per-window capture.
 func (h *Hub) AllTouchData() map[string]map[uint16]int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -674,8 +673,8 @@ func (h *Hub) AllTouchData() map[string]map[uint16]int {
 			continue
 		}
 		// Every touch-capable player gets an entry even with no touches: PRESENCE in the
-		// map means "judgeable for no_hover" (a v7 client that scored but never touched is a
-		// bot). Absence means non-touch-capable (v6/legacy), which the touch check exempts.
+		// map means "judgeable for fast_hover". Absence means non-touch-capable (v6/legacy),
+		// which the touch check exempts.
 		out[c.SteamID] = c.snapshotTouch()
 	}
 	return out

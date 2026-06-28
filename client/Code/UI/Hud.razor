@@ -1216,8 +1216,8 @@
 	   server-placed centre (inline left/top %, same box-% space as the pips), centred via
 	   −half margins. Square (not a circle) so the visual matches the actual click hitbox
 	   AND the `touch` hitbox — s&box hit-tests the panel's box, so a circle would leave the
-	   corners clickable-but-untouched and false-trip the no_hover check; it also matches the
-	   server's square non-overlap spacing model (board.go posMinDist). Smaller than the
+	   corners clickable-but-untouched and skew the `touch` dwell signal (fast_hover); it also
+	   matches the server's square non-overlap spacing model (board.go posMinDist). Smaller than the
 	   legacy single button since up to X share the box. No teleport — positions are
 	   server-authoritative, so left/top can transition-free. */
 	.board-btn {
@@ -1564,10 +1564,9 @@
 	// .board-btn half-extent (96px square ⇒ 48). TouchPadRef DELIBERATELY enlarges the touch
 	// hitbox beyond the visual/click box so the `touch` zone is a strict SUPERSET of the
 	// clickable area: a click can land in the 4px border ring or a frame where the per-frame
-	// sampler just missed the edge, and no_hover only targets EGREGIOUS cases (cursor nowhere
-	// near the button), so erring bigger trades a hair of sensitivity for zero edge-click
-	// false positives. Used to size the square hitbox in actual px when detecting a `touch`
-	// enter (see OnUpdate).
+	// sampler just missed the edge, so erring bigger catches the touch enter a bit earlier and
+	// keeps the fast_hover dwell signal honest. Used to size the square hitbox in actual px when
+	// detecting a `touch` enter (see OnUpdate).
 	const float CenterRefH = 1080f - 24f - 24f;
 	const float BoardBtnRefHalf = 48f;
 	const float TouchPadRef = 32f;
@@ -1944,9 +1943,8 @@
 				// button's hitbox (ClickController de-dupes per window). The button is a 96px
 				// CSS SQUARE; the touch hitbox is an axis-aligned box of half-extent
 				// (BoardBtnRefHalf + TouchPadRef), deliberately a bit BIGGER than the visual/
-				// click box so an edge click (the 4px border ring, or a frame the sampler just
-				// missed) always counts as touched — no_hover only targets egregious "cursor
-				// nowhere near" cases. ScreenPanel scales uniformly, so the half-extent is the
+				// click box so the touch enter is caught a bit early and the fast_hover dwell
+				// signal stays honest. ScreenPanel scales uniformly, so the half-extent is the
 				// same on both axes in actual px. .center spans top:24/bottom:24 of the 1080
 				// ref, so its reference height is CenterRefH; scale = actual box height ÷ that.
 				if ( phase == GamePhase.Armed )
