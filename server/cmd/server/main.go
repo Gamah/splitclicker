@@ -240,8 +240,8 @@ func main() {
 	// checks: busted (scored with no cursor all round) and the path/cadence signals. This
 	// one includes v6 (it sends armed cursors, so busted won't false-fire on it).
 	engine.SetAllCursorActivityFn(hub.AllCursorActivity)
-	// Per-window touch data (the `touch {id}` first-entry stamps) feeds the no_hover /
-	// fast_hover dwell checks. Keyed by SteamID → button id → ms-since-arm.
+	// Per-window touch data (the `touch {id}` first-entry stamps) feeds the fast_hover dwell
+	// check. Keyed by SteamID → button id → ms-since-arm.
 	engine.SetTouchDataFn(hub.AllTouchData)
 	// Per-connection minimum observed ping RTT feeds impossible_latency: a scoring click
 	// faster than the connection's own round-trip is physically impossible.

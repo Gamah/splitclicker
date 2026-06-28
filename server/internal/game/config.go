@@ -86,10 +86,12 @@ type Config struct {
 	//                        cadence check (#3) runs; MetronomeMaxCV is the coefficient-of-
 	//                        variation ceiling below which the cadence is machine-flat. 0
 	//                        MinClicks = off. Default off (opt-in: needs tuning per crowd).
-	//   TouchCheck         - >0 enables the touch-derived checks (#stretch/#5): no_hover (a
-	//                        button claimed with no prior `touch` over its hitbox → automation)
-	//                        and fast_hover (touch→click dwell below ReactionMinMs). The client
-	//                        sends `touch {id}` on first entry into a live button. 0 = off.
+	//   TouchCheck         - >0 enables the touch-derived check (#stretch/#5): fast_hover
+	//                        (touch→click dwell below ReactionMinMs). The client sends
+	//                        `touch {id}` on first entry into a live button. 0 = off. (The
+	//                        old no_hover sub-check was dropped — per-frame touch sampling vs
+	//                        immediate clicks false-tripped it; `busted` covers the egregious
+	//                        scored-with-no-cursor case instead.)
 	//   StraightPathRatio  - >0 enables straight_path (#6, signal-only, false-positive-prone so
 	//                        default OFF): flags a window whose cursor path is implausibly
 	//                        straight (net displacement / total path length above this ratio)

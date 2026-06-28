@@ -240,7 +240,7 @@ type CursorActivity struct {
 //   - movement (whole roster):  'afk' (still during arming → parked before the arm).
 //   - score-aware (round end):  'busted' (scored with no cursor all round), 'fast_clicks',
 //     'too_many_clicks', 'dominant_winner', 'fast_reaction' (#1), 'impossible_latency' (#2),
-//     'metronome' (#3), 'no_hover' / 'fast_hover' (touch, #5), 'straight_path' (#6).
+//     'metronome' (#3), 'fast_hover' (touch, #5), 'straight_path' (#6).
 //   - session level:            'solo_round'.
 // Detail is a short audit note ('delta=84ms' / 'clicks=37' / 'no_cursor' / 'dwell=12ms');
 // Message is the player-facing line shown in the anticheat popup. Score NEVER enters the
@@ -444,8 +444,8 @@ type Engine struct {
 	armingCursorActivityFn func() map[string]CursorActivity
 
 	// touchDataFn, if set, returns each connected v7+ player's first-touch offsets (button
-	// id → ms since the window origin) for the round just played, for the no_hover /
-	// fast_hover dwell checks. Supplied by the ws hub. Optional: nil disables them.
+	// id → ms since the window origin) for the round just played, for the fast_hover dwell
+	// check. Supplied by the ws hub. Optional: nil disables it.
 	touchDataFn func() map[string]map[uint16]int
 
 	// minRTTFn, if set, returns each connected player's minimum observed ping RTT (ms),
@@ -503,8 +503,8 @@ func (e *Engine) SetArmingCursorActivityFn(fn func() map[string]CursorActivity) 
 	e.armingCursorActivityFn = fn
 }
 
-// SetTouchDataFn registers the source of per-window touch data (used by no_hover /
-// fast_hover). Call before Run; nil disables the touch checks.
+// SetTouchDataFn registers the source of per-window touch data (used by fast_hover).
+// Call before Run; nil disables the touch check.
 func (e *Engine) SetTouchDataFn(fn func() map[string]map[uint16]int) { e.touchDataFn = fn }
 
 // SetMinRTTFn registers the source of per-connection min ping RTT (used by
@@ -1442,20 +1442,25 @@ func (e *Engine) checkLatency(clicks []ScoredClick, blocked map[string]bool) []C
 // checkTouch is the touch-derived dwell pass (#stretch/#5), gated by TouchCheck>0 and
 // touchDataFn. For each scoring click it correlates the claimed button against the player's
 // `touch` stamps for this window:
-//   - no_hover:   the button was claimed with NO prior touch over it → the pointer never
-//                 hovered, near-certain automation (sharper than `busted`, which only sees
-//                 "no cursor at all").
 //   - fast_hover: touch→click dwell below the human reaction floor (ReactionMinMs) → the
 //                 "click" didn't follow a real hover-and-press.
+//
+// (The old no_hover sub-check — "claimed a button with NO prior touch" — was removed: the
+// `touch` signal is sampled per-frame client-side while a scoring click is sent immediately
+// over the wire, so a fast flick-click whose pointer crosses the button between two frames
+// registers a click but no touch and false-trips it. The egregious "scored without ever
+// moving" case it was meant to catch is already covered by `busted` (checkBusted: scored with
+// no cursor the whole round), which keys off whether ANY cursor arrived rather than per-button
+// touch correlation, so it isn't subject to the same per-frame race.)
+//
 // Only touch-capable players (v7+) are judged — they are the ones PRESENT in touchData (a
-// v6/legacy player is absent and exempt). Each type fires at most once per player per round.
-// blocked players skipped. Returns results in SteamID order.
+// v6/legacy player is absent and exempt). Fires at most once per player per round. blocked
+// players skipped. Returns results in SteamID order.
 func (e *Engine) checkTouch(clicks []ScoredClick, blocked map[string]bool) []CheckResult {
-	if e.cfg.TouchCheck <= 0 || e.touchDataFn == nil || len(clicks) == 0 {
+	if e.cfg.TouchCheck <= 0 || e.touchDataFn == nil || e.cfg.ReactionMinMs <= 0 || len(clicks) == 0 {
 		return nil
 	}
 	touches := e.touchDataFn()
-	noHover := map[string]bool{}
 	fastHover := map[string]int{} // sid → dwell ms (for the Detail)
 	order := []string{}
 	seen := map[string]bool{}
@@ -1474,24 +1479,16 @@ func (e *Engine) checkTouch(clicks []ScoredClick, blocked map[string]bool) []Che
 		}
 		touchMs, hovered := bt[c.Button]
 		if !hovered {
-			noHover[sid] = true
-			continue
+			continue // no touch for this button — a missed sample, not automation (see busted)
 		}
-		if e.cfg.ReactionMinMs > 0 {
-			if dwell := c.OffsetMs - touchMs; dwell >= 0 && dwell < e.cfg.ReactionMinMs {
-				if _, have := fastHover[sid]; !have {
-					fastHover[sid] = dwell
-				}
+		if dwell := c.OffsetMs - touchMs; dwell >= 0 && dwell < e.cfg.ReactionMinMs {
+			if _, have := fastHover[sid]; !have {
+				fastHover[sid] = dwell
 			}
 		}
 	}
 	var out []CheckResult
 	for _, sid := range order {
-		if noHover[sid] {
-			out = append(out, CheckResult{SteamID: sid, Type: "no_hover",
-				Detail:  "claimed untouched button",
-				Message: "You claimed a button your cursor never touched."})
-		}
 		if d, ok := fastHover[sid]; ok {
 			out = append(out, CheckResult{SteamID: sid, Type: "fast_hover",
 				Detail:  fmt.Sprintf("dwell=%dms", d),
